@@ -163,6 +163,9 @@ public class AgentCommand extends CliCommand {
         // 子代理工具
         SubagentManager subagentManager = new SubagentManager(provider, workspace, bus);
         agentLoop.registerTool(new SpawnTool(subagentManager));
+        
+        // 技能管理工具（赋予 AI 自主学习和管理技能的能力）
+        agentLoop.registerTool(new SkillsTool(workspace));
     }
     
     private void interactiveMode(AgentLoop agentLoop, String sessionKey) {

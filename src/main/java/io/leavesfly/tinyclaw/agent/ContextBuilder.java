@@ -143,22 +143,54 @@ public class ContextBuilder {
      * 生成已安装技能的简要说明，采用渐进式披露策略：
      * - 只显示技能名称、描述和位置
      * - 完整内容需要使用 read_file 工具读取
+     * - 引导 AI 自主学习：安装社区技能、创建新技能、迭代优化已有技能
      * 
-     * 这样可以减少系统提示词的长度，同时让 LLM 知道有哪些技能可用。
-     * 
-     * @return 技能摘要字符串，如果没有技能则返回空字符串
+     * @return 技能摘要字符串（即使没有技能也返回自主学习引导）
      */
     private String buildSkillsSection() {
         String skillsSummary = skillsLoader.buildSkillsSummary();
-        if (StringUtils.isBlank(skillsSummary)) {
-            return "";
-        }
         
         StringBuilder sb = new StringBuilder();
         sb.append("# Skills\n\n");
-        sb.append("The following skills extend your capabilities. ");
-        sb.append("To use a skill, read its SKILL.md file using the read_file tool.\n\n");
-        sb.append(skillsSummary);
+        
+        // 已安装技能摘要
+        if (StringUtils.isNotBlank(skillsSummary)) {
+            sb.append("## Installed Skills\n\n");
+            sb.append("The following skills extend your capabilities. ");
+            sb.append("To use a skill, read its SKILL.md file using the read_file tool.\n\n");
+            sb.append(skillsSummary);
+            sb.append("\n\n");
+        }
+        
+        // AI 自主学习技能的引导
+        sb.append("## Skill Self-Learning\n\n");
+        sb.append("You have the ability to **autonomously learn and manage skills** using the `skills` tool. ");
+        sb.append("This means you are not limited to pre-installed skills — you can grow your capabilities over time.\n\n");
+        
+        sb.append("### When to learn new skills\n\n");
+        sb.append("- When you encounter a task that no existing skill covers, consider **creating a new skill** to handle it.\n");
+        sb.append("- When a user mentions a community skill or a GitHub repository with useful skills, **install it** directly.\n");
+        sb.append("- When you find yourself repeatedly performing similar multi-step operations, **extract the pattern into a reusable skill**.\n");
+        sb.append("- When an existing skill could be improved based on new experience, **edit it** to make it better.\n\n");
+        
+        sb.append("### How to manage skills\n\n");
+        sb.append("Use the `skills` tool with these actions:\n");
+        sb.append("- `skills(action='list')` — See all installed skills\n");
+        sb.append("- `skills(action='show', name='...')` — Read a skill's full content\n");
+        sb.append("- `skills(action='install', repo='owner/repo')` — Install a skill from GitHub\n");
+        sb.append("- `skills(action='create', name='...', content='...', skill_description='...')` — Create a new skill from your experience\n");
+        sb.append("- `skills(action='edit', name='...', content='...')` — Improve an existing skill\n");
+        sb.append("- `skills(action='remove', name='...')` — Remove a skill you no longer need\n\n");
+        
+        sb.append("### Creating learnable skills\n\n");
+        sb.append("When creating a skill, write it as a **Markdown instruction manual** with YAML frontmatter. A good skill should include:\n");
+        sb.append("1. Clear description of what the skill does\n");
+        sb.append("2. Step-by-step instructions for execution\n");
+        sb.append("3. (Optional) Where to find and install dependencies or related community skills\n");
+        sb.append("4. Examples of when and how to use the skill\n\n");
+        
+        sb.append("Skills you create are saved to `").append(Paths.get(workspace).toAbsolutePath())
+                .append("/skills/` and will be automatically available in future conversations.\n");
         
         return sb.toString();
     }
