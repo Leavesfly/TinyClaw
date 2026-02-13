@@ -4,6 +4,9 @@ import io.leavesfly.tinyclaw.bus.OutboundMessage;
 
 /**
  * 消息通道接口（Telegram、Discord等）
+ *
+ * <p>学习提示：如果你想接入一个新的 IM 或设备通道，可以先阅读 Channel 接口定义，
+ * 再参考几个现有实现（如 TelegramChannel、FeishuChannel），最后在 ChannelManager 中完成注册。</p>
  */
 public interface Channel {
     

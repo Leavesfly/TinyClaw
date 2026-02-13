@@ -5,6 +5,9 @@ import java.util.Map;
 
 /**
  * LLM Provider interface
+ *
+ * <p>学习提示：如果你要接入一种完全不兼容 OpenAI 协议的新提供商，可以实现这个接口，
+ * 再在 HTTPProvider.createProvider 或调用方根据模型前缀/配置选择具体实现。</p>
  */
 public interface LLMProvider {
     

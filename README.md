@@ -22,6 +22,20 @@
 
 ---
 
+### 📚 学习路径
+
+TinyClaw 按难度分为三个学习层级，适合不同阶段的开发者：
+
+| 层级 | 适合人群 | 学习目标 |
+|------|----------|----------|
+| **Level 1** | Java 初学者 | 跑通项目、理解主入口和配置 |
+| **Level 2** | 后端工程师 | 扩展工具/通道、理解核心模块 |
+| **Level 3** | 架构师 / AI 工程 | 改造 Agent 策略、设计生产级方案 |
+
+👉 详细的实践任务与思考题请参阅 [docs/architecture.md - 第十章：动手实践与思考题](docs/architecture.md#十动手实践与思考题)
+
+---
+
 ### 📦 项目架构
 
 ```
@@ -140,6 +154,18 @@ java -jar target/tinyclaw-0.1.0.jar agent -m "你好，介绍一下你自己"
 # 交互模式
 java -jar target/tinyclaw-0.1.0.jar agent
 ```
+
+### 🎬 5 分钟 Demo：如何演示 TinyClaw
+
+- **Demo 1：本地 CLI 助手**
+  - 前置：完成上文“快速开始”的构建、onboard 和 API Key 配置。
+  - 在终端运行 `java -jar target/tinyclaw-0.1.0.jar agent`，随便问一个问题，一边看终端输出，一边可以对照 `TinyClaw.java` → `AgentCommand` → `AgentLoop.processDirect` 的调用链来讲解。
+- **Demo 2：网关 + 单通道机器人**
+  - 在配置中启用一个通道（例如 Telegram），填好 token 和 allowFrom。
+  - 执行 `java -jar target/tinyclaw-0.1.0.jar gateway`，从 IM 客户端发消息，观察 MessageBus 进出站日志，即可演示“消息通道 → 消息总线 → Agent → 通道”的完整闭环。
+- **Demo 3：定时任务播报**
+  - 使用 `tinyclaw cron add --name "demo" --message "这是一条演示任务" --every 30` 创建一个每 30 秒执行的任务。
+  - 保持 gateway 运行，等待定时任务触发并在通道中看到播报消息，可以用来说明 `CronService` 与 Agent 的集成路径。
 
 ---
 

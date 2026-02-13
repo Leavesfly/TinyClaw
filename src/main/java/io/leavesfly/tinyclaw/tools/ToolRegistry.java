@@ -28,6 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 2. LLM请求工具调用时执行相应工具
  * 3. 系统运行时动态扩展工具功能
  * 4. 生成系统提示词中的工具说明部分
+ * 
+ * 学习提示：如果你想看“LLM 工具调用”这一条链路，可以从 AgentLoop.runLLMIteration 调用
+ * ToolRegistry.getDefinitions()/execute 开始顺着读；要排查某个工具调用问题，也可以先在这里看日志再跳到具体 Tool 实现。
  */
 public class ToolRegistry {
     

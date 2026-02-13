@@ -18,6 +18,9 @@ import java.util.Scanner;
 
 /**
  * Agent 命令 - 直接与 Agent 交互
+ *
+ * <p>学习提示：这是从 CLI 到 AgentLoop 的桥梁类，配合 README 中的“5 分钟 Demo”里 Demo 1 使用，
+ * 可以很清楚地看到从命令行参数解析，到创建 MessageBus/HTTPProvider/AgentLoop，再到调用 processDirect 的完整链路。</p>
  */
 public class AgentCommand extends CliCommand {
     

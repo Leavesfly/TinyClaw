@@ -45,8 +45,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>保存对话历史并触发摘要（如需要）</li>
  * </ol>
  * 
- * @author TinyClaw Team
- * @version 0.1.0
+ * <p><b>学习提示：</b>如果你想深入理解“LLM + 工具调用”的控制流，可以从 runLLMIteration 方法开始向下阅读，
+ * 再结合 docs/architecture.md 第 4 章和 README 的 Demo 1/2，在终端实际跑几轮对话，对照日志来理解每一次迭代发生了什么。</p>
  */
 public class AgentLoop {
     

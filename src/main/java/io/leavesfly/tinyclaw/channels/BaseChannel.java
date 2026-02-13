@@ -9,6 +9,10 @@ import java.util.Map;
 
 /**
  * 带有通用功能的基础通道实现
+ *
+ * <p>学习提示：实际的 Telegram/Discord/飞书 等通道都会继承 BaseChannel，
+ * 这里封装了日志、白名单校验和将外部消息转换为 InboundMessage 的公共逻辑，
+ * 想理解“外部消息是怎样进入 MessageBus 的”，可以从各个具体通道的 handleMessage 调用链看起。</p>
  */
 public abstract class BaseChannel implements Channel {
     

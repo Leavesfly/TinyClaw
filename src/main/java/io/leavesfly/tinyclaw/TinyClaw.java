@@ -34,8 +34,8 @@ import java.util.function.Supplier;
  * java -jar tinyclaw.jar agent list
  * </pre>
  * 
- * @author TinyClaw Team
- * @version 0.1.0
+ * <p><b>学习提示：</b>如果你想从“命令行入口”开始导读整个项目，可以先看 TinyClaw.run 如何根据命令分发到各个 CliCommand，
+ * 再分别跳转到 AgentCommand/GatewayCommand/CronCommand 等类，对照 README 的命令示例和 Demo 章节一起阅读。</p>
  */
 public class TinyClaw {
     
@@ -57,6 +57,7 @@ public class TinyClaw {
         COMMAND_REGISTRY.put("status", StatusCommand::new);
         COMMAND_REGISTRY.put("cron", CronCommand::new);
         COMMAND_REGISTRY.put("skills", SkillsCommand::new);
+        COMMAND_REGISTRY.put("demo", DemoCommand::new);
     }
     
     /**

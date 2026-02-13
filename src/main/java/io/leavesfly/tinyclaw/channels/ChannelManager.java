@@ -34,6 +34,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * - 异步调度：出站消息分发在独立线程中进行
  * - 错误隔离：单个通道的故障不会影响其他通道
  * - 灵活扩展：支持注册自定义通道实现
+ * 
+ * 学习提示：如果你在演示“网关模式”的数据流（见 docs/architecture.md 第 4.2 节），
+ * 可以一边看 ChannelManager.startAll/dispatchOutbound，一边配合 README 中的 Demo 2 操作，这里就是出站消息从 MessageBus 回到各个 IM 通道的关键枢纽。
  */
 public class ChannelManager {
     

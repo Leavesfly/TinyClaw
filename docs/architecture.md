@@ -583,6 +583,9 @@ AgentLoop.processDirect(content, sessionKey)
   └─ 返回最终响应文本
 ```
 
+> **演示建议**：在本机完成 README 中的“快速开始”后，运行 `java -jar target/tinyclaw-0.1.0.jar agent`，输入一个问题，同时在另一终端观察日志，按上图顺序讲解从 `TinyClaw.main` 到 `AgentLoop.processDirect` 的处理流程。
+
+
 ### 4.2 网关多通道模式
 
 ```
@@ -613,6 +616,9 @@ ChannelManager.dispatchThread
   └─ Channel.send(OutboundMessage) → 发送到对应平台
 ```
 
+> **演示建议**：在配置中启用一个 IM 通道（如 Telegram）并填好凭证后，运行 `java -jar target/tinyclaw-0.1.0.jar gateway`，从客户端发送消息，对照日志说明 `Channel.onMessage` → `MessageBus` → `AgentLoop.run` → `ChannelManager.dispatchThread` 的流转过程。
+
+
 ### 4.3 定时任务触发流程
 
 ```
@@ -629,6 +635,9 @@ JobHandler.handle(job)
   └─ 如果 payload.deliver = true
        └─ MessageTool → 发送结果到指定通道
 ```
+
+> **演示建议**：在终端通过 `tinyclaw cron add --name "demo" --message "这是一条演示任务" --every 30` 创建一个短周期任务，保持 gateway 运行，等任务触发时讲解从 `CronService.runLoop` 到 `AgentLoop.processDirect` 再到 `MessageTool` 的调用路径。
+
 
 ---
 
@@ -834,3 +843,111 @@ src/test/java/                       # 测试代码（JUnit 5 + Mockito）
 1. 在 `workspace/skills/{skill-name}/` 下创建 `SKILL.md`
 2. 使用 YAML frontmatter 定义元数据
 3. Agent 会在下次构建上下文时自动发现并加载
+
+---
+
+## 十、动手实践与思考题
+
+> 以下任务按难度分为三个层级，适合不同阶段的开发者循序渐进学习。
+> 完成每个任务后，建议对照源码和架构图回顾知识点。
+
+---
+
+### Level 1 — Java 基础（入门）
+
+适合刚学完 Java 基础语法、想用真实项目练手的开发者。
+
+#### 实践任务
+
+| # | 任务 | 学习目标 | 提示 |
+|---|------|----------|------|
+| L1-1 | **运行 CLI 助手** | 熟悉 Maven 构建和 JAR 运行 | 参照 README 的"快速开始"完成 `mvn package`，执行 `agent` 命令 |
+| L1-2 | **修改日志输出格式** | 理解 SLF4J + Logback 日志配置 | 编辑 `src/main/resources/logback.xml`，修改 `pattern` 字段 |
+| L1-3 | **在 TinyClaw.java 中添加一条启动提示** | 理解主入口结构 | 在 `run()` 方法开头添加一行 `System.out.println(...)` |
+| L1-4 | **阅读 CliCommand 接口** | 理解 Java 接口与实现类 | 阅读 `CliCommand.java`，浏览它的所有实现类 |
+
+#### 思考题
+
+1. `COMMAND_REGISTRY` 为什么使用 `LinkedHashMap` 而不是普通 `HashMap`？
+2. 为什么 `CliCommand.execute()` 的返回类型是 `int` 而非 `void`？这个值有什么用途？
+3. 如果想在日志中显示线程名，应该修改 `logback.xml` 的哪个部分？
+
+---
+
+### Level 2 — 后端工程师（进阶）
+
+适合有一定 Java 后端开发经验，想深入理解系统设计的开发者。
+
+#### 实践任务
+
+| # | 任务 | 学习目标 | 提示 |
+|---|------|----------|------|
+| L2-1 | **实现 EchoTool** | 理解 Tool 接口和 ToolRegistry | 参考 `ReadFileTool.java`，实现一个原样返回输入内容的工具 |
+| L2-2 | **添加本地文件搜索工具** | 综合运用 IO、正则、工具注册 | 工具接收 `directory` 和 `pattern` 参数，返回匹配文件列表 |
+| L2-3 | **启用第二个 IM 通道** | 理解 ChannelManager 的多通道管理 | 在 `config.json` 启用 Discord/飞书，观察日志验证启动 |
+| L2-4 | **为 AgentLoop 添加执行耗时日志** | 理解 Agent 主循环 | 在 `processDirect()` 入口和出口记录时间差 |
+| L2-5 | **扩展 StatusCommand 显示更多信息** | 理解命令模式与状态查询 | 在输出中添加当前已注册工具数量 |
+
+#### 思考题
+
+1. `MessageBus` 使用 `LinkedBlockingQueue` 而非 `ConcurrentLinkedQueue`，二者在阻塞/非阻塞语义上有何区别？哪些场景更适合使用阻塞队列？
+2. `ToolRegistry.execute()` 方法为什么要用 `synchronized` 或 `ConcurrentHashMap`？如果不做并发保护会出现什么问题？
+3. 假如你需要给每条入站消息打一个唯一 ID，应该修改哪个类、在什么位置生成？
+4. 为什么 `HTTPProvider` 将连接超时和读取超时分开设置？各自的典型场景是什么？
+
+---
+
+### Level 3 — 架构师 / AI 工程（高级）
+
+适合想深度理解 AI Agent 架构、掌握生产级设计模式的高级开发者。
+
+#### 实践任务
+
+| # | 任务 | 学习目标 | 提示 |
+|---|------|----------|------|
+| L3-1 | **改造 HTTPProvider，实现多模型路由策略** | 理解 LLM 抽象与工厂模式 | 根据任务类型（如"代码生成"、"文本摘要"）动态选择不同模型 |
+| L3-2 | **重构 AgentLoop 的工具调用策略** | 理解 Agent 推理循环 | 实现"并行工具调用"：一次 LLM 返回多个 tool_calls 时并发执行 |
+| L3-3 | **设计流式响应输出** | 理解 SSE / Streaming | 在 CLI 模式下实现 LLM 响应的逐 token 输出，而非一次性返回 |
+| L3-4 | **为 MessageBus 增加优先级队列** | 理解消息调度 | 让定时任务触发的消息优先于普通用户消息处理 |
+| L3-5 | **实现简单的 RAG 工具** | 理解检索增强生成 | 基于 `read_file` 和简单向量相似度，让 Agent 能从文档库检索上下文 |
+| L3-6 | **设计并实现 Agent 自我反思机制** | 理解 ReAct / Reflection | 当工具连续失败 N 次时，让 Agent 生成反思并调整策略 |
+
+#### 思考题
+
+1. 当前 `AgentLoop` 采用同步调用 LLM，如果要支持"思考中..."动态反馈，需要改造哪些模块？请画出改造后的时序图。
+2. `ContextBuilder` 的上下文窗口管理（摘要、截断）对于长对话非常关键。如果不做摘要，Token 超限时 LLM 会如何表现？除了摘要还有哪些常见的上下文管理策略？
+3. 假设要支持多租户（不同用户隔离配置和会话），你会如何改造 `SessionManager` 和 `ConfigLoader`？
+4. 在生产环境中部署 TinyClaw，你会在哪些地方添加指标监控（Metrics）？列举至少 5 个关键指标。
+5. 如果要将 TinyClaw 从单机扩展到分布式集群（多实例共享会话和任务），需要重构哪些模块？消息总线应该换成什么？
+
+---
+
+### 学习路径建议
+
+```
+Level 1                    Level 2                    Level 3
+  │                          │                          │
+  │ 完成 L1-1~L1-4           │ 完成 L2-1~L2-5           │ 完成 L3-1~L3-6
+  │ 回答思考题 1~3           │ 回答思考题 1~4           │ 回答思考题 1~5
+  │                          │                          │
+  ▼                          ▼                          ▼
+掌握项目结构              理解核心模块              具备架构改造能力
+能跑通 CLI/Gateway        能扩展工具/通道           能设计生产级 Agent
+```
+
+> **提示**：每完成一个实践任务，建议在 `docs/` 下用简短笔记记录你的思路和遇到的问题，这也是很好的学习习惯。
+
+---
+
+### 测试入口
+
+项目的测试代码也是很好的学习材料，建议按以下顺序阅读和运行：
+
+| 文件 | 学习重点 | 运行命令 |
+|------|----------|----------|
+| `TinyClawTest.java` | JUnit 5 基本用法、Mockito 三件套、命令行测试思路 | `mvn test -Dtest=TinyClawTest` |
+
+**学习建议**：
+1. 先阅读测试代码中的 Javadoc 注释，了解每个测试的目的和学习点
+2. 运行测试观察输出，然后尝试修改断言条件让测试失败，理解断言的作用
+3. 尝试为 Level 2 的"实现 EchoTool"任务编写对应的单元测试
