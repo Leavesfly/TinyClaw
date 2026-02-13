@@ -32,6 +32,7 @@ public class Config {
     private ProvidersConfig providers;
     private GatewayConfig gateway;
     private ToolsConfig tools;
+    private SocialNetworkConfig socialNetwork;
     
     public Config() {
         // 设置 defaults
@@ -40,6 +41,7 @@ public class Config {
         this.providers = new ProvidersConfig();
         this.gateway = new GatewayConfig();
         this.tools = new ToolsConfig();
+        this.socialNetwork = new SocialNetworkConfig();
     }
     
     // Getters and Setters
@@ -81,6 +83,14 @@ public class Config {
     
     public void setTools(ToolsConfig tools) {
         this.tools = tools;
+    }
+    
+    public SocialNetworkConfig getSocialNetwork() {
+        return socialNetwork;
+    }
+    
+    public void setSocialNetwork(SocialNetworkConfig socialNetwork) {
+        this.socialNetwork = socialNetwork;
     }
     
     @JsonIgnore

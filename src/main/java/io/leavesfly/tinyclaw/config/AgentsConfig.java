@@ -29,6 +29,8 @@ public class AgentsConfig {
         private double temperature;
         private int maxToolIterations;
         private boolean heartbeatEnabled;
+        private boolean restrictToWorkspace;
+        private java.util.List<String> commandBlacklist;
         
         public AgentDefaults() {
             this.workspace = "~/.tinyclaw/workspace";
@@ -37,6 +39,8 @@ public class AgentsConfig {
             this.temperature = 0.7;
             this.maxToolIterations = 20;
             this.heartbeatEnabled = false;
+            this.restrictToWorkspace = true; // Default: enable sandbox
+            this.commandBlacklist = new java.util.ArrayList<>(); // Empty means use default
         }
         
         // Getters and Setters
@@ -86,6 +90,22 @@ public class AgentsConfig {
         
         public void setHeartbeatEnabled(boolean heartbeatEnabled) {
             this.heartbeatEnabled = heartbeatEnabled;
+        }
+        
+        public boolean isRestrictToWorkspace() {
+            return restrictToWorkspace;
+        }
+        
+        public void setRestrictToWorkspace(boolean restrictToWorkspace) {
+            this.restrictToWorkspace = restrictToWorkspace;
+        }
+        
+        public java.util.List<String> getCommandBlacklist() {
+            return commandBlacklist;
+        }
+        
+        public void setCommandBlacklist(java.util.List<String> commandBlacklist) {
+            this.commandBlacklist = commandBlacklist;
         }
     }
 }

@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.security.SecurityGuard;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,6 +13,16 @@ import java.util.Map;
  * Tool for listing directory contents
  */
 public class ListDirTool implements Tool {
+    
+    private final SecurityGuard securityGuard;
+    
+    public ListDirTool() {
+        this.securityGuard = null;
+    }
+    
+    public ListDirTool(SecurityGuard securityGuard) {
+        this.securityGuard = securityGuard;
+    }
     
     @Override
     public String name() {
@@ -44,6 +56,14 @@ public class ListDirTool implements Tool {
         String path = (String) args.get("path");
         if (path == null || path.isEmpty()) {
             path = ".";
+        }
+        
+        // Security check
+        if (securityGuard != null) {
+            String error = securityGuard.checkFilePath(path);
+            if (error != null) {
+                throw new SecurityException(error);
+            }
         }
         
         try {

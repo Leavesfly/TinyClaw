@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.security.SecurityGuard;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -19,15 +20,22 @@ public class ExecTool implements Tool {
     private static final int MAX_OUTPUT_LENGTH = 10000;
     private static final long DEFAULT_TIMEOUT_SECONDS = 60;
     
+    private final SecurityGuard securityGuard;
     private final String workingDir;
     private final long timeoutSeconds;
+    // Deprecated: use SecurityGuard.checkCommand() instead
     private final Pattern[] denyPatterns;
     
     public ExecTool(String workingDir) {
+        this(workingDir, null);
+    }
+    
+    public ExecTool(String workingDir, SecurityGuard securityGuard) {
+        this.securityGuard = securityGuard;
         this.workingDir = workingDir;
         this.timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
         
-        // Dangerous command patterns
+        // Dangerous command patterns (legacy, use SecurityGuard instead)
         this.denyPatterns = new Pattern[]{
                 Pattern.compile("\\brm\\s+-[rf]{1,2}\\b", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("\\bdel\\s+/[fq]\\b", Pattern.CASE_INSENSITIVE),
@@ -86,6 +94,14 @@ public class ExecTool implements Tool {
         }
         if (cwd == null || cwd.isEmpty()) {
             cwd = System.getProperty("user.dir");
+        }
+        
+        // Security check for working directory
+        if (securityGuard != null) {
+            String error = securityGuard.checkWorkingDir(cwd);
+            if (error != null) {
+                return "Error: " + error;
+            }
         }
         
         // 检查 command safety
@@ -159,6 +175,12 @@ public class ExecTool implements Tool {
     }
     
     private String guardCommand(String command) {
+        // Use SecurityGuard if available
+        if (securityGuard != null) {
+            return securityGuard.checkCommand(command);
+        }
+        
+        // Fallback to legacy pattern matching
         String lower = command.toLowerCase();
         for (Pattern pattern : denyPatterns) {
             if (pattern.matcher(lower).find()) {

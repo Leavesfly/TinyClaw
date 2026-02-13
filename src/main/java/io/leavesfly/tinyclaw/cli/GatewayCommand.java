@@ -235,17 +235,32 @@ public class GatewayCommand extends CliCommand {
     private void registerTools(AgentLoop agentLoop, Config config, MessageBus bus, LLMProvider provider) {
         String workspace = config.getWorkspacePath();
         
+        // Initialize SecurityGuard
+        io.leavesfly.tinyclaw.security.SecurityGuard securityGuard = null;
+        if (config.getAgents().getDefaults().isRestrictToWorkspace()) {
+            java.util.List<String> customBlacklist = config.getAgents().getDefaults().getCommandBlacklist();
+            if (customBlacklist != null && !customBlacklist.isEmpty()) {
+                securityGuard = new io.leavesfly.tinyclaw.security.SecurityGuard(
+                    workspace, true, customBlacklist
+                );
+            } else {
+                securityGuard = new io.leavesfly.tinyclaw.security.SecurityGuard(
+                    workspace, true
+                );
+            }
+        }
+        
         // 文件工具
-        agentLoop.registerTool(new ReadFileTool());
-        agentLoop.registerTool(new WriteFileTool());
-        agentLoop.registerTool(new AppendFileTool());
-        agentLoop.registerTool(new ListDirTool());
+        agentLoop.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
+        agentLoop.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
+        agentLoop.registerTool(securityGuard != null ? new AppendFileTool(securityGuard) : new AppendFileTool());
+        agentLoop.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
         
         // 文件编辑工具
-        agentLoop.registerTool(new EditFileTool(workspace));
+        agentLoop.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
         
         // 执行工具
-        agentLoop.registerTool(new ExecTool(workspace));
+        agentLoop.registerTool(new ExecTool(workspace, securityGuard));
         
         // 网络工具
         String braveApiKey = config.getTools() != null ? config.getTools().getBraveApi() : null;
@@ -279,6 +294,15 @@ public class GatewayCommand extends CliCommand {
         
         // 技能管理工具（赋予 AI 自主学习和管理技能的能力）
         agentLoop.registerTool(new SkillsTool(workspace));
+        
+        // 社交网络工具（Agent Social Network）
+        if (config.getSocialNetwork() != null && config.getSocialNetwork().isEnabled()) {
+            agentLoop.registerTool(new SocialNetworkTool(
+                config.getSocialNetwork().getEndpoint(),
+                config.getSocialNetwork().getAgentId(),
+                config.getSocialNetwork().getApiKey()
+            ));
+        }
     }
     
     private CronTool findCronTool(AgentLoop agentLoop) {

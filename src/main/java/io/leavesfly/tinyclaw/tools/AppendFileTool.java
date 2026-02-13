@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.security.SecurityGuard;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,22 +40,34 @@ import java.util.Map;
  */
 public class AppendFileTool implements Tool {
     
-    // 可选的目录限制，用于安全控制
+    private final SecurityGuard securityGuard;
+    // Deprecated: use SecurityGuard instead
     private final String allowedDir;
     
     /**
      * 创建无目录限制的追加工具
      */
     public AppendFileTool() {
+        this.securityGuard = null;
         this.allowedDir = null;
     }
     
     /**
-     * 创建带目录限制的追加工具
+     * 创建带SecurityGuard的追加工具
+     */
+    public AppendFileTool(SecurityGuard securityGuard) {
+        this.securityGuard = securityGuard;
+        this.allowedDir = null;
+    }
+    
+    /**
+     * 创建带目录限制的追加工具 (Deprecated: use SecurityGuard instead)
      * 
      * @param allowedDir 允许追加的目录路径
      */
+    @Deprecated
     public AppendFileTool(String allowedDir) {
+        this.securityGuard = null;
         this.allowedDir = allowedDir;
     }
     
@@ -106,8 +120,15 @@ public class AppendFileTool implements Tool {
         // 解析并规范化路径
         Path resolvedPath = Paths.get(path).toAbsolutePath().normalize();
         
-        // 检查目录限制
-        if (allowedDir != null && !allowedDir.isEmpty()) {
+        // Security check with SecurityGuard (preferred)
+        if (securityGuard != null) {
+            String error = securityGuard.checkFilePath(path);
+            if (error != null) {
+                throw new SecurityException(error);
+            }
+        }
+        // Legacy check with allowedDir
+        else if (allowedDir != null && !allowedDir.isEmpty()) {
             Path allowedPath = Paths.get(allowedDir).toAbsolutePath().normalize();
             if (!resolvedPath.startsWith(allowedPath)) {
                 throw new SecurityException("Path " + path + " is outside allowed directory " + allowedDir);

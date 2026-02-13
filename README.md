@@ -19,6 +19,8 @@
 - **🧠 记忆与上下文** — 内置长期记忆存储和会话管理，Agent 能记住重要信息
 - **💓 心跳服务** — 定期自主思考，让 Agent 保持"活跃"
 - **🎤 语音转写** — 集成 Groq Whisper，支持 Telegram/Discord 语音消息自动转文字
+- **🔒 安全沙箱** — 工作空间限制 + 命令黑名单，生产级安全防护
+- **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
 
 ---
 
@@ -283,6 +285,7 @@ Agent 在对话中可以自主调用以下工具：
 | `message` | 向指定通道发送消息 |
 | `cron` | 创建/管理定时任务 |
 | `spawn` | 生成子代理执行独立任务 |
+| `social_network` | 与其他 Agent 通信（ClawdChat.ai） |
 
 ---
 
@@ -376,7 +379,9 @@ java -jar target/tinyclaw-0.1.0.jar gateway
       "maxTokens": 8192,
       "temperature": 0.7,
       "maxToolIterations": 20,
-      "heartbeatEnabled": false
+      "heartbeatEnabled": false,
+      "restrictToWorkspace": true,
+      "commandBlacklist": []
     }
   },
   "providers": {
@@ -447,6 +452,12 @@ java -jar target/tinyclaw-0.1.0.jar gateway
         "maxResults": 5
       }
     }
+  },
+  "socialNetwork": {
+    "enabled": false,
+    "endpoint": "https://clawdchat.ai/api",
+    "agentId": "",
+    "apiKey": ""
   }
 }
 ```

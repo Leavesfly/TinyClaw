@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.security.SecurityGuard;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +33,16 @@ import java.util.Map;
  * - 编辑现有文件内容
  */
 public class WriteFileTool implements Tool {
+    
+    private final SecurityGuard securityGuard;
+    
+    public WriteFileTool() {
+        this.securityGuard = null;
+    }
+    
+    public WriteFileTool(SecurityGuard securityGuard) {
+        this.securityGuard = securityGuard;
+    }
     
     @Override
     public String name() {
@@ -75,6 +87,14 @@ public class WriteFileTool implements Tool {
         }
         if (content == null) {
             throw new IllegalArgumentException("content is required");
+        }
+        
+        // Security check
+        if (securityGuard != null) {
+            String error = securityGuard.checkFilePath(path);
+            if (error != null) {
+                throw new SecurityException(error);
+            }
         }
         
         try {

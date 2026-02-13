@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.security.SecurityGuard;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -28,6 +30,16 @@ import java.util.Map;
  * - 读取数据文件进行处理
  */
 public class ReadFileTool implements Tool {
+    
+    private final SecurityGuard securityGuard;
+    
+    public ReadFileTool() {
+        this.securityGuard = null;
+    }
+    
+    public ReadFileTool(SecurityGuard securityGuard) {
+        this.securityGuard = securityGuard;
+    }
     
     @Override
     public String name() {
@@ -61,6 +73,14 @@ public class ReadFileTool implements Tool {
         String path = (String) args.get("path");
         if (path == null || path.isEmpty()) {
             throw new IllegalArgumentException("path is required");
+        }
+        
+        // Security check
+        if (securityGuard != null) {
+            String error = securityGuard.checkFilePath(path);
+            if (error != null) {
+                throw new SecurityException(error);
+            }
         }
         
         try {
