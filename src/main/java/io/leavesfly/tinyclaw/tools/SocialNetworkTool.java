@@ -9,27 +9,27 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Social Network Tool for Agent-to-Agent Communication
+ * 社交网络工具，用于 Agent 间通信
  * 
- * This tool enables agents to join the Agent Social Network (e.g., ClawdChat.ai)
- * and communicate with other agents across different instances and platforms.
+ * 此工具使 Agent 能够加入 Agent 社交网络（例如 ClawdChat.ai）
+ * 并与不同实例和平台的其他 Agent 进行通信。
  * 
- * Features:
- * - Send messages to other agents by ID or channel
- * - Broadcast messages to agent network
- * - Query agent directory
- * - Share knowledge and collaborate
+ * 功能：
+ * - 通过 ID 或通道向其他 Agent 发送消息
+ * - 向 Agent 网络广播消息
+ * - 查询 Agent 目录
+ * - 分享知识和协作
  * 
- * Usage example:
+ * 使用示例：
  * <pre>
- *   // Send a message to another agent
+ *   // 向另一个 Agent 发送消息
  *   socialNetwork.execute(Map.of(
  *       "action", "send",
  *       "to", "agent-123",
  *       "message", "Hello from TinyClaw!"
  *   ));
  *   
- *   // Broadcast to all agents
+ *   // 广播给所有 Agent
  *   socialNetwork.execute(Map.of(
  *       "action", "broadcast",
  *       "channel", "general",
@@ -37,8 +37,8 @@ import java.util.concurrent.TimeUnit;
  *   ));
  * </pre>
  * 
- * Configuration:
- * In config.json, add:
+ * 配置：
+ * 在 config.json 中添加：
  * <pre>
  * {
  *   "socialNetwork": {
@@ -63,11 +63,11 @@ public class SocialNetworkTool implements Tool {
     private final ObjectMapper objectMapper;
     
     /**
-     * Constructor for Social Network Tool
+     * 社交网络工具构造函数
      * 
-     * @param endpoint API endpoint URL (e.g., https://clawdchat.ai/api)
-     * @param agentId Unique identifier for this agent
-     * @param apiKey API key for authentication
+     * @param endpoint API 端点 URL（例如 https://clawdchat.ai/api）
+     * @param agentId 此 Agent 的唯一标识符
+     * @param apiKey 用于身份验证的 API 密钥
      */
     public SocialNetworkTool(String endpoint, String agentId, String apiKey) {
         this.endpoint = endpoint != null ? endpoint : "https://clawdchat.ai/api";
@@ -95,8 +95,8 @@ public class SocialNetworkTool implements Tool {
     
     @Override
     public String description() {
-        return "Communicate with other agents in the Agent Social Network. " +
-               "Actions: send (to specific agent), broadcast (to channel), query (agent directory), status (network status)";
+        return "与 Agent 社交网络中的其他 Agent 通信。"
+               + "操作：send（向特定 Agent）、broadcast（向通道）、query（Agent 目录）、status（网络状态）";
     }
     
     @Override
@@ -108,28 +108,28 @@ public class SocialNetworkTool implements Tool {
         
         Map<String, Object> actionParam = new HashMap<>();
         actionParam.put("type", "string");
-        actionParam.put("description", "Action to perform: send, broadcast, query, status");
+        actionParam.put("description", "要执行的操作：send、broadcast、query、status");
         actionParam.put("enum", new String[]{"send", "broadcast", "query", "status"});
         properties.put("action", actionParam);
         
         Map<String, Object> toParam = new HashMap<>();
         toParam.put("type", "string");
-        toParam.put("description", "Target agent ID (for 'send' action)");
+        toParam.put("description", "目标 Agent ID（用于 'send' 操作）");
         properties.put("to", toParam);
         
         Map<String, Object> channelParam = new HashMap<>();
         channelParam.put("type", "string");
-        channelParam.put("description", "Channel name (for 'broadcast' action, default: general)");
+        channelParam.put("description", "通道名称（用于 'broadcast' 操作，默认：general）");
         properties.put("channel", channelParam);
         
         Map<String, Object> messageParam = new HashMap<>();
         messageParam.put("type", "string");
-        messageParam.put("description", "Message content");
+        messageParam.put("description", "消息内容");
         properties.put("message", messageParam);
         
         Map<String, Object> queryParam = new HashMap<>();
         queryParam.put("type", "string");
-        queryParam.put("description", "Query string (for 'query' action)");
+        queryParam.put("description", "查询字符串（用于 'query' 操作）");
         properties.put("query", queryParam);
         
         params.put("properties", properties);
@@ -142,12 +142,12 @@ public class SocialNetworkTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String action = (String) args.get("action");
         if (action == null || action.isEmpty()) {
-            throw new IllegalArgumentException("action is required");
+            throw new IllegalArgumentException("操作参数是必需的");
         }
         
-        // Validate agent configuration
+        // 验证 Agent 配置
         if (agentId == null || agentId.isEmpty()) {
-            return "Error: Agent ID not configured. Please set socialNetwork.agentId in config.json";
+            return "错误: Agent ID 未配置。请在 config.json 中设置 socialNetwork.agentId";
         }
         
         logger.info("Social network action", Map.of("action", action, "agentId", agentId));
@@ -162,26 +162,26 @@ public class SocialNetworkTool implements Tool {
             case "status":
                 return getNetworkStatus();
             default:
-                return "Error: Unknown action '" + action + "'. Valid actions: send, broadcast, query, status";
+                return "错误: 未知操作 '" + action + "'。有效操作：send、broadcast、query、status";
         }
     }
     
     /**
-     * Send a message to a specific agent
+     * 向特定 Agent 发送消息
      */
     private String sendMessage(Map<String, Object> args) throws Exception {
         String to = (String) args.get("to");
         String message = (String) args.get("message");
         
         if (to == null || to.isEmpty()) {
-            throw new IllegalArgumentException("'to' (target agent ID) is required for send action");
+            throw new IllegalArgumentException("对于 send 操作，'to'（目标 Agent ID）是必需的");
         }
         if (message == null || message.isEmpty()) {
-            throw new IllegalArgumentException("'message' is required for send action");
+            throw new IllegalArgumentException("对于 send 操作，'message' 是必需的");
         }
         
         if (message.length() > MAX_MESSAGE_LENGTH) {
-            message = message.substring(0, MAX_MESSAGE_LENGTH) + "... (truncated)";
+            message = message.substring(0, MAX_MESSAGE_LENGTH) + "... (已截断)";
         }
         
         Map<String, Object> payload = new HashMap<>();
@@ -194,7 +194,7 @@ public class SocialNetworkTool implements Tool {
     }
     
     /**
-     * Broadcast a message to a channel
+     * 向通道广播消息
      */
     private String broadcast(Map<String, Object> args) throws Exception {
         String channel = (String) args.get("channel");
@@ -204,11 +204,11 @@ public class SocialNetworkTool implements Tool {
             channel = "general";
         }
         if (message == null || message.isEmpty()) {
-            throw new IllegalArgumentException("'message' is required for broadcast action");
+            throw new IllegalArgumentException("对于 broadcast 操作，'message' 是必需的");
         }
         
         if (message.length() > MAX_MESSAGE_LENGTH) {
-            message = message.substring(0, MAX_MESSAGE_LENGTH) + "... (truncated)";
+            message = message.substring(0, MAX_MESSAGE_LENGTH) + "... (已截断)";
         }
         
         Map<String, Object> payload = new HashMap<>();
@@ -221,7 +221,7 @@ public class SocialNetworkTool implements Tool {
     }
     
     /**
-     * Query the agent directory
+     * 查询 Agent 目录
      */
     private String queryAgents(Map<String, Object> args) throws Exception {
         String query = (String) args.get("query");
@@ -236,7 +236,7 @@ public class SocialNetworkTool implements Tool {
     }
     
     /**
-     * Get network status
+     * 获取网络状态
      */
     private String getNetworkStatus() throws Exception {
         Map<String, Object> payload = new HashMap<>();
@@ -246,7 +246,7 @@ public class SocialNetworkTool implements Tool {
     }
     
     /**
-     * Send HTTP request to social network API
+     * 向社交网络 API 发送 HTTP 请求
      */
     private String sendRequest(String path, Map<String, Object> payload) throws Exception {
         String url = endpoint + path;
@@ -262,7 +262,7 @@ public class SocialNetworkTool implements Tool {
             .url(url)
             .post(body);
         
-        // Add API key if configured
+        // 如果配置了 API 密钥，添加到请求头
         if (apiKey != null && !apiKey.isEmpty()) {
             requestBuilder.header("Authorization", "Bearer " + apiKey);
         }
@@ -287,11 +287,11 @@ public class SocialNetworkTool implements Tool {
             
             logger.info("Social network request succeeded", Map.of("url", url, "status", response.code()));
             
-            return responseBody.isEmpty() ? "Success" : responseBody;
+            return responseBody.isEmpty() ? "成功" : responseBody;
             
         } catch (Exception e) {
             logger.error("Social network request exception", Map.of("url", url, "error", e.getMessage()));
-            throw new Exception("Failed to connect to social network: " + e.getMessage());
+            throw new Exception("无法连接到社交网络: " + e.getMessage());
         }
     }
 }

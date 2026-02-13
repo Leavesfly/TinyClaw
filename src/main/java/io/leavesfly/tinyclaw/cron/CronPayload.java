@@ -3,7 +3,8 @@ package io.leavesfly.tinyclaw.cron;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
- * Payload for a cron job
+ * 定时任务负载类
+ * 定义任务执行时的具体内容和目标信息
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CronPayload {
@@ -24,7 +25,7 @@ public class CronPayload {
         this.to = to;
     }
     
-    // Getters and setters
+    // Getter 和 Setter 方法
     public String getKind() { return kind; }
     public void setKind(String kind) { this.kind = kind; }
     

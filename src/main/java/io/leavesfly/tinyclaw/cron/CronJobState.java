@@ -3,7 +3,8 @@ package io.leavesfly.tinyclaw.cron;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
- * State tracking for a cron job
+ * 定时任务状态追踪类
+ * 记录任务的执行状态、下次运行时间、上次运行时间及错误信息
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CronJobState {
@@ -15,7 +16,7 @@ public class CronJobState {
     
     public CronJobState() {}
     
-    // Getters and setters
+    // Getter 和 Setter 方法
     public Long getNextRunAtMs() { return nextRunAtMs; }
     public void setNextRunAtMs(Long nextRunAtMs) { this.nextRunAtMs = nextRunAtMs; }
     

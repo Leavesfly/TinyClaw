@@ -12,7 +12,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
- * Tool for executing shell commands
+ * Shell 命令执行工具
+ * 允许 Agent 执行系统命令，请谨慎使用
  */
 public class ExecTool implements Tool {
     
@@ -23,7 +24,7 @@ public class ExecTool implements Tool {
     private final SecurityGuard securityGuard;
     private final String workingDir;
     private final long timeoutSeconds;
-    // Deprecated: use SecurityGuard.checkCommand() instead
+    // 已废弃：使用 SecurityGuard.checkCommand() 代替
     private final Pattern[] denyPatterns;
     
     public ExecTool(String workingDir) {
@@ -35,7 +36,7 @@ public class ExecTool implements Tool {
         this.workingDir = workingDir;
         this.timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
         
-        // Dangerous command patterns (legacy, use SecurityGuard instead)
+        // 危险命令模式（旧版，使用 SecurityGuard 代替）
         this.denyPatterns = new Pattern[]{
                 Pattern.compile("\\brm\\s+-[rf]{1,2}\\b", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("\\bdel\\s+/[fq]\\b", Pattern.CASE_INSENSITIVE),
@@ -55,7 +56,7 @@ public class ExecTool implements Tool {
     
     @Override
     public String description() {
-        return "执行 a shell command and return its output. Use with caution.";
+        return "执行 Shell 命令并返回输出。请谨慎使用。";
     }
     
     @Override
@@ -67,12 +68,12 @@ public class ExecTool implements Tool {
         
         Map<String, Object> commandParam = new HashMap<>();
         commandParam.put("type", "string");
-        commandParam.put("description", "The shell command to execute");
+        commandParam.put("description", "要执行的 Shell 命令");
         properties.put("command", commandParam);
         
         Map<String, Object> workingDirParam = new HashMap<>();
         workingDirParam.put("type", "string");
-        workingDirParam.put("description", "Optional working directory for the command");
+        workingDirParam.put("description", "命令的可选工作目录");
         properties.put("working_dir", workingDirParam);
         
         params.put("properties", properties);
@@ -85,7 +86,7 @@ public class ExecTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String command = (String) args.get("command");
         if (command == null || command.isEmpty()) {
-            throw new IllegalArgumentException("command is required");
+            throw new IllegalArgumentException("命令参数是必需的");
         }
         
         String cwd = (String) args.get("working_dir");
@@ -96,23 +97,23 @@ public class ExecTool implements Tool {
             cwd = System.getProperty("user.dir");
         }
         
-        // Security check for working directory
+        // 对工作目录进行安全检查
         if (securityGuard != null) {
             String error = securityGuard.checkWorkingDir(cwd);
             if (error != null) {
-                return "Error: " + error;
+                return "错误: " + error;
             }
         }
         
-        // 检查 command safety
+        // 检查命令安全性
         String guardError = guardCommand(command);
         if (guardError != null) {
-            return "Error: " + guardError;
+            return "错误: " + guardError;
         }
         
         logger.info("Executing command", Map.of("command", command, "cwd", cwd));
         
-        // Determine shell based on OS
+        // 根据操作系统决定 Shell
         String[] shellCmd;
         String os = System.getProperty("os.name").toLowerCase();
         if (os.contains("win")) {
@@ -127,7 +128,7 @@ public class ExecTool implements Tool {
         
         Process process = pb.start();
         
-        // Read stdout
+        // 读取标准输出
         StringBuilder output = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             String line;
@@ -136,7 +137,7 @@ public class ExecTool implements Tool {
             }
         }
         
-        // Read stderr
+        // 读取标准错误
         StringBuilder error = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
             String line;
@@ -154,37 +155,37 @@ public class ExecTool implements Tool {
         
         if (!finished) {
             process.destroyForcibly();
-            return "Error: Command timed out after " + timeoutSeconds + " seconds";
+            return "错误: 命令超时，超过 " + timeoutSeconds + " 秒";
         }
         
         int exitCode = process.exitValue();
         if (exitCode != 0) {
-            result += "\nExit code: " + exitCode;
+            result += "\n退出代码: " + exitCode;
         }
         
         if (result.isEmpty()) {
-            result = "(no output)";
+            result = "(无输出)";
         }
         
-        // Truncate if too long
+        // 如果输出过长则截断
         if (result.length() > MAX_OUTPUT_LENGTH) {
-            result = result.substring(0, MAX_OUTPUT_LENGTH) + "\n... (truncated, " + (result.length() - MAX_OUTPUT_LENGTH) + " more chars)";
+            result = result.substring(0, MAX_OUTPUT_LENGTH) + "\n... (已截断，还有 " + (result.length() - MAX_OUTPUT_LENGTH) + " 个字符)";
         }
         
         return result;
     }
     
     private String guardCommand(String command) {
-        // Use SecurityGuard if available
+        // 使用 SecurityGuard（如果可用）
         if (securityGuard != null) {
             return securityGuard.checkCommand(command);
         }
         
-        // Fallback to legacy pattern matching
+        // 退到旧版模式匹配
         String lower = command.toLowerCase();
         for (Pattern pattern : denyPatterns) {
             if (pattern.matcher(lower).find()) {
-                return "Command blocked by safety guard (dangerous pattern detected)";
+                return "命令被安全防护阻止（检测到危险模式）";
             }
         }
         return null;

@@ -76,10 +76,10 @@ public class CronTool implements Tool {
     
     @Override
     public String description() {
-        return "Schedule reminders and tasks. IMPORTANT: When user asks to be reminded or scheduled, " +
-               "you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). " +
-               "Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). " +
-               "Use 'cron_expr' for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am).";
+       return "调度提醒和任务。重要：当用户要求被提醒或调度时，" +
+               "您必须调用此工具。使用 'at_seconds' 进行一次性提醒（例如，'10分钟后提醒我' → at_seconds=600）。" +
+               "仅在重复任务时使用 'every_seconds'（例如，'每2小时' → every_seconds=7200）。" +
+               "使用 'cron_expr' 进行复杂的重复调度（例如，'0 9 * * *' 表示每天上午9点）。";
     }
     
     @Override
@@ -92,40 +92,40 @@ public class CronTool implements Tool {
         Map<String, Object> action = new HashMap<>();
         action.put("type", "string");
         action.put("enum", List.of("add", "list", "remove", "enable", "disable"));
-        action.put("description", "Action to perform. Use 'add' when user wants to schedule a reminder or task.");
+        action.put("description", "要执行的操作。当用户想要调度提醒或任务时使用 'add'。");
         properties.put("action", action);
         
         Map<String, Object> message = new HashMap<>();
         message.put("type", "string");
-        message.put("description", "The reminder/task message to display when triggered (required for add)");
+        message.put("description", "触发时显示的提醒/任务消息（add 操作必需）");
         properties.put("message", message);
         
         Map<String, Object> atSeconds = new HashMap<>();
         atSeconds.put("type", "integer");
-        atSeconds.put("description", "One-time reminder: seconds from now when to trigger (e.g., 600 for 10 minutes later). " +
-                                     "Use this for one-time reminders like 'remind me in 10 minutes'.");
+        atSeconds.put("description", "一次性提醒：从现在起多少秒后触发（例如，600表示10分钟后）。" +
+                                     "用于一次性提醒，如 '10分钟后提醒我'。");
         properties.put("at_seconds", atSeconds);
         
         Map<String, Object> everySeconds = new HashMap<>();
         everySeconds.put("type", "integer");
-        everySeconds.put("description", "Recurring interval in seconds (e.g., 3600 for every hour). " +
-                                        "Use this ONLY for recurring tasks like 'every 2 hours' or 'daily reminder'.");
+        everySeconds.put("description", "重复间隔（秒）（例如，3600表示每小时）。" +
+                                        "仅用于重复任务，如 '每2小时' 或 '每天提醒'。");
         properties.put("every_seconds", everySeconds);
         
         Map<String, Object> cronExpr = new HashMap<>();
         cronExpr.put("type", "string");
-        cronExpr.put("description", "Cron expression for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). " +
-                                    "Use this for complex recurring schedules.");
+        cronExpr.put("description", "用于复杂重复调度的 Cron 表达式（例如，'0 9 * * *' 表示每天上午9点）。" +
+                                    "用于复杂的重复调度。");
         properties.put("cron_expr", cronExpr);
         
         Map<String, Object> jobId = new HashMap<>();
         jobId.put("type", "string");
-        jobId.put("description", "Job ID (for remove/enable/disable)");
+        jobId.put("description", "任务 ID（用于 remove/enable/disable 操作）");
         properties.put("job_id", jobId);
         
         Map<String, Object> deliver = new HashMap<>();
         deliver.put("type", "boolean");
-        deliver.put("description", "If true, send message directly to channel. If false, let agent process 消息 (for complex tasks). Default: true");
+        deliver.put("description", "如果为 true，直接将消息发送到通道。如果为 false，让 Agent 处理消息（用于复杂任务）。默认：true");
         properties.put("deliver", deliver);
         
         params.put("properties", properties);
@@ -135,7 +135,7 @@ public class CronTool implements Tool {
     }
     
     /**
-     * 设置 context for job creation
+     * 设置任务创建的上下文
      */
     public void setContext(String channel, String chatId) {
         this.channel = channel;
@@ -146,7 +146,7 @@ public class CronTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String action = (String) args.get("action");
         if (action == null) {
-            return "Error: action is required";
+            return "错误: 操作参数是必需的";
         }
         
         switch (action) {
@@ -161,23 +161,23 @@ public class CronTool implements Tool {
             case "disable":
                 return enableJob(args, false);
             default:
-                return "Error: unknown action: " + action;
+                return "错误: 未知操作: " + action;
         }
     }
     
     private String addJob(Map<String, Object> args) {
         if (channel.isEmpty() || chatId.isEmpty()) {
-            return "Error: no session context (channel/chat_id not set). Use this tool in an active conversation.";
+            return "错误: 无会话上下文（通道/聊天ID未设置）。请在活跃对话中使用此工具。";
         }
         
         String message = (String) args.get("message");
         if (message == null || message.isEmpty()) {
-            return "Error: message is required for add";
+            return "错误: add 操作需要消息参数";
         }
         
         CronSchedule schedule;
         
-        // 检查 for at_seconds, every_seconds, or cron_expr
+        // 检查 at_seconds、every_seconds 或 cron_expr
         Number atSeconds = (Number) args.get("at_seconds");
         Number everySeconds = (Number) args.get("every_seconds");
         String cronExpr = (String) args.get("cron_expr");
@@ -191,10 +191,10 @@ public class CronTool implements Tool {
         } else if (cronExpr != null && !cronExpr.isEmpty()) {
             schedule = CronSchedule.cron(cronExpr);
         } else {
-            return "Error: one of at_seconds, every_seconds, or cron_expr is required";
+            return "错误: 必须提供 at_seconds、every_seconds 或 cron_expr 之一";
         }
         
-        // Read deliver parameter, default to true
+        // 读取 deliver 参数，默认为 true
         boolean deliver = true;
         if (args.containsKey("deliver") && args.get("deliver") instanceof Boolean) {
             deliver = (Boolean) args.get("deliver");

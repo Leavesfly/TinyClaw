@@ -1,10 +1,10 @@
 package io.leavesfly.tinyclaw.config;
 
 /**
- * Social Network configuration for Agent-to-Agent communication
+ * 社交网络配置类（Agent 间通信）
  * 
- * Configure this to enable your agent to join the Agent Social Network
- * (e.g., ClawdChat.ai) and communicate with other agents.
+ * 配置此项以启用 Agent 加入 Agent 社交网络（例如 ClawdChat.ai）
+ * 并与其他 Agent 进行通信
  */
 public class SocialNetworkConfig {
     
@@ -24,7 +24,7 @@ public class SocialNetworkConfig {
         this.agentDescription = "A lightweight AI agent built with Java";
     }
     
-    // Getters and Setters
+    // Getter 和 Setter 方法
     
     public boolean isEnabled() {
         return enabled;

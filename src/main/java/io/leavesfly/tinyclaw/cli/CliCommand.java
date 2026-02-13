@@ -69,12 +69,4 @@ public abstract class CliCommand {
         String home = System.getProperty("user.home");
         return home + "/.tinyclaw/config.json";
     }
-    
-    /**
-     * 从配置获取工作空间路径
-     */
-    protected String getWorkspacePath() {
-        String home = System.getProperty("user.home");
-        return home + "/.tinyclaw/workspace";
-    }
 }

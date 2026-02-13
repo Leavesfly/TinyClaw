@@ -81,7 +81,7 @@ public class CronService {
     }
     
     /**
-     * 启动 the cron service
+     * 启动定时服务
      */
     public void start() {
         lock.writeLock().lock();
@@ -104,7 +104,7 @@ public class CronService {
     }
     
     /**
-     * 停止 the cron service
+     * 停止定时服务
      */
     public void stop() {
         lock.writeLock().lock();
@@ -142,12 +142,12 @@ public class CronService {
             long now = System.currentTimeMillis();
             List<CronJob> dueJobs = new ArrayList<>();
             
-            // Collect due jobs
+            // 收集到期的任务
             for (CronJob job : store.getJobs()) {
                 if (job.isEnabled() && job.getState().getNextRunAtMs() != null 
                         && job.getState().getNextRunAtMs() <= now) {
                     dueJobs.add(job);
-                    // Clear next run time to prevent re-execution
+                    // 清除下次运行时间以防止重复执行
                     job.getState().setNextRunAtMs(null);
                 }
             }
@@ -156,7 +156,7 @@ public class CronService {
                 saveStoreUnsafe();
             }
             
-            // 执行 outside lock (but we need to release and re-acquire)
+            // 在锁外执行（但我们需要释放并重新获取锁）
             lock.writeLock().unlock();
             try {
                 for (CronJob job : dueJobs) {
@@ -186,7 +186,7 @@ public class CronService {
             ));
         }
         
-        // Update job state
+        // 更新任务状态
         lock.writeLock().lock();
         try {
             for (CronJob j : store.getJobs()) {
@@ -202,7 +202,7 @@ public class CronService {
                         j.getState().setLastError(null);
                     }
                     
-                    // Compute next run time
+                    // 计算下次运行时间
                     if (CronSchedule.ScheduleKind.AT == j.getSchedule().getKind()) {
                         if (j.isDeleteAfterRun()) {
                             removeJobUnsafe(j.getId());
@@ -301,7 +301,7 @@ public class CronService {
     }
     
     /**
-     * Add a new job
+     * 添加新任务
      */
     public CronJob addJob(String name, CronSchedule schedule, String message, boolean deliver, 
                           String channel, String to) {
@@ -337,7 +337,7 @@ public class CronService {
     }
     
     /**
-     * Remove a job
+     * 删除任务
      */
     public boolean removeJob(String jobId) {
         lock.writeLock().lock();
@@ -357,7 +357,7 @@ public class CronService {
     }
     
     /**
-     * Enable or disable a job
+     * 启用或禁用任务
      */
     public CronJob enableJob(String jobId, boolean enabled) {
         lock.writeLock().lock();
@@ -384,7 +384,7 @@ public class CronService {
     }
     
     /**
-     * List all jobs
+     * 列出所有任务
      */
     public List<CronJob> listJobs(boolean includeDisabled) {
         lock.readLock().lock();
@@ -405,7 +405,7 @@ public class CronService {
     }
     
     /**
-     * 获取 service status
+     * 获取服务状态
      */
     public Map<String, Object> status() {
         lock.readLock().lock();
@@ -426,14 +426,14 @@ public class CronService {
     }
     
     /**
-     * 设置 job handler
+     * 设置任务处理器
      */
     public void setOnJob(JobHandler handler) {
         this.onJob = handler;
     }
     
     /**
-     * 加载 store from disk
+     * 从磁盘加载存储
      */
     public void load() {
         lock.writeLock().lock();

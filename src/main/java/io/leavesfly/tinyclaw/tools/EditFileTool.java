@@ -39,7 +39,7 @@ import java.util.Map;
 public class EditFileTool implements Tool {
     
     private final SecurityGuard securityGuard;
-    // Deprecated: use SecurityGuard instead
+    // 已废弃：使用 SecurityGuard 代替
     private final String allowedDir;
     
     /**
@@ -51,7 +51,7 @@ public class EditFileTool implements Tool {
     }
     
     /**
-     * 创建带SecurityGuard的编辑工具
+     * 创建带 SecurityGuard 的编辑工具
      */
     public EditFileTool(SecurityGuard securityGuard) {
         this.securityGuard = securityGuard;
@@ -59,7 +59,7 @@ public class EditFileTool implements Tool {
     }
     
     /**
-     * 创建带目录限制的编辑工具 (Deprecated: use SecurityGuard instead)
+     * 创建带目录限制的编辑工具（已废弃：使用 SecurityGuard 代替）
      * 
      * @param allowedDir 允许编辑的目录路径
      */
@@ -76,7 +76,7 @@ public class EditFileTool implements Tool {
     
     @Override
     public String description() {
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file.";
+        return "通过替换文本来编辑文件。old_text 必须完全匹配文件中的内容。";
     }
     
     @Override
@@ -88,17 +88,17 @@ public class EditFileTool implements Tool {
         
         Map<String, Object> pathParam = new HashMap<>();
         pathParam.put("type", "string");
-        pathParam.put("description", "The file path to edit");
+        pathParam.put("description", "要编辑的文件路径");
         properties.put("path", pathParam);
         
         Map<String, Object> oldTextParam = new HashMap<>();
         oldTextParam.put("type", "string");
-        oldTextParam.put("description", "The exact text to find and replace");
+        oldTextParam.put("description", "要查找并替换的确切文本");
         properties.put("old_text", oldTextParam);
         
         Map<String, Object> newTextParam = new HashMap<>();
         newTextParam.put("type", "string");
-        newTextParam.put("description", "The text to replace with");
+        newTextParam.put("description", "用于替换的文本");
         properties.put("new_text", newTextParam);
         
         params.put("properties", properties);
@@ -115,36 +115,36 @@ public class EditFileTool implements Tool {
         String newText = (String) args.get("new_text");
         
         if (path == null || path.isEmpty()) {
-            throw new IllegalArgumentException("path is required");
+            throw new IllegalArgumentException("路径参数是必需的");
         }
         if (oldText == null) {
-            throw new IllegalArgumentException("old_text is required");
+            throw new IllegalArgumentException("old_text 参数是必需的");
         }
         if (newText == null) {
-            throw new IllegalArgumentException("new_text is required");
+            throw new IllegalArgumentException("new_text 参数是必需的");
         }
         
         // 解析并规范化路径
         Path resolvedPath = Paths.get(path).toAbsolutePath().normalize();
         
-        // Security check with SecurityGuard (preferred)
+        // 使用 SecurityGuard 进行安全检查（推荐）
         if (securityGuard != null) {
             String error = securityGuard.checkFilePath(path);
             if (error != null) {
                 throw new SecurityException(error);
             }
         }
-        // Legacy check with allowedDir
+        // 使用 allowedDir 进行旧式检查
         else if (allowedDir != null && !allowedDir.isEmpty()) {
             Path allowedPath = Paths.get(allowedDir).toAbsolutePath().normalize();
             if (!resolvedPath.startsWith(allowedPath)) {
-                throw new SecurityException("Path " + path + " is outside allowed directory " + allowedDir);
+                throw new SecurityException("路径 " + path + " 在允许目录 " + allowedDir + " 之外");
             }
         }
         
         // 检查文件是否存在
         if (!Files.exists(resolvedPath)) {
-            throw new IllegalArgumentException("File not found: " + path);
+            throw new IllegalArgumentException("文件未找到: " + path);
         }
         
         // 读取文件内容
@@ -152,18 +152,18 @@ public class EditFileTool implements Tool {
         try {
             content = Files.readString(resolvedPath);
         } catch (IOException e) {
-            throw new Exception("Failed to read file: " + e.getMessage());
+            throw new Exception("读取文件失败: " + e.getMessage());
         }
         
         // 检查 old_text 是否存在
         if (!content.contains(oldText)) {
-            throw new IllegalArgumentException("old_text not found in file. Make sure it matches exactly, including whitespace and line breaks.");
+            throw new IllegalArgumentException("old_text 在文件中未找到。请确保它完全匹配，包括空格和换行符。");
         }
         
         // 检查 old_text 是否唯一
         int count = countOccurrences(content, oldText);
         if (count > 1) {
-            throw new IllegalArgumentException("old_text appears " + count + " times in the file. Please provide more context to make it unique.");
+            throw new IllegalArgumentException("old_text 在文件中出现了 " + count + " 次。请提供更多上下文使其唯一。");
         }
         
         // 执行替换
@@ -172,9 +172,9 @@ public class EditFileTool implements Tool {
         // 写入文件
         try {
             Files.writeString(resolvedPath, newContent);
-            return "Successfully edited " + path;
+            return "成功编辑 " + path;
         } catch (IOException e) {
-            throw new Exception("Failed to write file: " + e.getMessage());
+            throw new Exception("写入文件失败: " + e.getMessage());
         }
     }
     

@@ -48,7 +48,7 @@ public class ReadFileTool implements Tool {
     
     @Override
     public String description() {
-        return "Read the contents of a file";
+        return "读取文件内容";
     }
     
     @Override
@@ -59,7 +59,7 @@ public class ReadFileTool implements Tool {
         Map<String, Object> properties = new HashMap<>();
         Map<String, Object> pathParam = new HashMap<>();
         pathParam.put("type", "string");
-        pathParam.put("description", "Path to the file to read");
+        pathParam.put("description", "要读取的文件路径");
         properties.put("path", pathParam);
         
         params.put("properties", properties);
@@ -72,10 +72,10 @@ public class ReadFileTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String path = (String) args.get("path");
         if (path == null || path.isEmpty()) {
-            throw new IllegalArgumentException("path is required");
+            throw new IllegalArgumentException("路径参数是必需的");
         }
         
-        // Security check
+        // 安全检查
         if (securityGuard != null) {
             String error = securityGuard.checkFilePath(path);
             if (error != null) {
@@ -86,7 +86,7 @@ public class ReadFileTool implements Tool {
         try {
             return Files.readString(Paths.get(path));
         } catch (IOException e) {
-            throw new Exception("Failed to read file: " + e.getMessage());
+            throw new Exception("读取文件失败: " + e.getMessage());
         }
     }
 }

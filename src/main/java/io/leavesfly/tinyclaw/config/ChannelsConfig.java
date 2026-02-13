@@ -4,7 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Channels configuration
+ * 消息通道配置类
+ * 支持多个消息平台：Telegram、Discord、WhatsApp、飞书、钉钉、QQ、MaixCam
  */
 public class ChannelsConfig {
     
@@ -26,7 +27,7 @@ public class ChannelsConfig {
         this.maixcam = new MaixCamConfig();
     }
     
-    // Getters and Setters
+    // Getter 和 Setter 方法
     public TelegramConfig getTelegram() {
         return telegram;
     }
@@ -83,7 +84,7 @@ public class ChannelsConfig {
         this.maixcam = maixcam;
     }
     
-    // Inner config classes
+    // 内部配置类
     
     public static class TelegramConfig {
         private boolean enabled;

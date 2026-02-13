@@ -1,7 +1,8 @@
 package io.leavesfly.tinyclaw.config;
 
 /**
- * Tools configuration
+ * 工具配置类
+ * 配置各种工具的参数，如网络搜索工具等
  */
 public class ToolsConfig {
     
@@ -20,7 +21,7 @@ public class ToolsConfig {
     }
     
     /**
-     * 获取 Brave API key for web search
+     * 获取 Brave API Key（用于网络搜索）
      */
     public String getBraveApi() {
         return web != null && web.getSearch() != null ? web.getSearch().getApiKey() : "";

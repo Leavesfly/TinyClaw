@@ -1,7 +1,8 @@
 package io.leavesfly.tinyclaw.config;
 
 /**
- * LLM Providers configuration
+ * LLM 提供商配置类
+ * 支持多个 LLM 提供商：OpenRouter、Anthropic、OpenAI、Gemini、智谱、Groq、vLLM、DashScope
  */
 public class ProvidersConfig {
     
@@ -91,7 +92,27 @@ public class ProvidersConfig {
     }
     
     /**
-     * Generic provider configuration
+     * 获取所有 Provider，按优先级排序
+     */
+    public java.util.List<ProviderConfig> getAllProviders() {
+        return java.util.Arrays.asList(
+            openrouter, anthropic, openai, gemini, 
+            zhipu, groq, vllm, dashscope
+        );
+    }
+    
+    /**
+     * 获取第一个有效的 Provider
+     */
+    public java.util.Optional<ProviderConfig> getFirstValidProvider() {
+        return getAllProviders().stream()
+            .filter(p -> p != null && p.isValid())
+            .findFirst();
+    }
+    
+    /**
+     * 通用 Provider 配置
+     * 包含 API Key 和 API Base 地址
      */
     public static class ProviderConfig {
         private String apiKey;
@@ -116,6 +137,20 @@ public class ProvidersConfig {
         
         public void setApiBase(String apiBase) {
             this.apiBase = apiBase;
+        }
+        
+        /**
+         * 检查此 Provider 是否有效（有 API Key）
+         */
+        public boolean isValid() {
+            return apiKey != null && !apiKey.isEmpty();
+        }
+        
+        /**
+         * 获取 API Base，如果未配置则返回默认值
+         */
+        public String getApiBaseOrDefault(String defaultBase) {
+            return (apiBase != null && !apiBase.isEmpty()) ? apiBase : defaultBase;
         }
     }
 }

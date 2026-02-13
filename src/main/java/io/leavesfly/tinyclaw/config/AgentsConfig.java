@@ -1,7 +1,8 @@
 package io.leavesfly.tinyclaw.config;
 
 /**
- * Agents configuration
+ * Agent 配置类
+ * 包含 Agent 的默认配置信息
  */
 public class AgentsConfig {
     
@@ -20,7 +21,8 @@ public class AgentsConfig {
     }
     
     /**
-     * Agent default settings
+     * Agent 默认设置
+     * 包含模型、工作空间、最大迭代次数等配置
      */
     public static class AgentDefaults {
         private String workspace;

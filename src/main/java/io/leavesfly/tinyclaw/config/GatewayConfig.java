@@ -1,7 +1,8 @@
 package io.leavesfly.tinyclaw.config;
 
 /**
- * Gateway configuration
+ * 网关配置类
+ * 配置 Webhook 服务器的主机地址和端口
  */
 public class GatewayConfig {
     

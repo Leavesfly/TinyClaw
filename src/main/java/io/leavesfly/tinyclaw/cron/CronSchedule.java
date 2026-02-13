@@ -5,7 +5,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
- * Represents a cron schedule configuration
+ * 定时任务调度配置类
+ * 支持三种调度方式：一次性（at）、周期性（every）、Cron 表达式（cron）
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CronSchedule {
@@ -49,7 +50,7 @@ public class CronSchedule {
         this.kind = kind;
     }
     
-    // Factory methods
+    // 工厂方法
     public static CronSchedule at(long atMs) {
         CronSchedule s = new CronSchedule(ScheduleKind.AT);
         s.setAtMs(atMs);
@@ -68,7 +69,7 @@ public class CronSchedule {
         return s;
     }
     
-    // Getters and setters
+    // Getter 和 Setter 方法
     public ScheduleKind getKind() { return kind; }
     public void setKind(ScheduleKind kind) { this.kind = kind; }
     

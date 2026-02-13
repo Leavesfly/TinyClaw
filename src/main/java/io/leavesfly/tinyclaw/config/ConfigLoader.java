@@ -10,8 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 
 /**
- * TinyClaw 的配置加载器
- * 支持从 JSON 文件和环境变量加载
+ * TinyClaw 配置加载器
+ * 支持从 JSON 文件和环境变量加载配置
  */
 public class ConfigLoader {
     

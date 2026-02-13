@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * SpawnTool - Spawn subagents for background tasks
+ * 子代理生成工具 - 生成子代理处理后台任务
  */
 public class SpawnTool implements Tool {
     
@@ -24,9 +24,9 @@ public class SpawnTool implements Tool {
     
     @Override
     public String description() {
-        return "Spawn a subagent to handle a task in the background. " +
-               "Use this for complex or time-consuming tasks that can run independently. " +
-               "The subagent will complete the task and report back when done.";
+        return "生成一个子代理在后台处理任务。" +
+               "用于复杂或耗时的任务，可以独立运行。" +
+               "子代理将完成任务并在完成时报告。";
     }
     
     @Override
@@ -38,12 +38,12 @@ public class SpawnTool implements Tool {
         
         Map<String, Object> task = new HashMap<>();
         task.put("type", "string");
-        task.put("description", "The task for subagent to complete");
+        task.put("description", "子代理要完成的任务");
         properties.put("task", task);
         
         Map<String, Object> label = new HashMap<>();
         label.put("type", "string");
-        label.put("description", "Optional short label for the task (for display)");
+        label.put("description", "任务的可选简短标签（用于显示）");
         properties.put("label", label);
         
         params.put("properties", properties);
@@ -53,7 +53,7 @@ public class SpawnTool implements Tool {
     }
     
     /**
-     * 设置 context for spawn
+     * 设置生成上下文
      */
     public void setContext(String channel, String chatId) {
         this.originChannel = channel != null ? channel : "cli";
@@ -64,13 +64,13 @@ public class SpawnTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String task = (String) args.get("task");
         if (task == null || task.isEmpty()) {
-            return "Error: task is required";
+            return "错误: 任务参数是必需的";
         }
         
         String label = (String) args.get("label");
         
         if (manager == null) {
-            return "Error: Subagent manager not configured";
+            return "错误: 子代理管理器未配置";
         }
         
         return manager.spawn(task, label, originChannel, originChatId);

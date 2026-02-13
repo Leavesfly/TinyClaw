@@ -41,7 +41,7 @@ import java.util.Map;
 public class AppendFileTool implements Tool {
     
     private final SecurityGuard securityGuard;
-    // Deprecated: use SecurityGuard instead
+    // 已废弃：使用 SecurityGuard 代替
     private final String allowedDir;
     
     /**
@@ -53,7 +53,7 @@ public class AppendFileTool implements Tool {
     }
     
     /**
-     * 创建带SecurityGuard的追加工具
+     * 创建带 SecurityGuard 的追加工具
      */
     public AppendFileTool(SecurityGuard securityGuard) {
         this.securityGuard = securityGuard;
@@ -61,7 +61,7 @@ public class AppendFileTool implements Tool {
     }
     
     /**
-     * 创建带目录限制的追加工具 (Deprecated: use SecurityGuard instead)
+     * 创建带目录限制的追加工具（已废弃：使用 SecurityGuard 代替）
      * 
      * @param allowedDir 允许追加的目录路径
      */
@@ -78,7 +78,7 @@ public class AppendFileTool implements Tool {
     
     @Override
     public String description() {
-        return "Append content to the end of a file";
+        return "在文件末尾追加内容";
     }
     
     @Override
@@ -90,12 +90,12 @@ public class AppendFileTool implements Tool {
         
         Map<String, Object> pathParam = new HashMap<>();
         pathParam.put("type", "string");
-        pathParam.put("description", "The file path to append to");
+        pathParam.put("description", "要追加内容的文件路径");
         properties.put("path", pathParam);
         
         Map<String, Object> contentParam = new HashMap<>();
         contentParam.put("type", "string");
-        contentParam.put("description", "The content to append");
+        contentParam.put("description", "要追加的内容");
         properties.put("content", contentParam);
         
         params.put("properties", properties);
@@ -120,18 +120,18 @@ public class AppendFileTool implements Tool {
         // 解析并规范化路径
         Path resolvedPath = Paths.get(path).toAbsolutePath().normalize();
         
-        // Security check with SecurityGuard (preferred)
+        // 使用 SecurityGuard 进行安全检查（推荐）
         if (securityGuard != null) {
             String error = securityGuard.checkFilePath(path);
             if (error != null) {
                 throw new SecurityException(error);
             }
         }
-        // Legacy check with allowedDir
+        // 使用 allowedDir 进行旧式检查
         else if (allowedDir != null && !allowedDir.isEmpty()) {
             Path allowedPath = Paths.get(allowedDir).toAbsolutePath().normalize();
             if (!resolvedPath.startsWith(allowedPath)) {
-                throw new SecurityException("Path " + path + " is outside allowed directory " + allowedDir);
+                throw new SecurityException("路径 " + path + " 在允许目录 " + allowedDir + " 之外");
             }
         }
         
@@ -141,7 +141,7 @@ public class AppendFileTool implements Tool {
             try {
                 Files.createDirectories(parentDir);
             } catch (IOException e) {
-                throw new Exception("Failed to create parent directories: " + e.getMessage());
+                throw new Exception("创建父目录失败: " + e.getMessage());
             }
         }
         
@@ -152,9 +152,9 @@ public class AppendFileTool implements Tool {
             Files.writeString(resolvedPath, content, 
                 StandardOpenOption.CREATE, 
                 StandardOpenOption.APPEND);
-            return "Successfully appended to " + path;
+            return "成功追加内容到 " + path;
         } catch (IOException e) {
-            throw new Exception("Failed to append to file: " + e.getMessage());
+            throw new Exception("追加内容到文件失败: " + e.getMessage());
         }
     }
 }

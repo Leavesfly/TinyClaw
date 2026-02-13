@@ -76,8 +76,8 @@ public class SkillsTool implements Tool {
 
     @Override
     public String description() {
-        return "Manage your skills: list, show, install from GitHub, create new skills, edit existing skills, or remove skills. "
-                + "Use this to learn new capabilities by installing community skills or creating your own skills based on experience.";
+        return "管理您的技能：列出、查看、从 GitHub 安装、创建新技能、编辑现有技能或删除技能。"
+                + "使用此工具通过安装社区技能或基于经验创建自己的技能来学习新能力。";
     }
 
     @Override
@@ -90,36 +90,36 @@ public class SkillsTool implements Tool {
         Map<String, Object> actionParam = new HashMap<>();
         actionParam.put("type", "string");
         actionParam.put("description",
-                "Action to perform: "
-                        + "'list' - list all installed skills; "
-                        + "'show' - show full content of a skill; "
-                        + "'install' - install a skill from GitHub (e.g. 'owner/repo' or 'owner/repo/skill-name'); "
-                        + "'create' - create a new skill with given name and content; "
-                        + "'edit' - update an existing skill's content; "
-                        + "'remove' - remove a skill by name");
+                "要执行的操作："
+                        + "'list' - 列出所有已安装的技能; "
+                        + "'show' - 显示技能的完整内容; "
+                        + "'install' - 从 GitHub 安装技能（例如 'owner/repo' 或 'owner/repo/skill-name'）; "
+                        + "'create' - 创建新技能，指定名称和内容; "
+                        + "'edit' - 更新现有技能的内容; "
+                        + "'remove' - 按名称删除技能");
         actionParam.put("enum", new String[]{"list", "show", "install", "create", "edit", "remove"});
         properties.put("action", actionParam);
 
         Map<String, Object> nameParam = new HashMap<>();
         nameParam.put("type", "string");
-        nameParam.put("description", "Skill name (required for show, create, edit, remove)");
+        nameParam.put("description", "技能名称（show、create、edit、remove 操作必需）");
         properties.put("name", nameParam);
 
         Map<String, Object> repoParam = new HashMap<>();
         repoParam.put("type", "string");
-        repoParam.put("description", "GitHub repo specifier for install action (e.g. 'owner/repo' or 'owner/repo/skill-name')");
+        repoParam.put("description", "GitHub 仓库指定符，用于 install 操作（例如 'owner/repo' 或 'owner/repo/skill-name'）");
         properties.put("repo", repoParam);
 
         Map<String, Object> contentParam = new HashMap<>();
         contentParam.put("type", "string");
         contentParam.put("description",
-                "Skill content in Markdown format for create/edit actions. "
-                        + "Should include YAML frontmatter (---\\nname: ...\\ndescription: ...\\n---) followed by the skill instructions.");
+                "用于 create/edit 操作的 Markdown 格式技能内容。"
+                        + "应包含 YAML frontmatter（---\\nname: ...\\ndescription: ...\\n---）后跟技能指令。");
         properties.put("content", contentParam);
 
         Map<String, Object> descriptionParam = new HashMap<>();
         descriptionParam.put("type", "string");
-        descriptionParam.put("description", "Short description of the skill (used when creating a new skill)");
+        descriptionParam.put("description", "技能的简短描述（创建新技能时使用）");
         properties.put("skill_description", descriptionParam);
 
         params.put("properties", properties);
@@ -132,7 +132,7 @@ public class SkillsTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String action = (String) args.get("action");
         if (action == null || action.isEmpty()) {
-            throw new IllegalArgumentException("action is required");
+            throw new IllegalArgumentException("操作参数是必需的");
         }
 
         switch (action) {
@@ -149,8 +149,8 @@ public class SkillsTool implements Tool {
             case "remove":
                 return executeRemove(args);
             default:
-                throw new IllegalArgumentException("Unknown action: " + action
-                        + ". Valid actions: list, show, install, create, edit, remove");
+                throw new IllegalArgumentException("未知操作: " + action
+                        + "。有效操作：list、show、install、create、edit、remove");
         }
     }
 
@@ -160,20 +160,20 @@ public class SkillsTool implements Tool {
     private String executeList() {
         List<SkillInfo> skills = skillsLoader.listSkills();
         if (skills.isEmpty()) {
-            return "No skills installed. You can:\n"
-                    + "- Install from GitHub: use action 'install' with repo='owner/repo'\n"
-                    + "- Create a new skill: use action 'create' with name and content";
+            return "没有安装技能。您可以：\n"
+                    + "- 从 GitHub 安装：使用操作 'install' 和 repo='owner/repo'\n"
+                    + "- 创建新技能：使用操作 'create' 并指定 name 和 content";
         }
 
         StringBuilder result = new StringBuilder();
-        result.append("Installed skills (").append(skills.size()).append("):\n\n");
+        result.append("已安装技能 (").append(skills.size()).append("):\n\n");
         for (SkillInfo skill : skills) {
             result.append("- **").append(skill.getName()).append("**");
             if (skill.getDescription() != null && !skill.getDescription().isEmpty()) {
                 result.append(" — ").append(skill.getDescription());
             }
-            result.append("\n  Source: ").append(skill.getSource());
-            result.append(" | Path: ").append(skill.getPath());
+            result.append("\n  来源: ").append(skill.getSource());
+            result.append(" | 路径: ").append(skill.getPath());
             result.append("\n");
         }
         return result.toString();
@@ -185,15 +185,15 @@ public class SkillsTool implements Tool {
     private String executeShow(Map<String, Object> args) {
         String skillName = (String) args.get("name");
         if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("name is required for 'show' action");
+            throw new IllegalArgumentException("对于 'show' 操作，name 参数是必需的");
         }
 
         String content = skillsLoader.loadSkill(skillName);
         if (content == null) {
-            return "Skill '" + skillName + "' not found. Use action 'list' to see available skills.";
+            return "技能 '" + skillName + "' 未找到。使用 'list' 操作查看可用技能。";
         }
 
-        return "=== Skill: " + skillName + " ===\n\n" + content;
+        return "=== 技能: " + skillName + " ===\n\n" + content;
     }
 
     /**
@@ -202,12 +202,12 @@ public class SkillsTool implements Tool {
     private String executeInstall(Map<String, Object> args) throws Exception {
         String repo = (String) args.get("repo");
         if (repo == null || repo.isEmpty()) {
-            throw new IllegalArgumentException("repo is required for 'install' action (e.g. 'owner/repo' or 'owner/repo/skill-name')");
+            throw new IllegalArgumentException("对于 'install' 操作，repo 参数是必需的（例如 'owner/repo' 或 'owner/repo/skill-name'）");
         }
 
         logger.info("AI-initiated skill install", Map.of("repo", repo));
         String result = skillsInstaller.install(repo);
-        return result + "\nThe skill is now available and will be loaded in the next context build.";
+        return result + "\n技能现已可用，将在下次上下文构建时加载。";
     }
 
     /**
@@ -216,7 +216,7 @@ public class SkillsTool implements Tool {
     private String executeCreate(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
         if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("name is required for 'create' action");
+            throw new IllegalArgumentException("对于 'create' 操作，name 参数是必需的");
         }
 
         String content = (String) args.get("content");
@@ -224,12 +224,12 @@ public class SkillsTool implements Tool {
 
         if (content == null || content.isEmpty()) {
             if (skillDescription == null || skillDescription.isEmpty()) {
-                throw new IllegalArgumentException("content or skill_description is required for 'create' action");
+                throw new IllegalArgumentException("对于 'create' 操作，content 或 skill_description 参数是必需的");
             }
             content = buildSkillTemplate(skillName, skillDescription);
         }
 
-        // Ensure content has frontmatter
+        // 确保内容包含 frontmatter
         if (!content.trim().startsWith("---")) {
             String description = skillDescription != null ? skillDescription : "A skill for " + skillName;
             content = "---\nname: \"" + skillName + "\"\ndescription: \"" + description + "\"\n---\n\n" + content;
@@ -239,7 +239,7 @@ public class SkillsTool implements Tool {
         Path skillFile = skillDir.resolve("SKILL.md");
 
         if (Files.exists(skillFile)) {
-            throw new IllegalArgumentException("Skill '" + skillName + "' already exists. Use 'edit' action to modify it, or 'remove' first.");
+            throw new IllegalArgumentException("技能 '" + skillName + "' 已存在。请使用 'edit' 操作修改它，或先使用 'remove' 删除。");
         }
 
         Files.createDirectories(skillDir);
@@ -251,8 +251,8 @@ public class SkillsTool implements Tool {
                 "content_length", content.length()
         ));
 
-        return "✓ Skill '" + skillName + "' created successfully at " + skillFile
-                + "\nThe skill will be automatically loaded in the next context build.";
+        return "✓ 技能 '" + skillName + "' 已成功创建于 " + skillFile
+                + "\n技能将在下次上下文构建时自动加载。";
     }
 
     /**
@@ -261,22 +261,22 @@ public class SkillsTool implements Tool {
     private String executeEdit(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
         if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("name is required for 'edit' action");
+            throw new IllegalArgumentException("对于 'edit' 操作，name 参数是必需的");
         }
 
         String content = (String) args.get("content");
         if (content == null || content.isEmpty()) {
-            throw new IllegalArgumentException("content is required for 'edit' action");
+            throw new IllegalArgumentException("对于 'edit' 操作，content 参数是必需的");
         }
 
-        // Find the skill file
+        // 查找技能文件
         Path workspaceSkillFile = Paths.get(workspace, "skills", skillName, "SKILL.md");
 
         if (!Files.exists(workspaceSkillFile)) {
-            // Check if skill exists in other locations (global/builtin)
+            // 检查技能是否存在于其他位置（global/builtin）
             String existingContent = skillsLoader.loadSkill(skillName);
             if (existingContent != null) {
-                // Copy to workspace for editing (workspace has highest priority)
+                // 复制到工作空间以进行编辑（工作空间具有最高优先级）
                 Files.createDirectories(workspaceSkillFile.getParent());
                 Files.writeString(workspaceSkillFile, content);
 
@@ -285,13 +285,13 @@ public class SkillsTool implements Tool {
                         "path", workspaceSkillFile.toString()
                 ));
 
-                return "✓ Skill '" + skillName + "' copied to workspace and updated at " + workspaceSkillFile
-                        + "\nThe workspace version will override the original.";
+                return "✓ 技能 '" + skillName + "' 已复制到工作空间并更新于 " + workspaceSkillFile
+                        + "\n工作空间版本将覆盖原始版本。";
             }
-            throw new IllegalArgumentException("Skill '" + skillName + "' not found. Use 'create' action to create a new skill.");
+            throw new IllegalArgumentException("技能 '" + skillName + "' 未找到。请使用 'create' 操作创建新技能。");
         }
 
-        // Ensure content has frontmatter
+        // 确保内容包含 frontmatter
         if (!content.trim().startsWith("---")) {
             String skillDescription = (String) args.get("skill_description");
             String description = skillDescription != null ? skillDescription : "A skill for " + skillName;
@@ -306,7 +306,7 @@ public class SkillsTool implements Tool {
                 "content_length", content.length()
         ));
 
-        return "✓ Skill '" + skillName + "' updated successfully at " + workspaceSkillFile;
+        return "✓ 技能 '" + skillName + "' 已成功更新于 " + workspaceSkillFile;
     }
 
     /**
@@ -315,19 +315,19 @@ public class SkillsTool implements Tool {
     private String executeRemove(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
         if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("name is required for 'remove' action");
+            throw new IllegalArgumentException("对于 'remove' 操作，name 参数是必需的");
         }
 
         Path skillDir = Paths.get(workspace, "skills", skillName);
         if (!Files.exists(skillDir)) {
-            return "Skill '" + skillName + "' not found in workspace skills directory.";
+            return "技能 '" + skillName + "' 在工作空间技能目录中未找到。";
         }
 
         deleteDirectory(skillDir);
 
         logger.info("AI removed skill", Map.of("skill", skillName));
 
-        return "✓ Skill '" + skillName + "' removed successfully.";
+        return "✓ 技能 '" + skillName + "' 已成功删除。";
     }
 
     /**
@@ -341,10 +341,10 @@ public class SkillsTool implements Tool {
                 + "# " + skillName + "\n\n"
                 + description + "\n\n"
                 + "## Instructions\n\n"
-                + "When the user asks to perform tasks related to this skill, follow these steps:\n\n"
-                + "1. Understand the user's request\n"
-                + "2. Execute the appropriate actions\n"
-                + "3. Report the results\n";
+                + "当用户要求执行与此技能相关的任务时，请遵循以下步骤:\n\n"
+                + "1. 理解用户的请求\n"
+                + "2. 执行适当的操作\n"
+                + "3. 报告结果\n";
     }
 
     /**
@@ -356,7 +356,7 @@ public class SkillsTool implements Tool {
                 try {
                     deleteDirectory(path);
                 } catch (IOException e) {
-                    throw new RuntimeException("Failed to delete: " + path, e);
+                    throw new RuntimeException("删除失败: " + path, e);
                 }
             });
         }

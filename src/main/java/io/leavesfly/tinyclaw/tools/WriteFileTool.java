@@ -51,7 +51,7 @@ public class WriteFileTool implements Tool {
     
     @Override
     public String description() {
-        return "Write content to a file";
+        return "将内容写入文件";
     }
     
     @Override
@@ -63,12 +63,12 @@ public class WriteFileTool implements Tool {
         
         Map<String, Object> pathParam = new HashMap<>();
         pathParam.put("type", "string");
-        pathParam.put("description", "Path to the file to write");
+        pathParam.put("description", "要写入的文件路径");
         properties.put("path", pathParam);
         
         Map<String, Object> contentParam = new HashMap<>();
         contentParam.put("type", "string");
-        contentParam.put("description", "Content to write to the file");
+        contentParam.put("description", "要写入文件的内容");
         properties.put("content", contentParam);
         
         params.put("properties", properties);
@@ -83,13 +83,13 @@ public class WriteFileTool implements Tool {
         String content = (String) args.get("content");
         
         if (path == null || path.isEmpty()) {
-            throw new IllegalArgumentException("path is required");
+            throw new IllegalArgumentException("路径参数是必需的");
         }
         if (content == null) {
-            throw new IllegalArgumentException("content is required");
+            throw new IllegalArgumentException("内容参数是必需的");
         }
         
-        // Security check
+        // 安全检查
         if (securityGuard != null) {
             String error = securityGuard.checkFilePath(path);
             if (error != null) {
@@ -104,9 +104,9 @@ public class WriteFileTool implements Tool {
                 Files.createDirectories(parentDir);
             }
             Files.writeString(filePath, content);
-            return "File written successfully";
+            return "文件写入成功";
         } catch (IOException e) {
-            throw new Exception("Failed to write file: " + e.getMessage());
+            throw new Exception("写入文件失败: " + e.getMessage());
         }
     }
 }

@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Tool for web searching using Brave Search API
+ * 网络搜索工具，使用 Brave Search API
  */
 public class WebSearchTool implements Tool {
     
@@ -41,7 +41,7 @@ public class WebSearchTool implements Tool {
     
     @Override
     public String description() {
-        return "Search the web for current information. Returns titles, URLs, and snippets from search results.";
+        return "搜索网络获取当前信息。返回搜索结果的标题、URL 和摘要。";
     }
     
     @Override
@@ -53,12 +53,12 @@ public class WebSearchTool implements Tool {
         
         Map<String, Object> queryParam = new HashMap<>();
         queryParam.put("type", "string");
-        queryParam.put("description", "Search query");
+        queryParam.put("description", "搜索查询");
         properties.put("query", queryParam);
         
         Map<String, Object> countParam = new HashMap<>();
         countParam.put("type", "integer");
-        countParam.put("description", "Number of results (1-10)");
+        countParam.put("description", "结果数量 (1-10)");
         countParam.put("minimum", 1);
         countParam.put("maximum", 10);
         properties.put("count", countParam);
@@ -72,12 +72,12 @@ public class WebSearchTool implements Tool {
     @Override
     public String execute(Map<String, Object> args) throws Exception {
         if (apiKey == null || apiKey.isEmpty()) {
-            return "Error: BRAVE_API_KEY not configured";
+            return "错误: BRAVE_API_KEY 未配置";
         }
         
         String query = (String) args.get("query");
         if (query == null || query.isEmpty()) {
-            throw new IllegalArgumentException("query is required");
+            throw new IllegalArgumentException("query 参数是必需的");
         }
         
         int count = maxResults;
@@ -103,14 +103,14 @@ public class WebSearchTool implements Tool {
         
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                return "Error: Search API returned status " + response.code();
+                return "错误: 搜索 API 返回状态 " + response.code();
             }
             
             String body = response.body() != null ? response.body().string() : "{}";
             JsonNode root = objectMapper.readTree(body);
             
             StringBuilder result = new StringBuilder();
-            result.append("Results for: ").append(query).append("\n");
+            result.append("搜索结果: ").append(query).append("\n");
             
             JsonNode webResults = root.path("web").path("results");
             if (webResults.isArray()) {

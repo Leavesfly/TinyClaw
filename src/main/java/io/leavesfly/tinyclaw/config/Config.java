@@ -19,11 +19,35 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
  * - 提供合理的默认值配置
  * - 支持配置的动态更新和热重载
  * - 结构化配置便于管理和维护
+ * - 提供Builder模式便于流畅构建配置
+ * - 包含配置验证机制
  * 
  * 加载方式：
  * 1. 从config.json文件加载
  * 2. 从环境变量读取敏感信息
  * 3. 提供程序化配置构建方法
+ * 
+ * 使用示例：
+ * <pre>
+ * // 方式1：加载配置文件
+ * Config config = ConfigLoader.load("~/.tinyclaw/config.json");
+ * 
+ * // 方式2：使用默认配置
+ * Config config = Config.defaultConfig();
+ * 
+ * // 方式3：使用Builder模式
+ * Config config = Config.builder()
+ *     .workspace("~/my-workspace")
+ *     .model("gpt-4")
+ *     .openAiApiKey("sk-...")
+ *     .maxTokens(4096)
+ *     .build();
+ * 
+ * // 验证配置
+ * config.validate().ifPresent(error -> {
+ *     System.err.println("配置错误: " + error);
+ * });
+ * </pre>
  */
 public class Config {
     
@@ -98,57 +122,86 @@ public class Config {
         return ConfigLoader.expandHome(agents.getDefaults().getWorkspace());
     }
     
+    /**
+     * 获取第一个可用的 API Key
+     * 按优先级顺序查找：OpenRouter > Anthropic > OpenAI > Gemini > Zhipu > Groq > vLLM > DashScope
+     */
     @JsonIgnore
     public String getApiKey() {
-        if (providers.getOpenrouter() != null && providers.getOpenrouter().getApiKey() != null && !providers.getOpenrouter().getApiKey().isEmpty()) {
-            return providers.getOpenrouter().getApiKey();
-        }
-        if (providers.getAnthropic() != null && providers.getAnthropic().getApiKey() != null && !providers.getAnthropic().getApiKey().isEmpty()) {
-            return providers.getAnthropic().getApiKey();
-        }
-        if (providers.getOpenai() != null && providers.getOpenai().getApiKey() != null && !providers.getOpenai().getApiKey().isEmpty()) {
-            return providers.getOpenai().getApiKey();
-        }
-        if (providers.getGemini() != null && providers.getGemini().getApiKey() != null && !providers.getGemini().getApiKey().isEmpty()) {
-            return providers.getGemini().getApiKey();
-        }
-        if (providers.getZhipu() != null && providers.getZhipu().getApiKey() != null && !providers.getZhipu().getApiKey().isEmpty()) {
-            return providers.getZhipu().getApiKey();
-        }
-        if (providers.getGroq() != null && providers.getGroq().getApiKey() != null && !providers.getGroq().getApiKey().isEmpty()) {
-            return providers.getGroq().getApiKey();
-        }
-        if (providers.getVllm() != null && providers.getVllm().getApiKey() != null && !providers.getVllm().getApiKey().isEmpty()) {
-            return providers.getVllm().getApiKey();
-        }
-        if (providers.getDashscope() != null && providers.getDashscope().getApiKey() != null && !providers.getDashscope().getApiKey().isEmpty()) {
-            return providers.getDashscope().getApiKey();
-        }
-        return "";
+        return providers.getFirstValidProvider()
+            .map(ProvidersConfig.ProviderConfig::getApiKey)
+            .orElse("");
     }
     
+    /**
+     * 获取第一个可用 Provider 的 API Base
+     * 每个 Provider 都有默认的 API Base
+     */
     @JsonIgnore
     public String getApiBase() {
-        if (providers.getOpenrouter() != null && providers.getOpenrouter().getApiKey() != null && !providers.getOpenrouter().getApiKey().isEmpty()) {
-            if (providers.getOpenrouter().getApiBase() != null && !providers.getOpenrouter().getApiBase().isEmpty()) {
-                return providers.getOpenrouter().getApiBase();
-            }
-            return "https://openrouter.ai/api/v1";
+        // OpenRouter (优先级最高)
+        if (hasValidApiKey(providers.getOpenrouter())) {
+            String base = providers.getOpenrouter().getApiBase();
+            return isNotEmpty(base) ? base : "https://openrouter.ai/api/v1";
         }
-        if (providers.getZhipu() != null && providers.getZhipu().getApiKey() != null && !providers.getZhipu().getApiKey().isEmpty()) {
+        
+        // Zhipu
+        if (hasValidApiKey(providers.getZhipu())) {
             return providers.getZhipu().getApiBase();
         }
-        if (providers.getVllm() != null && providers.getVllm().getApiKey() != null && !providers.getVllm().getApiKey().isEmpty() 
-            && providers.getVllm().getApiBase() != null && !providers.getVllm().getApiBase().isEmpty()) {
+        
+        // vLLM
+        if (hasValidApiKey(providers.getVllm()) && isNotEmpty(providers.getVllm().getApiBase())) {
             return providers.getVllm().getApiBase();
         }
-        if (providers.getDashscope() != null && providers.getDashscope().getApiKey() != null && !providers.getDashscope().getApiKey().isEmpty()) {
-            String dashscopeBase = providers.getDashscope().getApiBase();
-            return (dashscopeBase != null && !dashscopeBase.isEmpty()) ? dashscopeBase : "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        
+        // DashScope
+        if (hasValidApiKey(providers.getDashscope())) {
+            String base = providers.getDashscope().getApiBase();
+            return isNotEmpty(base) ? base : "https://dashscope.aliyuncs.com/compatible-mode/v1";
         }
+        
         return "";
     }
     
+    /**
+     * 检查字符串是否非空
+     */
+    private static boolean isNotEmpty(String str) {
+        return str != null && !str.isEmpty();
+    }
+    
+    /**
+     * 检查 Provider 是否有有效的 API Key
+     */
+    private boolean hasValidApiKey(ProvidersConfig.ProviderConfig provider) {
+        return provider != null && isNotEmpty(provider.getApiKey());
+    }
+    
+    /**
+     * 验证配置的完整性
+     * @return 验证结果，如果有问题则返回错误信息
+     */
+    @JsonIgnore
+    public java.util.Optional<String> validate() {
+        // 检查是否至少配置了一个 Provider
+        if (getApiKey().isEmpty()) {
+            return java.util.Optional.of("未配置任何 LLM Provider 的 API Key");
+        }
+        
+        // 检查工作空间路径
+        if (agents == null || agents.getDefaults() == null || 
+            agents.getDefaults().getWorkspace() == null || 
+            agents.getDefaults().getWorkspace().isEmpty()) {
+            return java.util.Optional.of("工作空间路径未配置");
+        }
+        
+        return java.util.Optional.empty();
+    }
+    
+    /**
+     * 创建默认配置
+     */
     public static Config defaultConfig() {
         Config config = new Config();
         
@@ -167,5 +220,72 @@ public class Config {
         config.getTools().getWeb().getSearch().setMaxResults(5);
         
         return config;
+    }
+    
+    /**
+     * 创建配置构建器
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+    
+    /**
+     * Config Builder 用于流畅地构建配置对象
+     */
+    public static class Builder {
+        private final Config config;
+        
+        private Builder() {
+            this.config = new Config();
+        }
+        
+        public Builder workspace(String workspace) {
+            config.getAgents().getDefaults().setWorkspace(workspace);
+            return this;
+        }
+        
+        public Builder model(String model) {
+            config.getAgents().getDefaults().setModel(model);
+            return this;
+        }
+        
+        public Builder maxTokens(int maxTokens) {
+            config.getAgents().getDefaults().setMaxTokens(maxTokens);
+            return this;
+        }
+        
+        public Builder temperature(double temperature) {
+            config.getAgents().getDefaults().setTemperature(temperature);
+            return this;
+        }
+        
+        public Builder maxToolIterations(int maxIterations) {
+            config.getAgents().getDefaults().setMaxToolIterations(maxIterations);
+            return this;
+        }
+        
+        public Builder openRouterApiKey(String apiKey) {
+            config.getProviders().getOpenrouter().setApiKey(apiKey);
+            return this;
+        }
+        
+        public Builder openAiApiKey(String apiKey) {
+            config.getProviders().getOpenai().setApiKey(apiKey);
+            return this;
+        }
+        
+        public Builder gatewayHost(String host) {
+            config.getGateway().setHost(host);
+            return this;
+        }
+        
+        public Builder gatewayPort(int port) {
+            config.getGateway().setPort(port);
+            return this;
+        }
+        
+        public Config build() {
+            return config;
+        }
     }
 }

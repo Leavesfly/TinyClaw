@@ -4,7 +4,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Tool for sending messages through channels
+ * 消息发送工具
+ * 用于通过通道发送消息
  */
 public class MessageTool implements Tool {
     
@@ -16,7 +17,7 @@ public class MessageTool implements Tool {
     }
     
     /**
-     * 设置 the current message context
+     * 设置当前消息上下文
      */
     public void setContext(String channel, String chatId) {
         this.currentChannel = channel;
@@ -24,14 +25,14 @@ public class MessageTool implements Tool {
     }
     
     /**
-     * 设置 the send callback for delivering messages
+     * 设置发送回调函数，用于传递消息
      */
     public void setSendCallback(TriConsumer callback) {
         this.sendCallback = callback;
     }
     
     /**
-     * TriConsumer interface for callback with three parameters
+     * 三参数消费者接口，用于回调
      */
     @FunctionalInterface
     public interface TriConsumer {
@@ -45,7 +46,7 @@ public class MessageTool implements Tool {
     
     @Override
     public String description() {
-        return "发送 a message to a specific channel and chat. Use this to deliver responses to users.";
+        return "向特定通道和聊天发送消息。使用此工具将响应传递给用户。";
     }
     
     @Override
@@ -57,17 +58,17 @@ public class MessageTool implements Tool {
         
         Map<String, Object> channelParam = new HashMap<>();
         channelParam.put("type", "string");
-        channelParam.put("description", "Target channel (telegram, discord, feishu, etc.)");
+        channelParam.put("description", "目标通道（telegram、discord、feishu 等）");
         properties.put("channel", channelParam);
         
         Map<String, Object> chatIdParam = new HashMap<>();
         chatIdParam.put("type", "string");
-        chatIdParam.put("description", "Target chat ID");
+        chatIdParam.put("description", "目标聊天 ID");
         properties.put("chat_id", chatIdParam);
         
         Map<String, Object> contentParam = new HashMap<>();
         contentParam.put("type", "string");
-        contentParam.put("description", "Message content to send");
+        contentParam.put("description", "要发送的消息内容");
         properties.put("content", contentParam);
         
         params.put("properties", properties);
@@ -80,10 +81,10 @@ public class MessageTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String content = (String) args.get("content");
         if (content == null || content.isEmpty()) {
-            throw new IllegalArgumentException("content is required");
+            throw new IllegalArgumentException("内容参数是必需的");
         }
         
-        // 获取 channel and chatId from args or use current context
+        // 从参数或当前上下文获取 channel 和 chatId
         String channel = (String) args.get("channel");
         String chatId = (String) args.get("chat_id");
         
@@ -95,19 +96,19 @@ public class MessageTool implements Tool {
         }
         
         if (channel == null || chatId == null) {
-            return "Error: No target channel or chat ID specified";
+            return "错误: 未指定目标通道或聊天 ID";
         }
         
-        // 发送 message via callback
+        // 通过回调发送消息
         if (sendCallback != null) {
             try {
                 sendCallback.accept(channel, chatId, content);
-                return "Message sent to " + channel + ":" + chatId;
+                return "消息已发送到 " + channel + ":" + chatId;
             } catch (Exception e) {
-                return "Error sending message: " + e.getMessage();
+                return "发送消息错误: " + e.getMessage();
             }
         }
         
-        return "Message prepared for " + channel + ":" + chatId + " (no callback set)";
+        return "消息已准备发送至 " + channel + ":" + chatId + " （未设置回调）";
     }
 }

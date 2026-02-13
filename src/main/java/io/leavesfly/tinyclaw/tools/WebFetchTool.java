@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
- * Tool for fetching web content
+ * 网页内容获取工具
+ * 用于获取网页内容并提取可读文本
  */
 public class WebFetchTool implements Tool {
     
@@ -25,7 +26,7 @@ public class WebFetchTool implements Tool {
     private final int maxChars;
     private final OkHttpClient httpClient;
     
-    // Patterns to remove from HTML
+    // 从 HTML 中移除的模式
     private static final Pattern SCRIPT_PATTERN = Pattern.compile("<script[\\s\\S]*?</script>", Pattern.CASE_INSENSITIVE);
     private static final Pattern STYLE_PATTERN = Pattern.compile("<style[\\s\\S]*?</style>", Pattern.CASE_INSENSITIVE);
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]+>");
@@ -48,7 +49,7 @@ public class WebFetchTool implements Tool {
     
     @Override
     public String description() {
-        return "Fetch a URL and extract readable content (HTML to text). Use this to get weather info, news, articles, or any web content.";
+        return "获取 URL 并提取可读内容（HTML 转文本）。用于获取天气信息、新闻、文章或任何网页内容。";
     }
     
     @Override
@@ -60,12 +61,12 @@ public class WebFetchTool implements Tool {
         
         Map<String, Object> urlParam = new HashMap<>();
         urlParam.put("type", "string");
-        urlParam.put("description", "URL to fetch");
+        urlParam.put("description", "要获取的 URL");
         properties.put("url", urlParam);
         
         Map<String, Object> maxCharsParam = new HashMap<>();
         maxCharsParam.put("type", "integer");
-        maxCharsParam.put("description", "Maximum characters to extract");
+        maxCharsParam.put("description", "最大提取字符数");
         maxCharsParam.put("minimum", 100);
         properties.put("maxChars", maxCharsParam);
         
@@ -79,24 +80,24 @@ public class WebFetchTool implements Tool {
     public String execute(Map<String, Object> args) throws Exception {
         String urlStr = (String) args.get("url");
         if (urlStr == null || urlStr.isEmpty()) {
-            throw new IllegalArgumentException("url is required");
+            throw new IllegalArgumentException("url 参数是必需的");
         }
         
-        // Validate URL
+        // 验证 URL
         URI uri;
         try {
             uri = new URI(urlStr);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid URL: " + e.getMessage());
+            throw new IllegalArgumentException("无效的 URL: " + e.getMessage());
         }
         
         String scheme = uri.getScheme();
         if (!"http".equals(scheme) && !"https".equals(scheme)) {
-            throw new IllegalArgumentException("Only http/https URLs are allowed");
+            throw new IllegalArgumentException("只允许 http/https URL");
         }
         
         if (uri.getHost() == null || uri.getHost().isEmpty()) {
-            throw new IllegalArgumentException("Missing domain in URL");
+            throw new IllegalArgumentException("URL 中缺少域名");
         }
         
         int max = maxChars;
@@ -115,7 +116,7 @@ public class WebFetchTool implements Tool {
         
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                return "Error: HTTP " + response.code();
+                return "错误: HTTP " + response.code();
             }
             
             String contentType = response.header("Content-Type", "");
@@ -125,7 +126,7 @@ public class WebFetchTool implements Tool {
             String extractor;
             
             if (contentType.contains("application/json")) {
-                // JSON content
+                // JSON 内容
                 try {
                     JsonNode json = objectMapper.readTree(body);
                     text = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(json);
@@ -137,7 +138,7 @@ public class WebFetchTool implements Tool {
             } else if (contentType.contains("text/html") || 
                        body.trim().startsWith("<!DOCTYPE") || 
                        body.trim().toLowerCase().startsWith("<html")) {
-                // HTML content
+                // HTML 内容
                 text = extractText(body);
                 extractor = "text";
             } else {
@@ -150,7 +151,7 @@ public class WebFetchTool implements Tool {
                 text = text.substring(0, max);
             }
             
-            // 构建 result
+            // 构建结果
             Map<String, Object> result = new HashMap<>();
             result.put("url", urlStr);
             result.put("status", response.code());
@@ -164,14 +165,14 @@ public class WebFetchTool implements Tool {
     }
     
     private String extractText(String html) {
-        // Remove script and style tags
+        // 移除 script 和 style 标签
         String result = SCRIPT_PATTERN.matcher(html).replaceAll("");
         result = STYLE_PATTERN.matcher(result).replaceAll("");
         
-        // Remove all HTML tags
+        // 移除所有 HTML 标签
         result = TAG_PATTERN.matcher(result).replaceAll(" ");
         
-        // Normalize whitespace
+        // 规范化空白字符
         result = WHITESPACE_PATTERN.matcher(result.trim()).replaceAll(" ");
         
         return result;

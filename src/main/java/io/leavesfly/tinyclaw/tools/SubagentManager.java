@@ -14,7 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Manager for spawning and tracking subagents
+ * 子代理管理器
+ * 用于生成和跟踪子代理任务
  */
 public class SubagentManager {
     
@@ -27,7 +28,7 @@ public class SubagentManager {
     private final AtomicInteger nextId = new AtomicInteger(1);
     
     /**
-     * Represents a subagent task
+     * 表示一个子代理任务
      */
     public static class SubagentTask {
         private String id;
@@ -41,7 +42,7 @@ public class SubagentManager {
         
         public SubagentTask() {}
         
-        // Getters and setters
+        // Getter 和 Setter 方法
         public String getId() { return id; }
         public void setId(String id) { this.id = id; }
         
@@ -74,7 +75,7 @@ public class SubagentManager {
     }
     
     /**
-     * Spawn a new subagent task
+     * 生成一个新的子代理任务
      */
     public String spawn(String task, String label, String originChannel, String originChatId) {
         String taskId = "subagent-" + nextId.getAndIncrement();
@@ -90,7 +91,7 @@ public class SubagentManager {
         
         tasks.put(taskId, subagentTask);
         
-        // 运行 task in background
+        // 在后台运行任务
         Thread thread = new Thread(() -> runTask(subagentTask), "subagent-" + taskId);
         thread.setDaemon(true);
         thread.start();
@@ -102,18 +103,18 @@ public class SubagentManager {
         ));
         
         if (label != null && !label.isEmpty()) {
-            return "Spawned subagent '" + label + "' for task: " + task;
+            return "已生成子代理 '" + label + "' 处理任务: " + task;
         }
-        return "Spawned subagent for task: " + task;
+        return "已生成子代理处理任务: " + task;
     }
     
     private void runTask(SubagentTask task) {
         task.setStatus("running");
         task.setCreated(System.currentTimeMillis());
         
-        // 构建 messages for subagent
+        // 为子代理构建消息
         List<Message> messages = new ArrayList<>();
-        messages.add(new Message("system", "You are a subagent. Complete the given task independently and report the result."));
+        messages.add(new Message("system", "你是一个子代理。独立完成给定的任务并报告结果。"));
         messages.add(new Message("user", task.getTask()));
         
         try {
@@ -125,20 +126,20 @@ public class SubagentManager {
             task.setResult(response.getContent());
         } catch (Exception e) {
             task.setStatus("failed");
-            task.setResult("Error: " + e.getMessage());
+            task.setResult("错误: " + e.getMessage());
             logger.error("Subagent task failed", Map.of(
                     "task_id", task.getId(),
                     "error", e.getMessage()
             ));
         }
         
-        // 发送 announce message back to main agent
+        // 发送通知消息回主 Agent
         if (bus != null) {
             String announceContent;
             if (task.getLabel() != null && !task.getLabel().isEmpty()) {
-                announceContent = "Task '" + task.getLabel() + "' completed.\n\nResult:\n" + task.getResult();
+                announceContent = "任务 '" + task.getLabel() + "' 已完成。\n\n结果:\n" + task.getResult();
             } else {
-                announceContent = "Task completed.\n\nResult:\n" + task.getResult();
+                announceContent = "任务已完成。\n\n结果:\n" + task.getResult();
             }
             
             bus.publishInbound(new InboundMessage(
@@ -151,21 +152,21 @@ public class SubagentManager {
     }
     
     /**
-     * 获取 a task by ID
+     * 根据 ID 获取任务
      */
     public SubagentTask getTask(String taskId) {
         return tasks.get(taskId);
     }
     
     /**
-     * List all tasks
+     * 列出所有任务
      */
     public List<SubagentTask> listTasks() {
         return new ArrayList<>(tasks.values());
     }
     
     /**
-     * 获取 task count
+     * 获取任务数量
      */
     public int getTaskCount() {
         return tasks.size();
