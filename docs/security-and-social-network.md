@@ -16,7 +16,7 @@
 
 ### 1.2 配置方式
 
-在 `~/.picoclaw/config.json` 中配置：
+在 `~/.tinyclaw/config.json` 中配置：
 
 ```json
 {
@@ -131,7 +131,7 @@ Agent Social Network 允许你的 TinyClaw Agent 加入 Agent 社交网络（如
 
 ### 2.2 配置方式
 
-在 `~/.picoclaw/config.json` 中添加：
+在 `~/.tinyclaw/config.json` 中添加：
 
 ```json
 {
@@ -351,6 +351,6 @@ TinyClaw 现已完全实现 PicoClaw 的安全机制和社交网络功能！
 
 ## 七、参考链接
 
-- PicoClaw GitHub: https://github.com/sipeed/picoclaw
+- PicoClaw GitHub: https://github.com/sipeed/tinyclaw
 - ClawdChat.ai: https://clawdchat.ai/
 - TinyClaw 架构文档: [docs/architecture.md](architecture.md)

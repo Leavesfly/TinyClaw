@@ -67,7 +67,7 @@ public abstract class CliCommand {
      */
     protected String getConfigPath() {
         String home = System.getProperty("user.home");
-        return home + "/.picoclaw/config.json";
+        return home + "/.tinyclaw/config.json";
     }
     
     /**
@@ -75,6 +75,6 @@ public abstract class CliCommand {
      */
     protected String getWorkspacePath() {
         String home = System.getProperty("user.home");
-        return home + "/.picoclaw/workspace";
+        return home + "/.tinyclaw/workspace";
     }
 }

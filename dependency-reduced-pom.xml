@@ -6,7 +6,6 @@
   <name>TinyClaw</name>
   <version>0.1.0</version>
   <description>Ultra-lightweight personal AI assistant - Java implementation</description>
-  <url>https://github.com/sipeed/picoclaw</url>
   <licenses>
     <license>
       <name>MIT License</name>

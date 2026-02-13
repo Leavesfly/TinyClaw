@@ -120,13 +120,13 @@ java -jar target/tinyclaw-0.1.0.jar onboard
 ```
 
 该命令会：
-- 在 `~/.picoclaw/config.json` 创建默认配置文件
+- 在 `~/.tinyclaw/config.json` 创建默认配置文件
 - 在 `~/.tinyclaw/workspace/` 创建工作空间目录
 - 生成模板文件（`AGENTS.md`、`SOUL.md`、`USER.md`、`IDENTITY.md`）
 
 #### 3. 配置 API Key
 
-编辑 `~/.picoclaw/config.json`，填入你的 API Key：
+编辑 `~/.tinyclaw/config.json`，填入你的 API Key：
 
 ```json
 {
@@ -368,7 +368,7 @@ java -jar target/tinyclaw-0.1.0.jar gateway
 
 ### ⚙️ 完整配置示例
 
-`~/.picoclaw/config.json`：
+`~/.tinyclaw/config.json`：
 
 ```json
 {

@@ -78,7 +78,7 @@ public class SkillsCommand extends CliCommand {
             case "install":
                 if (args.length < 2) {
                     System.out.println("Usage: tinyclaw skills install <github-repo>");
-                    System.out.println("Example: tinyclaw skills install sipeed/picoclaw-skills/weather");
+                    System.out.println("Example: tinyclaw skills install sipeed/tinyclaw-skills/weather");
                     return 1;
                 }
                 return installSkill(skillsDir, args[1]);
@@ -377,7 +377,7 @@ public class SkillsCommand extends CliCommand {
         System.out.println("  tinyclaw skills list");
         System.out.println("  tinyclaw skills install-builtin");
         System.out.println("  tinyclaw skills list-builtin");
-        System.out.println("  tinyclaw skills install sipeed/picoclaw-skills/weather");
+        System.out.println("  tinyclaw skills install sipeed/tinyclaw-skills/weather");
         System.out.println("  tinyclaw skills remove weather");
     }
 }

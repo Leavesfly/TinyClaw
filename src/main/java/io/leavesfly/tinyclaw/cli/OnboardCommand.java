@@ -182,8 +182,8 @@ public class OnboardCommand extends CliCommand {
         System.out.println("Usage: tinyclaw onboard");
         System.out.println();
         System.out.println("此命令将：");
-        System.out.println("  - 在 ~/.picoclaw/config.json 创建默认配置");
-        System.out.println("  - 在 ~/.picoclaw/workspace 创建工作空间目录");
+        System.out.println("  - 在 ~/.tinyclaw/config.json 创建默认配置");
+        System.out.println("  - 在 ~/.tinyclaw/workspace 创建工作空间目录");
         System.out.println("  - 创建模板文件（AGENTS.md, SOUL.md, USER.md 等）");
     }
 }

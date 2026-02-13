@@ -534,7 +534,7 @@ Config (根配置)
 #### ConfigLoader
 
 配置加载器，支持：
-- 从 `~/.picoclaw/config.json` 加载 JSON 配置
+- 从 `~/.tinyclaw/config.json` 加载 JSON 配置
 - 路径中的 `~` 自动展开为用户主目录
 - 提供合理的默认值（`Config.defaultConfig()`）
 
@@ -644,7 +644,7 @@ JobHandler.handle(job)
 ## 五、工作空间结构
 
 ```
-~/.picoclaw/
+~/.tinyclaw/
   └─ config.json              ← 全局配置文件
 
 ~/.tinyclaw/workspace/
