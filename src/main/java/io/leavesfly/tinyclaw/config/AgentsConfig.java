@@ -1,5 +1,8 @@
 package io.leavesfly.tinyclaw.config;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Agent 配置类
  * 包含 Agent 的默认配置信息
@@ -32,7 +35,7 @@ public class AgentsConfig {
         private int maxToolIterations;
         private boolean heartbeatEnabled;
         private boolean restrictToWorkspace;
-        private java.util.List<String> commandBlacklist;
+        private List<String> commandBlacklist;
         
         public AgentDefaults() {
             this.workspace = "~/.tinyclaw/workspace";
@@ -42,7 +45,7 @@ public class AgentsConfig {
             this.maxToolIterations = 20;
             this.heartbeatEnabled = false;
             this.restrictToWorkspace = true; // Default: enable sandbox
-            this.commandBlacklist = new java.util.ArrayList<>(); // Empty means use default
+            this.commandBlacklist = new ArrayList<>(); // Empty means use default
         }
         
         // Getters and Setters

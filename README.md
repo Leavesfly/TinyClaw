@@ -19,8 +19,10 @@
 - **🧠 记忆与上下文** — 内置长期记忆存储和会话管理，Agent 能记住重要信息
 - **💓 心跳服务** — 定期自主思考，让 Agent 保持"活跃"
 - **🎤 语音转写** — 集成 Groq Whisper，支持 Telegram/Discord 语音消息自动转文字
-- **🔒 安全沙箱** — 工作空间限制 + 命令黑名单，生产级安全防护
+- **🔒 安全沙箱** — 工作空间限制 + 命令黑名单，生产级安全防护（SecurityGuard）
 - **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
+- **🖥️ Web 控制台** — 内置 Web UI，可视化管理 Agent 状态和会话
+- **🎬 Demo 模式** — 一键演示核心功能，方便现场展示和教学
 
 ---
 
@@ -145,6 +147,10 @@ java -jar target/tinyclaw-0.1.0.jar agent
 
 ### 🎬 5 分钟 Demo：如何演示 TinyClaw
 
+- **Demo 0：一键演示模式（推荐首选）**
+  - 前置：完成上文“快速开始”的构建、onboard 和 API Key 配置。
+  - 在终端运行 `java -jar target/tinyclaw-0.1.0.jar demo agent-basic`，自动跑完一轮 CLI 对话流程。
+  - 对照日志输出，可以讲解从 `TinyClaw.main` → `DemoCommand` → `AgentLoop.processDirect` 的完整调用链。
 - **Demo 1：本地 CLI 助手**
   - 前置：完成上文“快速开始”的构建、onboard 和 API Key 配置。
   - 在终端运行 `java -jar target/tinyclaw-0.1.0.jar agent`，随便问一个问题，一边看终端输出，一边可以对照 `TinyClaw.java` → `AgentCommand` → `AgentLoop.processDirect` 的调用链来讲解。
@@ -154,6 +160,9 @@ java -jar target/tinyclaw-0.1.0.jar agent
 - **Demo 3：定时任务播报**
   - 使用 `tinyclaw cron add --name "demo" --message "这是一条演示任务" --every 30` 创建一个每 30 秒执行的任务。
   - 保持 gateway 运行，等待定时任务触发并在通道中看到播报消息，可以用来说明 `CronService` 与 Agent 的集成路径。
+- **Demo 4：Web 控制台**
+  - 在 gateway 模式下，访问 `http://localhost:18790`（默认端口），查看 Web UI 界面。
+  - 可以实时查看 Agent 状态、会话列表、工具使用情况等信息。
 
 ---
 
@@ -167,6 +176,7 @@ java -jar target/tinyclaw-0.1.0.jar agent
 | `status` | 查看系统状态和配置 | `tinyclaw status` |
 | `cron` | 管理定时任务 | `tinyclaw cron list` |
 | `skills` | 管理技能插件 | `tinyclaw skills list` |
+| `demo` | 运行内置演示流程 | `tinyclaw demo agent-basic` |
 | `version` | 显示版本信息 | `tinyclaw version` |
 
 #### Agent 命令选项
@@ -203,6 +213,12 @@ tinyclaw skills install-builtin             # 安装所有内置技能
 tinyclaw skills install owner/repo/skill    # 从 GitHub 安装
 tinyclaw skills show <name>                 # 查看技能详情
 tinyclaw skills remove <name>               # 移除技能
+```
+
+#### Demo 命令选项
+
+```bash
+tinyclaw demo agent-basic                   # 一键运行 CLI 对话演示
 ```
 
 ---
@@ -258,20 +274,41 @@ tinyclaw skills remove <name>               # 移除技能
 
 Agent 在对话中可以自主调用以下工具：
 
-| 工具 | 说明 |
-|------|------|
-| `read_file` | 读取文件内容 |
-| `write_file` | 写入文件（创建或覆盖） |
-| `append_file` | 追加内容到文件 |
-| `edit_file` | 基于 diff 的精确文件编辑 |
-| `list_dir` | 列出目录内容 |
-| `exec` | 执行 Shell 命令 |
-| `web_search` | 网络搜索（基于 Brave Search API） |
-| `web_fetch` | 抓取网页内容 |
-| `message` | 向指定通道发送消息 |
-| `cron` | 创建/管理定时任务 |
-| `spawn` | 生成子代理执行独立任务 |
-| `social_network` | 与其他 Agent 通信（ClawdChat.ai） |
+| 工具 | 说明 | 安全特性 |
+|------|------|----------|
+| `read_file` | 读取文件内容 | ✓ 工作空间限制 |
+| `write_file` | 写入文件（创建或覆盖） | ✓ 工作空间限制 |
+| `append_file` | 追加内容到文件 | ✓ 工作空间限制 |
+| `edit_file` | 基于 diff 的精确文件编辑 | ✓ 工作空间限制 |
+| `list_dir` | 列出目录内容 | ✓ 工作空间限制 |
+| `exec` | 执行 Shell 命令 | ✓ 命令黑名单 + 工作目录限制 |
+| `web_search` | 网络搜索（基于 Brave Search API） | - |
+| `web_fetch` | 抓取网页内容 | - |
+| `message` | 向指定通道发送消息 | - |
+| `cron` | 创建/管理定时任务 | - |
+| `spawn` | 生成子代理执行独立任务 | - |
+| `social_network` | 与其他 Agent 通信（ClawdChat.ai） | - |
+| `skills` | 管理和查询技能插件 | - |
+
+#### 安全防护机制
+
+TinyClaw 通过 **SecurityGuard** 提供生产级安全防护：
+
+- **工作空间沙箱**：所有文件操作（读/写/编辑/列表）默认限制在 workspace 目录内，防止访问系统敏感文件
+- **命令黑名单**：`exec` 工具内置危险命令检测，阻止 `rm -rf`、`format`、`sudo` 等高风险操作
+- **可配置策略**：通过 `restrictToWorkspace` 和 `commandBlacklist` 配置项自定义安全策略
+
+配置示例：
+```json
+{
+  "agents": {
+    "defaults": {
+      "restrictToWorkspace": true,
+      "commandBlacklist": ["rm -rf", "sudo", "format"]
+    }
+  }
+}
+```
 
 ---
 
@@ -320,13 +357,34 @@ java -jar target/tinyclaw-0.1.0.jar gateway
 
 启动后，网关会：
 1. 加载配置并初始化 LLM 提供商
-2. 注册所有内置工具
-3. 启动定时任务服务
-4. 启动心跳服务（如已启用）
-5. 连接所有已启用的消息通道
-6. 在后台运行 Agent 消息处理循环
+2. 初始化安全防护（SecurityGuard）
+3. 注册所有内置工具
+4. 启动定时任务服务
+5. 启动心跳服务（如已启用）
+6. 连接所有已启用的消息通道
+7. 启动 Web 控制台（默认端口 18790）
+8. 在后台运行 Agent 消息处理循环
 
 按 `Ctrl+C` 优雅关闭所有服务。
+
+#### Web 控制台
+
+网关启动后，访问 `http://localhost:18790` 可以查看：
+- 实时 Agent 状态和配置信息
+- 会话列表和历史记录
+- 工具使用统计
+- 技能插件状态
+- 定时任务管理
+
+Web 控制台端口可在配置文件中自定义：
+```json
+{
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  }
+}
+```
 
 ---
 

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyClaw Console</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 左侧导航栏 -->
+        <nav class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">🦞</span>
+                <span class="logo-text">TinyClaw</span>
+                <span class="version">v0.1.0</span>
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-group" data-group="chat">
+                    <div class="nav-group-header">
+                        <span class="nav-icon">💬</span>
+                        <span>Chat</span>
+                        <span class="nav-arrow">▾</span>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#chat" class="nav-item active" data-page="chat">
+                            <span class="nav-icon">○</span>
+                            <span>Chat</span>
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="nav-group" data-group="control">
+                    <div class="nav-group-header">
+                        <span class="nav-icon">📡</span>
+                        <span>Control</span>
+                        <span class="nav-arrow">▾</span>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#channels" class="nav-item" data-page="channels">
+                            <span class="nav-icon">📶</span>
+                            <span>Channels</span>
+                        </a>
+                        <a href="#sessions" class="nav-item" data-page="sessions">
+                            <span class="nav-icon">👤</span>
+                            <span>Sessions</span>
+                        </a>
+                        <a href="#cron" class="nav-item" data-page="cron">
+                            <span class="nav-icon">⏰</span>
+                            <span>Cron Jobs</span>
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="nav-group" data-group="agent">
+                    <div class="nav-group-header">
+                        <span class="nav-icon">⚡</span>
+                        <span>Agent</span>
+                        <span class="nav-arrow">▾</span>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#workspace" class="nav-item" data-page="workspace">
+                            <span class="nav-icon">📁</span>
+                            <span>Workspace</span>
+                        </a>
+                        <a href="#skills" class="nav-item" data-page="skills">
+                            <span class="nav-icon">🧩</span>
+                            <span>Skills</span>
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="nav-group" data-group="settings">
+                    <div class="nav-group-header">
+                        <span class="nav-icon">⚙️</span>
+                        <span>Settings</span>
+                        <span class="nav-arrow">▾</span>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#models" class="nav-item" data-page="models">
+                            <span class="nav-icon">🤖</span>
+                            <span>Models</span>
+                        </a>
+                        <a href="#environments" class="nav-item" data-page="environments">
+                            <span class="nav-icon">🌍</span>
+                            <span>Environments</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <header class="page-header">
+                <h1 class="page-title" id="pageTitle">Chat</h1>
+            </header>
+            
+            <div class="page-content">
+                <!-- Chat 页面 -->
+                <div id="page-chat" class="page active">
+                    <div class="chat-container">
+                        <div class="chat-sidebar">
+                            <button class="btn btn-primary btn-block" id="newChatBtn">+ New Chat</button>
+                            <div class="chat-history" id="chatHistory"></div>
+                        </div>
+                        <div class="chat-main">
+                            <div class="chat-messages" id="chatMessages">
+                                <div class="chat-welcome">
+                                    <div class="welcome-icon">🦞</div>
+                                    <h2>Hello, how can I help you today?</h2>
+                                    <p>I am a helpful assistant that can help you with your questions.</p>
+                                </div>
+                            </div>
+                            <div class="chat-input-container">
+                                <textarea class="chat-input" id="chatInput" placeholder="Type your message..." rows="1"></textarea>
+                                <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Channels 页面 -->
+                <div id="page-channels" class="page">
+                    <p class="page-desc">Manage and configure message channels</p>
+                    <div class="card-grid" id="channelsGrid"></div>
+                </div>
+                
+                <!-- Sessions 页面 -->
+                <div id="page-sessions" class="page">
+                    <p class="page-desc">View and manage conversation sessions</p>
+                    <div class="sessions-container">
+                        <div class="sessions-list" id="sessionsList"></div>
+                        <div class="session-detail" id="sessionDetail">
+                            <p class="empty-state">Select a session to view history</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Cron Jobs 页面 -->
+                <div id="page-cron" class="page">
+                    <p class="page-desc">Schedule and manage automated tasks</p>
+                    <div class="cron-toolbar">
+                        <button class="btn btn-primary" id="addCronBtn">+ Add Job</button>
+                    </div>
+                    <div class="cron-list" id="cronList"></div>
+                </div>
+                
+                <!-- Workspace 页面 -->
+                <div id="page-workspace" class="page">
+                    <p class="page-desc">Edit workspace configuration files</p>
+                    <div class="workspace-container">
+                        <div class="workspace-files" id="workspaceFiles"></div>
+                        <div class="workspace-editor">
+                            <div class="editor-header">
+                                <span id="editorFileName">Select a file</span>
+                                <button class="btn btn-primary btn-sm" id="saveFileBtn" disabled>Save</button>
+                            </div>
+                            <textarea class="editor-content" id="editorContent" placeholder="Select a file to edit..." disabled></textarea>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Skills 页面 -->
+                <div id="page-skills" class="page">
+                    <p class="page-desc">View and manage agent skills</p>
+                    <div class="card-grid" id="skillsGrid"></div>
+                </div>
+                
+                <!-- Models 页面 -->
+                <div id="page-models" class="page">
+                    <div class="section">
+                        <h2 class="section-title">Providers</h2>
+                        <p class="page-desc">Configure API keys and endpoints for each provider</p>
+                        <div class="card-grid" id="providersGrid"></div>
+                    </div>
+                    <div class="section">
+                        <h2 class="section-title">LLM</h2>
+                        <p class="page-desc">Choose the active LLM model from an authorized provider</p>
+                        <div class="config-card">
+                            <div class="config-card-header">
+                                <h3>LLM Configuration</h3>
+                                <span class="badge badge-outline" id="activeModelBadge">Active: -</span>
+                            </div>
+                            <div class="config-form">
+                                <div class="form-group">
+                                    <label>Model</label>
+                                    <input type="text" class="form-control" id="modelInput" placeholder="e.g. gpt-4, claude-3-opus">
+                                </div>
+                                <button class="btn btn-primary" id="saveModelBtn">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Environments 页面 -->
+                <div id="page-environments" class="page">
+                    <p class="page-desc">Configure agent default parameters</p>
+                    <div class="config-card">
+                        <h3>Agent Configuration</h3>
+                        <div class="config-form" id="agentConfigForm">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Max Tokens</label>
+                                    <input type="number" class="form-control" id="cfgMaxTokens">
+                                </div>
+                                <div class="form-group">
+                                    <label>Temperature</label>
+                                    <input type="number" class="form-control" id="cfgTemperature" step="0.1" min="0" max="2">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Max Tool Iterations</label>
+                                    <input type="number" class="form-control" id="cfgMaxToolIterations">
+                                </div>
+                                <div class="form-group">
+                                    <label>Heartbeat Enabled</label>
+                                    <select class="form-control" id="cfgHeartbeatEnabled">
+                                        <option value="false">No</option>
+                                        <option value="true">Yes</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Restrict to Workspace</label>
+                                    <select class="form-control" id="cfgRestrictToWorkspace">
+                                        <option value="true">Yes</option>
+                                        <option value="false">No</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary" id="saveAgentConfigBtn">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Modal -->
+    <div class="modal" id="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Modal</h3>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modalCancel">Cancel</button>
+                <button class="btn btn-primary" id="modalConfirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/js/app.js"></script>
+</body>
+</html>

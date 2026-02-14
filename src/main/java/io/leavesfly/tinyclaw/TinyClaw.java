@@ -33,9 +33,7 @@ import java.util.function.Supplier;
  * # 执行特定命令
  * java -jar tinyclaw.jar agent list
  * </pre>
- * 
- * <p><b>学习提示：</b>如果你想从“命令行入口”开始导读整个项目，可以先看 TinyClaw.run 如何根据命令分发到各个 CliCommand，
- * 再分别跳转到 AgentCommand/GatewayCommand/CronCommand 等类，对照 README 的命令示例和 Demo 章节一起阅读。</p>
+ *
  */
 public class TinyClaw {
     

@@ -155,7 +155,7 @@ public class OnboardCommand extends CliCommand {
             }
         }
         
-        // 创建内存文件
+        // 创建记忆文件
         Path memoryFile = Paths.get(workspace, "memory", "MEMORY.md");
         if (!Files.exists(memoryFile)) {
             String memoryContent = "# 长期记忆\n\n" +

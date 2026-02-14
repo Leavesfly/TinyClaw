@@ -74,8 +74,12 @@ public class StatusCommand extends CliCommand {
                 && !config.getProviders().getZhipu().getApiKey().isEmpty();
         boolean hasGroq = config.getProviders().getGroq().getApiKey() != null 
                 && !config.getProviders().getGroq().getApiKey().isEmpty();
+        boolean hasDashscope = config.getProviders().getDashscope().getApiKey() != null 
+                && !config.getProviders().getDashscope().getApiKey().isEmpty();
         boolean hasVLLM = config.getProviders().getVllm().getApiBase() != null 
                 && !config.getProviders().getVllm().getApiBase().isEmpty();
+        boolean hasOllama = config.getProviders().getOllama().getApiBase() != null 
+                && !config.getProviders().getOllama().getApiBase().isEmpty();
         
         System.out.println("  OpenRouter API: " + status(hasOpenRouter));
         System.out.println("  Anthropic API: " + status(hasAnthropic));
@@ -83,10 +87,16 @@ public class StatusCommand extends CliCommand {
         System.out.println("  Gemini API: " + status(hasGemini));
         System.out.println("  Zhipu API: " + status(hasZhipu));
         System.out.println("  Groq API: " + status(hasGroq));
+        System.out.println("  DashScope API: " + status(hasDashscope));
         if (hasVLLM) {
             System.out.println("  vLLM/本地: ✓ " + config.getProviders().getVllm().getApiBase());
         } else {
             System.out.println("  vLLM/本地: 未设置");
+        }
+        if (hasOllama) {
+            System.out.println("  Ollama: ✓ " + config.getProviders().getOllama().getApiBase());
+        } else {
+            System.out.println("  Ollama: 未设置 (默认 http://localhost:11434)");
         }
         
         return 0;

@@ -7,16 +7,15 @@ import io.leavesfly.tinyclaw.channels.DiscordChannel;
 import io.leavesfly.tinyclaw.channels.TelegramChannel;
 import io.leavesfly.tinyclaw.channels.WebhookServer;
 import io.leavesfly.tinyclaw.config.Config;
-import io.leavesfly.tinyclaw.config.ConfigLoader;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.heartbeat.HeartbeatService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
+import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.skills.SkillsLoader;
+import io.leavesfly.tinyclaw.tools.CronTool;
 import io.leavesfly.tinyclaw.voice.GroqTranscriber;
-
-import io.leavesfly.tinyclaw.bus.OutboundMessage;
-import io.leavesfly.tinyclaw.tools.*;
+import io.leavesfly.tinyclaw.web.WebConsoleServer;
 
 import java.nio.file.Paths;
 import java.util.List;
@@ -54,30 +53,14 @@ public class GatewayCommand extends CliCommand {
         }
         
         // 加载配置
-        Config config;
-        try {
-            config = ConfigLoader.load(getConfigPath());
-        } catch (Exception e) {
-            System.err.println("加载配置错误: " + e.getMessage());
-            System.err.println("运行 'tinyclaw onboard' first to initialize.");
+        Config config = loadConfig();
+        if (config == null) {
             return 1;
         }
         
         // 创建服务提供者
-        LLMProvider provider;
-        try {
-            String apiKey = config.getProviders().getOpenrouter().getApiKey();
-            String apiBase = config.getProviders().getOpenrouter().getApiBase();
-            if (apiKey == null || apiKey.isEmpty()) {
-                apiKey = config.getProviders().getOpenai().getApiKey();
-                apiBase = "https://api.openai.com/v1";
-            }
-            if (apiKey == null || apiKey.isEmpty()) {
-                throw new IllegalStateException("未配置 API 密钥。请设置 OpenRouter 或 OpenAI API 密钥。");
-            }
-            provider = new HTTPProvider(apiKey, apiBase != null ? apiBase : "https://openrouter.ai/api/v1");
-        } catch (Exception e) {
-            System.err.println("创建服务提供者错误: " + e.getMessage());
+        LLMProvider provider = createProviderOrNull(config);
+        if (provider == null) {
             return 1;
         }
         
@@ -202,6 +185,24 @@ public class GatewayCommand extends CliCommand {
         System.out.println("  • POST /webhook/qq        → QQ 回调");
         System.out.println("  • GET  /health            → 健康检查");
         
+        // 启动 Web Console Server
+        int webPort = config.getGateway().getPort() + 1; // Web Console 使用下一个端口
+        SessionManager sessionManager = new SessionManager(Paths.get(workspace, "sessions").toString());
+        SkillsLoader skillsLoader = new SkillsLoader(workspace, null, null);
+        WebConsoleServer webConsoleServer = new WebConsoleServer(
+                config.getGateway().getHost(),
+                webPort,
+                config,
+                agentLoop,
+                channelManager,
+                sessionManager,
+                cronService,
+                skillsLoader
+        );
+        webConsoleServer.start();
+        System.out.println("✓ Web Console 已启动");
+        System.out.println("  • 访问地址: http://" + config.getGateway().getHost() + ":" + webPort);
+        
         // 在后台启动 agent 循环
         Thread agentThread = new Thread(() -> {
             try {
@@ -217,6 +218,7 @@ public class GatewayCommand extends CliCommand {
         CountDownLatch shutdownLatch = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n正在关闭...");
+            webConsoleServer.stop();
             webhookServer.stop();
             heartbeatService.stop();
             cronService.stop();
@@ -230,79 +232,6 @@ public class GatewayCommand extends CliCommand {
         shutdownLatch.await();
         
         return 0;
-    }
-    
-    private void registerTools(AgentLoop agentLoop, Config config, MessageBus bus, LLMProvider provider) {
-        String workspace = config.getWorkspacePath();
-        
-        // Initialize SecurityGuard
-        io.leavesfly.tinyclaw.security.SecurityGuard securityGuard = null;
-        if (config.getAgents().getDefaults().isRestrictToWorkspace()) {
-            java.util.List<String> customBlacklist = config.getAgents().getDefaults().getCommandBlacklist();
-            if (customBlacklist != null && !customBlacklist.isEmpty()) {
-                securityGuard = new io.leavesfly.tinyclaw.security.SecurityGuard(
-                    workspace, true, customBlacklist
-                );
-            } else {
-                securityGuard = new io.leavesfly.tinyclaw.security.SecurityGuard(
-                    workspace, true
-                );
-            }
-        }
-        
-        // 文件工具
-        agentLoop.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
-        agentLoop.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
-        agentLoop.registerTool(securityGuard != null ? new AppendFileTool(securityGuard) : new AppendFileTool());
-        agentLoop.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
-        
-        // 文件编辑工具
-        agentLoop.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
-        
-        // 执行工具
-        agentLoop.registerTool(new ExecTool(workspace, securityGuard));
-        
-        // 网络工具
-        String braveApiKey = config.getTools() != null ? config.getTools().getBraveApi() : null;
-        if (braveApiKey != null && !braveApiKey.isEmpty()) {
-            agentLoop.registerTool(new WebSearchTool(braveApiKey, 5));
-        }
-        agentLoop.registerTool(new WebFetchTool(50000));
-        
-        // 消息工具
-        MessageTool messageTool = new MessageTool();
-        messageTool.setSendCallback((channel, chatId, content) -> {
-            bus.publishOutbound(new OutboundMessage(channel, chatId, content));
-        });
-        agentLoop.registerTool(messageTool);
-        
-        // 定时任务工具
-        String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
-        CronService cronService = new CronService(cronStorePath);
-        
-        CronTool cronTool = new CronTool(cronService, new CronTool.JobExecutor() {
-            @Override
-            public String processDirectWithChannel(String content, String sessionKey, String channel, String chatId) throws Exception {
-                return agentLoop.processDirectWithChannel(content, sessionKey, channel, chatId);
-            }
-        }, bus);
-        agentLoop.registerTool(cronTool);
-        
-        // 子代理工具
-        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus);
-        agentLoop.registerTool(new SpawnTool(subagentManager));
-        
-        // 技能管理工具（赋予 AI 自主学习和管理技能的能力）
-        agentLoop.registerTool(new SkillsTool(workspace));
-        
-        // 社交网络工具（Agent Social Network）
-        if (config.getSocialNetwork() != null && config.getSocialNetwork().isEnabled()) {
-            agentLoop.registerTool(new SocialNetworkTool(
-                config.getSocialNetwork().getEndpoint(),
-                config.getSocialNetwork().getAgentId(),
-                config.getSocialNetwork().getApiKey()
-            ));
-        }
     }
     
     private CronTool findCronTool(AgentLoop agentLoop) {

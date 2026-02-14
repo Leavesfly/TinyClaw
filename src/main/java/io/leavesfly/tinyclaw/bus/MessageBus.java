@@ -29,9 +29,7 @@ import java.util.function.Function;
  * 1. 通道层：各个消息通道通过publishInbound发送消息
  * 2. Agent层：AgentLoop通过consumeInbound接收消息进行处理
  * 3. 响应路由：Agent通过publishOutbound发送响应，通道通过subscribeOutbound接收
- * 
- * 学习提示：可以配合 docs/architecture.md 第 4 章的数据流图阅读本类，
- * 例如在演示 CLI 模式或网关模式时，观察 inbound/outbound 队列大小和日志，有助于理解系统在高并发场景下的行为。
+ *
  */
 public class MessageBus {
     

@@ -16,8 +16,6 @@ import java.util.concurrent.TimeUnit;
  * HTTP-based LLM Provider implementation
  * Supports OpenAI-compatible APIs (OpenRouter, Anthropic, Zhipu, etc.)
  *
- * <p>学习提示：想看“模型名 → 对应云厂商 & API Base & API Key”的路由逻辑，
- * 可以重点阅读本类的 createProvider 方法；在演示多模型切换时，也可以边切换配置边观察这里的日志输出。</p>
  */
 public class HTTPProvider implements LLMProvider {
     
