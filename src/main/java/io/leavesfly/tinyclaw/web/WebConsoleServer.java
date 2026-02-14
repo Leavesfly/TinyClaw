@@ -547,7 +547,6 @@ public class WebConsoleServer {
     }
     
     private boolean updateProviderConfig(String name, JsonNode json) {
-        ProvidersConfig pc = config.getProviders();
         ProvidersConfig.ProviderConfig provider = getProviderByName(name);
         if (provider == null) return false;
         

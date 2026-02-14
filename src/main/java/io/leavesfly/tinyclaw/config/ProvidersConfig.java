@@ -180,7 +180,17 @@ public class ProvidersConfig {
          */
         @JsonIgnore
         public boolean isValid() {
+            // apiKey 非空即为有效
             return apiKey != null && !apiKey.isEmpty();
+        }
+        
+        /**
+         * 检查此 Provider 是否为本地服务并且有效
+         * 本地服务（如 ollama）只需要 apiBase 即可，不需要 apiKey
+         */
+        @JsonIgnore
+        public boolean isValidForLocal() {
+            return hasApiBase();
         }
         
         /**

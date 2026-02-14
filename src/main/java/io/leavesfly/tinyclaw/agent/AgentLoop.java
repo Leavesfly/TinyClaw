@@ -20,26 +20,22 @@ import java.util.*;
 /**
  * Agent 循环 - 核心 Agent 执行引擎
  * 
- * <p>AgentLoop 是 TinyClaw 的核心执行引擎，负责协调消息处理、会话管理和 LLM 交互。
- * 具体的执行逻辑委托给专门的组件：LLMExecutor（LLM 交互）和 SessionSummarizer（会话摘要）。</p>
+ * AgentLoop 是 TinyClaw 的核心执行引擎，负责协调消息处理、会话管理和 LLM 交互。
+ * 具体的执行逻辑委托给专门的组件：LLMExecutor（LLM 交互）和 SessionSummarizer（会话摘要）。
  * 
- * <h2>职责：</h2>
- * <ul>
- *   <li>消息路由：处理来自不同通道的入站消息并路由到正确的处理流程</li>
- *   <li>上下文构建：构建包含历史记录、摘要和技能的完整对话上下文</li>
- *   <li>会话管理：维护会话状态并协调消息保存</li>
- *   <li>工具注册：管理可用工具并提供注册接口</li>
- * </ul>
+ * 职责：
+ * - 消息路由：处理来自不同通道的入站消息并路由到正确的处理流程
+ * - 上下文构建：构建包含历史记录、摘要和技能的完整对话上下文
+ * - 会话管理：维护会话状态并协调消息保存
+ * - 工具注册：管理可用工具并提供注册接口
  * 
- * <h2>工作流程：</h2>
- * <ol>
- *   <li>从消息总线接收入站消息</li>
- *   <li>区分系统消息和用户消息</li>
- *   <li>构建完整对话上下文（历史 + 摘要 + 系统提示）</li>
- *   <li>委托给 LLMExecutor 执行 LLM 迭代</li>
- *   <li>保存对话历史</li>
- *   <li>触发 SessionSummarizer 进行摘要（如需要）</li>
- * </ol>
+ * 工作流程：
+ * 1. 从消息总线接收入站消息
+ * 2. 区分系统消息和用户消息
+ * 3. 构建完整对话上下文（历史 + 摘要 + 系统提示）
+ * 4. 委托给 LLMExecutor 执行 LLM 迭代
+ * 5. 保存对话历史
+ * 6. 触发 SessionSummarizer 进行摘要（如需要）
  */
 public class AgentLoop {
     
@@ -52,13 +48,16 @@ public class AgentLoop {
     private final ToolRegistry tools;
     private final Config config;
     
-    // 可动态更新的组件
-    private LLMExecutor llmExecutor;
-    private SessionSummarizer summarizer;
-    private LLMProvider provider;
+    // 可动态更新的组件（使用 volatile 保证可见性）
+    private volatile LLMExecutor llmExecutor;
+    private volatile SessionSummarizer summarizer;
+    private volatile LLMProvider provider;
     
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
+    
+    // 用于保护 provider 相关组件更新的锁
+    private final Object providerLock = new Object();
     
     /**
      * 构造 AgentLoop 实例
@@ -101,23 +100,25 @@ public class AgentLoop {
     /**
      * 设置 LLM Provider（用于动态配置）
      */
-    public synchronized void setProvider(LLMProvider provider) {
+    public void setProvider(LLMProvider provider) {
         if (provider == null) {
             return;
         }
         
-        this.provider = provider;
-        
-        String model = config.getAgents().getDefaults().getModel();
-        int contextWindow = config.getAgents().getDefaults().getMaxTokens();
-        int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
-        
-        this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
-        this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
-        this.providerConfigured = true;
+        synchronized (providerLock) {
+            this.provider = provider;
+            
+            String model = config.getAgents().getDefaults().getModel();
+            int contextWindow = config.getAgents().getDefaults().getMaxTokens();
+            int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
+            
+            this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
+            this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
+            this.providerConfigured = true;
+        }
         
         logger.info("Provider configured dynamically", Map.of(
-                "model", model
+                "model", config.getAgents().getDefaults().getModel()
         ));
     }
     

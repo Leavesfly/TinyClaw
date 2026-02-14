@@ -53,6 +53,8 @@ public class CronService {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("cron");
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    // 复用 SecureRandom 实例，避免每次生成 ID 都创建新实例
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     
     private final String storePath;
     private CronStore store;
@@ -442,9 +444,8 @@ public class CronService {
     }
     
     private String generateId() {
-        SecureRandom random = new SecureRandom();
         byte[] bytes = new byte[8];
-        random.nextBytes(bytes);
+        SECURE_RANDOM.nextBytes(bytes);
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
             sb.append(String.format("%02x", b));

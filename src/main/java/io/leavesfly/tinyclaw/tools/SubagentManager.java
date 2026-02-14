@@ -24,12 +24,18 @@ public class SubagentManager {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("subagent");
     
+    // 任务保留时间（默认1小时）
+    private static final long TASK_RETENTION_MS = 60 * 60 * 1000;
+    // 清理间隔（10分钟）
+    private static final long CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+    
     private final Map<String, SubagentTask> tasks = new ConcurrentHashMap<>();
     private final LLMProvider provider;
     private final MessageBus bus;
     private final String workspace;
     private final AtomicInteger nextId = new AtomicInteger(1);
     private final ExecutorService executor;
+    private volatile long lastCleanup = System.currentTimeMillis();
     
     /**
      * 表示一个子代理任务
@@ -89,6 +95,9 @@ public class SubagentManager {
      * 生成一个新的子代理任务
      */
     public String spawn(String task, String label, String originChannel, String originChatId) {
+        // 定期清理过期任务
+        maybeCleanupOldTasks();
+        
         String taskId = "subagent-" + nextId.getAndIncrement();
         
         SubagentTask subagentTask = new SubagentTask();
@@ -188,6 +197,35 @@ public class SubagentManager {
      */
     public int getTaskCount() {
         return tasks.size();
+    }
+    
+    /**
+     * 定期清理过期任务
+     */
+    private void maybeCleanupOldTasks() {
+        long now = System.currentTimeMillis();
+        if (now - lastCleanup < CLEANUP_INTERVAL_MS) {
+            return;
+        }
+        
+        lastCleanup = now;
+        int removed = 0;
+        
+        for (Map.Entry<String, SubagentTask> entry : tasks.entrySet()) {
+            SubagentTask task = entry.getValue();
+            // 清理已完成或失败且超过保留时间的任务
+            boolean isFinished = "completed".equals(task.getStatus()) || "failed".equals(task.getStatus());
+            boolean isExpired = now - task.getCreated() > TASK_RETENTION_MS;
+            
+            if (isFinished && isExpired) {
+                tasks.remove(entry.getKey());
+                removed++;
+            }
+        }
+        
+        if (removed > 0) {
+            logger.info("清理过期子代理任务", Map.of("removed", removed, "remaining", tasks.size()));
+        }
     }
     
     /**

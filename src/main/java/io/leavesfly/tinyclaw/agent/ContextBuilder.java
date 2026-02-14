@@ -177,10 +177,22 @@ public class ContextBuilder {
         sb.append("Use the `skills` tool with these actions:\n");
         sb.append("- `skills(action='list')` — See all installed skills\n");
         sb.append("- `skills(action='show', name='...')` — Read a skill's full content\n");
+        sb.append("- `skills(action='invoke', name='...')` — **Invoke a skill and get its base path** (use this for skills with scripts)\n");
         sb.append("- `skills(action='install', repo='owner/repo')` — Install a skill from GitHub\n");
         sb.append("- `skills(action='create', name='...', content='...', skill_description='...')` — Create a new skill from your experience\n");
         sb.append("- `skills(action='edit', name='...', content='...')` — Improve an existing skill\n");
         sb.append("- `skills(action='remove', name='...')` — Remove a skill you no longer need\n\n");
+        
+        sb.append("### Invoking skills with scripts\n\n");
+        sb.append("When a skill contains executable scripts (like Python files), use `invoke` instead of `show`:\n");
+        sb.append("1. Call `skills(action='invoke', name='skill-name')` to get the skill's base path and instructions\n");
+        sb.append("2. The response includes a `<base-path>` that points to the skill's directory\n");
+        sb.append("3. Execute scripts using the base path, e.g.: `exec(command='python3 {base-path}/script.py arg1')\n\n");
+        sb.append("Example workflow for a skill with scripts:\n");
+        sb.append("```\n");
+        sb.append("1. skills(action='invoke', name='pptx')  → Get base path: /path/to/skills/pptx/\n");
+        sb.append("2. exec(command='python3 /path/to/skills/pptx/create_pptx.py output.pptx')\n");
+        sb.append("```\n\n");
         
         sb.append("### Creating learnable skills\n\n");
         sb.append("When creating a skill, write it as a **Markdown instruction manual** with YAML frontmatter. A good skill should include:\n");

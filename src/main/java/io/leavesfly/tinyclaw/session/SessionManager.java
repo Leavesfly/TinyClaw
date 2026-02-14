@@ -145,7 +145,9 @@ public class SessionManager {
         }
         
         try {
-            String sessionFile = Paths.get(storagePath, session.getKey() + ".json").toString();
+            // 将 session key 转换为安全的文件名（Windows 不支持冒号）
+            String safeFileName = toSafeFileName(session.getKey());
+            String sessionFile = Paths.get(storagePath, safeFileName + ".json").toString();
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(session);
             Files.writeString(Paths.get(sessionFile), json);
             logger.debug("Saved session: " + session.getKey());
@@ -200,11 +202,33 @@ public class SessionManager {
         Session removed = sessions.remove(key);
         if (removed != null && storagePath != null) {
             try {
-                Files.deleteIfExists(Paths.get(storagePath, key + ".json"));
+                String safeFileName = toSafeFileName(key);
+                Files.deleteIfExists(Paths.get(storagePath, safeFileName + ".json"));
                 logger.debug("Deleted session: " + key);
             } catch (IOException e) {
                 logger.warn("Failed to delete session file: " + key);
             }
         }
+    }
+    
+    /**
+     * 将 session key 转换为安全的文件名
+     * 将不安全字符（如冒号、斜杠）替换为下划线
+     */
+    private String toSafeFileName(String key) {
+        if (key == null) {
+            return "unknown";
+        }
+        // 替换文件名中的不安全字符: : / \ * ? " < > |
+        return key.replaceAll("[:/\\\\*?\"<>|]", "_");
+    }
+    
+    /**
+     * 从安全文件名还原 session key
+     * 注意：这是一个近似还原，无法完美还原所有情况
+     */
+    private String fromSafeFileName(String safeFileName) {
+        // 将单个下划线还原为冒号（第一个出现的下划线）
+        return safeFileName.replaceFirst("_", ":");
     }
 }

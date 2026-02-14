@@ -16,26 +16,22 @@ import java.util.Map;
 /**
  * 技能管理工具 - 赋予 Agent 自主学习和管理技能的能力
  * 
- * <p>这是实现"AI 自主学习 Skill"的核心工具，让 Agent 不再依赖人工安装技能，
- * 而是能够自主发现、安装、创建和编辑技能。</p>
+ * 这是实现"AI 自主学习 Skill"的核心工具，让 Agent 不再依赖人工安装技能，
+ * 而是能够自主发现、安装、创建和编辑技能。
  * 
- * <h2>支持的操作：</h2>
- * <ul>
- *   <li><b>list</b> - 列出所有已安装的技能</li>
- *   <li><b>show</b> - 查看指定技能的完整内容</li>
- *   <li><b>install</b> - 从 GitHub 仓库安装技能</li>
- *   <li><b>create</b> - 创建新技能（AI 自主学习的核心能力）</li>
- *   <li><b>edit</b> - 编辑已有技能的内容</li>
- *   <li><b>remove</b> - 删除指定技能</li>
- * </ul>
+ * 支持的操作：
+ * - list: 列出所有已安装的技能
+ * - show: 查看指定技能的完整内容
+ * - invoke: 调用技能，返回基础路径和完整指令（用于执行带脚本的技能）
+ * - install: 从 GitHub 仓库安装技能
+ * - create: 创建新技能（AI 自主学习的核心能力）
+ * - edit: 编辑已有技能的内容
+ * - remove: 删除指定技能
  * 
- * <h2>设计理念：</h2>
- * <p>传统的 Skill 是人工预定义的静态指令模板；而通过此工具，AI 可以：</p>
- * <ol>
- *   <li>在交互中识别重复模式，主动创建新技能固化经验</li>
- *   <li>从社区（GitHub）按需安装技能来解决新问题</li>
- *   <li>迭代优化已有技能，使其越来越好</li>
- * </ol>
+ * 设计理念：传统的 Skill 是人工预定义的静态指令模板；而通过此工具，AI 可以：
+ * 1. 在交互中识别重复模式，主动创建新技能固化经验
+ * 2. 从社区（GitHub）按需安装技能来解决新问题
+ * 3. 迭代优化已有技能，使其越来越好
  */
 public class SkillsTool implements Tool {
 
@@ -76,8 +72,8 @@ public class SkillsTool implements Tool {
 
     @Override
     public String description() {
-        return "管理您的技能：列出、查看、从 GitHub 安装、创建新技能、编辑现有技能或删除技能。"
-                + "使用此工具通过安装社区技能或基于经验创建自己的技能来学习新能力。";
+        return "管理和执行技能：列出、查看、调用（invoke）、从 GitHub 安装、创建新技能、编辑现有技能或删除技能。"
+                + "使用 invoke 操作来调用带脚本的技能，会返回技能目录路径以便执行脚本。";
     }
 
     @Override
@@ -93,11 +89,12 @@ public class SkillsTool implements Tool {
                 "要执行的操作："
                         + "'list' - 列出所有已安装的技能; "
                         + "'show' - 显示技能的完整内容; "
+                        + "'invoke' - 调用技能并返回基础路径（用于执行带脚本的技能）; "
                         + "'install' - 从 GitHub 安装技能（例如 'owner/repo' 或 'owner/repo/skill-name'）; "
                         + "'create' - 创建新技能，指定名称和内容; "
                         + "'edit' - 更新现有技能的内容; "
                         + "'remove' - 按名称删除技能");
-        actionParam.put("enum", new String[]{"list", "show", "install", "create", "edit", "remove"});
+        actionParam.put("enum", new String[]{"list", "show", "invoke", "install", "create", "edit", "remove"});
         properties.put("action", actionParam);
 
         Map<String, Object> nameParam = new HashMap<>();
@@ -140,6 +137,8 @@ public class SkillsTool implements Tool {
                 return executeList();
             case "show":
                 return executeShow(args);
+            case "invoke":
+                return executeInvoke(args);
             case "install":
                 return executeInstall(args);
             case "create":
@@ -150,7 +149,7 @@ public class SkillsTool implements Tool {
                 return executeRemove(args);
             default:
                 throw new IllegalArgumentException("未知操作: " + action
-                        + "。有效操作：list、show、install、create、edit、remove");
+                        + "。有效操作：list、show、invoke、install、create、edit、remove");
         }
     }
 
@@ -194,6 +193,98 @@ public class SkillsTool implements Tool {
         }
 
         return "=== 技能: " + skillName + " ===\n\n" + content;
+    }
+
+    /**
+     * 调用技能 - 返回基础路径和完整指令
+     * 
+     * 这是执行带脚本技能的核心方法，符合 Claude Code Skills 行业标准。
+     * 返回内容包含：Base Path（技能目录绝对路径）和技能的完整 Markdown 指令。
+     * Agent 收到响应后，可根据指令使用 exec 工具执行技能目录下的脚本。
+     * 
+     * @param args 参数映射，必须包含 name 字段
+     * @return 包含 Base Path 和技能内容的字符串
+     */
+    private String executeInvoke(Map<String, Object> args) {
+        String skillName = (String) args.get("name");
+        if (skillName == null || skillName.isEmpty()) {
+            throw new IllegalArgumentException("对于 'invoke' 操作，name 参数是必需的");
+        }
+
+        // 查找技能并获取其路径
+        SkillLocation location = findSkillLocation(skillName);
+        if (location == null) {
+            return "技能 '" + skillName + "' 未找到。使用 'list' 操作查看可用技能。";
+        }
+
+        String content = skillsLoader.loadSkill(skillName);
+        if (content == null) {
+            return "技能 '" + skillName + "' 内容加载失败。";
+        }
+
+        logger.info("技能调用", Map.of(
+                "skill", skillName,
+                "base_path", location.basePath,
+                "source", location.source
+        ));
+
+        // 构建符合 Claude Code Skills 标准的响应格式
+        StringBuilder result = new StringBuilder();
+        result.append("<skill-invocation>\n");
+        result.append("<name>").append(skillName).append("</name>\n");
+        result.append("<source>").append(location.source).append("</source>\n");
+        result.append("<base-path>").append(location.basePath).append("</base-path>\n");
+        result.append("</skill-invocation>\n\n");
+        result.append("# Skill: ").append(skillName).append("\n\n");
+        result.append(content);
+        result.append("\n\n---\n\n");
+        result.append("**提示**: 如果技能指令中包含脚本执行，请使用上述 base-path 作为脚本的工作目录。\n");
+        result.append("例如: `exec(command='python3 ").append(location.basePath).append("/script.py')`");
+
+        return result.toString();
+    }
+
+    /**
+     * 查找技能所在位置
+     * 
+     * @param skillName 技能名称
+     * @return 技能位置信息，未找到返回 null
+     */
+    private SkillLocation findSkillLocation(String skillName) {
+        // 按优先级顺序查找：workspace > global > builtin
+        Path workspacePath = Paths.get(workspace, "skills", skillName, "SKILL.md");
+        if (Files.exists(workspacePath)) {
+            return new SkillLocation(
+                    Paths.get(workspace, "skills", skillName).toAbsolutePath().toString(),
+                    "workspace"
+            );
+        }
+
+        // 遍历已加载的技能列表查找
+        for (SkillInfo skill : skillsLoader.listSkills()) {
+            if (skill.getName().equals(skillName)) {
+                Path skillPath = Paths.get(skill.getPath()).getParent();
+                return new SkillLocation(
+                        skillPath.toAbsolutePath().toString(),
+                        skill.getSource()
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 技能位置信息内部类
+     */
+    private static class SkillLocation {
+        final String basePath;  // 技能目录绝对路径
+        final String source;    // 来源：workspace/global/builtin
+
+        SkillLocation(String basePath, String source) {
+            this.basePath = basePath;
+            this.source = source;
+        }
     }
 
     /**

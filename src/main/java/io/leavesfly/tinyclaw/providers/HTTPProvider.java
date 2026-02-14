@@ -310,7 +310,8 @@ public class HTTPProvider implements LLMProvider {
         }
         
         // 对于非本地服务，检查 apiKey
-        boolean isLocalService = providerName.equals("ollama") || providerName.equals("vllm");
+        // 本地服务（ollama, vllm）只需要 apiBase，不需要 apiKey
+        boolean isLocalService = "ollama".equals(providerName) || "vllm".equals(providerName);
         if (!isLocalService && (apiKey == null || apiKey.isEmpty())) {
             throw new IllegalStateException(
                 "Provider " + providerName + " 的 apiKey 未配置 (model: " + modelName + ")"

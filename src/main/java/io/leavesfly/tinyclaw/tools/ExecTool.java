@@ -114,25 +114,48 @@ public class ExecTool implements Tool {
         
         Process process = pb.start();
         
-        // 读取标准输出
+        // 使用独立线程读取输出，避免缓冲区填满导致的死锁
         StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
-            }
-        }
-        
-        // 读取标准错误
         StringBuilder error = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                error.append(line).append("\n");
+        
+        Thread stdoutThread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    synchronized (output) {
+                        output.append(line).append("\n");
+                    }
+                }
+            } catch (Exception e) {
+                // 忽略读取异常
             }
-        }
+        }, "exec-stdout");
+        
+        Thread stderrThread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    synchronized (error) {
+                        error.append(line).append("\n");
+                    }
+                }
+            } catch (Exception e) {
+                // 忽略读取异常
+            }
+        }, "exec-stderr");
+        
+        stdoutThread.start();
+        stderrThread.start();
         
         boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        
+        // 等待读取线程完成
+        try {
+            stdoutThread.join(1000);
+            stderrThread.join(1000);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
         
         String result = output.toString();
         if (error.length() > 0) {
