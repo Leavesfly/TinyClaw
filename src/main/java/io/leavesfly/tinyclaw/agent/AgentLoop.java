@@ -50,16 +50,22 @@ public class AgentLoop {
     private final SessionManager sessions;
     private final ContextBuilder contextBuilder;
     private final ToolRegistry tools;
-    private final LLMExecutor llmExecutor;
-    private final SessionSummarizer summarizer;
+    private final Config config;
+    
+    // 可动态更新的组件
+    private LLMExecutor llmExecutor;
+    private SessionSummarizer summarizer;
+    private LLMProvider provider;
     
     private volatile boolean running = false;
+    private volatile boolean providerConfigured = false;
     
     /**
      * 构造 AgentLoop 实例
      */
     public AgentLoop(Config config, MessageBus bus, LLMProvider provider) {
         this.bus = bus;
+        this.config = config;
         this.workspace = config.getWorkspacePath();
         
         ensureWorkspaceExists();
@@ -73,14 +79,60 @@ public class AgentLoop {
         int contextWindow = config.getAgents().getDefaults().getMaxTokens();
         int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
         
+        // 如果 provider 不为空，初始化执行器
+        if (provider != null) {
+            this.provider = provider;
+            this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
+            this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
+            this.providerConfigured = true;
+            
+            logger.info("Agent initialized with provider", Map.of(
+                    "model", model,
+                    "workspace", workspace,
+                    "max_iterations", maxIterations
+            ));
+        } else {
+            logger.info("Agent initialized without provider (configuration mode)", Map.of(
+                    "workspace", workspace
+            ));
+        }
+    }
+    
+    /**
+     * 设置 LLM Provider（用于动态配置）
+     */
+    public synchronized void setProvider(LLMProvider provider) {
+        if (provider == null) {
+            return;
+        }
+        
+        this.provider = provider;
+        
+        String model = config.getAgents().getDefaults().getModel();
+        int contextWindow = config.getAgents().getDefaults().getMaxTokens();
+        int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
+        
         this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
         this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
+        this.providerConfigured = true;
         
-        logger.info("Agent initialized", Map.of(
-                "model", model,
-                "workspace", workspace,
-                "max_iterations", maxIterations
+        logger.info("Provider configured dynamically", Map.of(
+                "model", model
         ));
+    }
+    
+    /**
+     * 检查 Provider 是否已配置
+     */
+    public boolean isProviderConfigured() {
+        return providerConfigured;
+    }
+    
+    /**
+     * 获取当前 Provider
+     */
+    public LLMProvider getProvider() {
+        return provider;
     }
     
     private void ensureWorkspaceExists() {
@@ -172,6 +224,11 @@ public class AgentLoop {
     }
     
     private String processUserMessage(InboundMessage msg) throws Exception {
+        // 检查 Provider 是否已配置
+        if (!providerConfigured) {
+            return "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
+        }
+        
         String sessionKey = msg.getSessionKey();
         
         List<Message> messages = buildContext(sessionKey, msg);

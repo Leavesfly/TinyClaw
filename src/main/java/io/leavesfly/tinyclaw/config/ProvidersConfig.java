@@ -7,7 +7,7 @@ import java.util.List;
 
 /**
  * LLM 提供商配置类
- * 支持多个 LLM 提供商：OpenRouter、Anthropic、OpenAI、Gemini、智谱、Groq、vLLM、DashScope、Ollama
+ * 支持多个 LLM 提供商：OpenRouter、Anthropic、OpenAI、Gemini、智谱、DashScope、Ollama
  */
 public class ProvidersConfig {
     
@@ -15,9 +15,7 @@ public class ProvidersConfig {
     private ProviderConfig anthropic;
     private ProviderConfig openai;
     private ProviderConfig zhipu;
-    private ProviderConfig groq;
     private ProviderConfig gemini;
-    private ProviderConfig vllm;
     private ProviderConfig dashscope;
     private ProviderConfig ollama;
     
@@ -26,7 +24,6 @@ public class ProvidersConfig {
         this.anthropic = new ProviderConfig();
         this.openai = new ProviderConfig();
         this.zhipu = new ProviderConfig();
-        this.groq = new ProviderConfig();
         this.gemini = new ProviderConfig();
         this.vllm = new ProviderConfig();
         this.dashscope = new ProviderConfig();
@@ -65,14 +62,7 @@ public class ProvidersConfig {
     public void setZhipu(ProviderConfig zhipu) {
         this.zhipu = zhipu;
     }
-    
-    public ProviderConfig getGroq() {
-        return groq;
-    }
-    
-    public void setGroq(ProviderConfig groq) {
-        this.groq = groq;
-    }
+ 
     
     public ProviderConfig getGemini() {
         return gemini;
@@ -82,13 +72,6 @@ public class ProvidersConfig {
         this.gemini = gemini;
     }
     
-    public ProviderConfig getVllm() {
-        return vllm;
-    }
-    
-    public void setVllm(ProviderConfig vllm) {
-        this.vllm = vllm;
-    }
     
     public ProviderConfig getDashscope() {
         return dashscope;
@@ -136,8 +119,6 @@ public class ProvidersConfig {
         if (provider == openai) return "openai";
         if (provider == gemini) return "gemini";
         if (provider == zhipu) return "zhipu";
-        if (provider == groq) return "groq";
-        if (provider == vllm) return "vllm";
         if (provider == dashscope) return "dashscope";
         if (provider == ollama) return "ollama";
         return "unknown";
@@ -153,7 +134,6 @@ public class ProvidersConfig {
             case "openai": return "https://api.openai.com/v1";
             case "gemini": return "https://generativelanguage.googleapis.com/v1beta";
             case "zhipu": return "https://open.bigmodel.cn/api/paas/v4";
-            case "groq": return "https://api.groq.com/openai/v1";
             case "dashscope": return "https://dashscope.aliyuncs.com/compatible-mode/v1";
             case "ollama": return "http://localhost:11434/v1";
             default: return "https://openrouter.ai/api/v1";

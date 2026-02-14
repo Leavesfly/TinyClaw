@@ -4,23 +4,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * LLM Provider interface
+ * LLM提供者接口
  */
 public interface LLMProvider {
 
     /**
-     * 发送 a chat completion request
+     * 发送对话完成请求
      *
-     * @param messages The conversation messages
-     * @param tools    Available tools (can be null)
-     * @param model    The model to use
-     * @param options  Additional options (temperature, max_tokens, etc.)
-     * @return The LLM response
+     * @param messages 对话消息列表
+     * @param tools    可用工具列表（可为null）
+     * @param model    使用的模型
+     * @param options  额外选项（temperature、max_tokens等）
+     * @return LLM响应结果
      */
     LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options) throws Exception;
 
     /**
-     * 获取 the default model for this provider
+     * 获取该提供者的默认模型
      */
     String getDefaultModel();
 }

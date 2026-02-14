@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Groq voice transcription service (using Whisper API)
+ * Groq 语音转录服务（使用 Whisper API）
  */
 public class GroqTranscriber {
     
@@ -33,7 +33,7 @@ public class GroqTranscriber {
     }
     
     /**
-     * Transcribe an audio file
+     * 转录音频文件
      */
     public TranscriptionResponse transcribe(String audioFilePath) throws Exception {
         logger.info("Starting transcription", Map.of("audio_file", audioFilePath));
@@ -99,7 +99,7 @@ public class GroqTranscriber {
     }
     
     /**
-     * 检查 if transcriber is available
+     * 检查转录器是否可用
      */
     public boolean isAvailable() {
         boolean available = apiKey != null && !apiKey.isEmpty();
@@ -108,7 +108,7 @@ public class GroqTranscriber {
     }
     
     /**
-     * Transcription response
+     * 转录响应结果
      */
     public static class TranscriptionResponse {
         private String text;

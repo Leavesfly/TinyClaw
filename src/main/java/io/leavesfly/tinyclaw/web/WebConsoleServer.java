@@ -80,6 +80,7 @@ public class WebConsoleServer {
         httpServer.createContext("/api/workspace", this::handleWorkspace);
         httpServer.createContext("/api/skills", this::handleSkills);
         httpServer.createContext("/api/providers", this::handleProviders);
+        httpServer.createContext("/api/models", this::handleModels);
         httpServer.createContext("/api/config", this::handleConfig);
         
         // 静态文件服务
@@ -389,20 +390,38 @@ public class WebConsoleServer {
         try {
             if ("/api/workspace/files".equals(path) && "GET".equals(method)) {
                 ArrayNode files = objectMapper.createArrayNode();
-                String[] workspaceFiles = {"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"};
+                String[] workspaceFiles = {"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md", "PROFILE.md", "HEARTBEAT.md"};
                 for (String fileName : workspaceFiles) {
                     Path filePath = Paths.get(workspace, fileName);
-                    ObjectNode file = objectMapper.createObjectNode();
-                    file.put("name", fileName);
-                    file.put("exists", Files.exists(filePath));
-                    files.add(file);
+                    if (Files.exists(filePath)) {
+                        ObjectNode file = objectMapper.createObjectNode();
+                        file.put("name", fileName);
+                        file.put("exists", true);
+                        try {
+                            file.put("size", Files.size(filePath));
+                            file.put("lastModified", Files.getLastModifiedTime(filePath).toMillis());
+                        } catch (IOException e) {
+                            file.put("size", 0);
+                            file.put("lastModified", 0);
+                        }
+                        files.add(file);
+                    }
                 }
                 // 添加 memory 目录下的 MEMORY.md
                 Path memoryFile = Paths.get(workspace, "memory", "MEMORY.md");
-                ObjectNode memoryNode = objectMapper.createObjectNode();
-                memoryNode.put("name", "memory/MEMORY.md");
-                memoryNode.put("exists", Files.exists(memoryFile));
-                files.add(memoryNode);
+                if (Files.exists(memoryFile)) {
+                    ObjectNode memoryNode = objectMapper.createObjectNode();
+                    memoryNode.put("name", "memory/MEMORY.md");
+                    memoryNode.put("exists", true);
+                    try {
+                        memoryNode.put("size", Files.size(memoryFile));
+                        memoryNode.put("lastModified", Files.getLastModifiedTime(memoryFile).toMillis());
+                    } catch (IOException e) {
+                        memoryNode.put("size", 0);
+                        memoryNode.put("lastModified", 0);
+                    }
+                    files.add(memoryNode);
+                }
                 
                 sendJson(exchange, 200, files);
             } else if (path.startsWith("/api/workspace/files/") && "GET".equals(method)) {
@@ -555,6 +574,47 @@ public class WebConsoleServer {
         }
     }
     
+    // ==================== Models API ====================
+    
+    private void handleModels(HttpExchange exchange) throws IOException {
+        String path = exchange.getRequestURI().getPath();
+        String method = exchange.getRequestMethod();
+        
+        try {
+            if ("/api/models".equals(path) && "GET".equals(method)) {
+                // 获取所有模型定义，并标记对应 provider 是否已授权
+                ArrayNode models = objectMapper.createArrayNode();
+                ModelsConfig modelsConfig = config.getModels();
+                ProvidersConfig providersConfig = config.getProviders();
+                
+                for (Map.Entry<String, ModelsConfig.ModelDefinition> entry : modelsConfig.getDefinitions().entrySet()) {
+                    String modelName = entry.getKey();
+                    ModelsConfig.ModelDefinition def = entry.getValue();
+                    String providerName = def.getProvider();
+                    
+                    // 检查 provider 是否已授权
+                    ProvidersConfig.ProviderConfig providerConfig = getProviderByName(providerName);
+                    boolean authorized = providerConfig != null && providerConfig.isValid();
+                    
+                    ObjectNode modelNode = objectMapper.createObjectNode();
+                    modelNode.put("name", modelName);
+                    modelNode.put("provider", providerName);
+                    modelNode.put("model", def.getModel());
+                    modelNode.put("maxContextSize", def.getMaxContextSize() != null ? def.getMaxContextSize() : 0);
+                    modelNode.put("description", def.getDescription() != null ? def.getDescription() : "");
+                    modelNode.put("authorized", authorized);
+                    models.add(modelNode);
+                }
+                sendJson(exchange, 200, models);
+            } else {
+                sendJson(exchange, 404, errorJson("Not found"));
+            }
+        } catch (Exception e) {
+            logger.error("Models API error", Map.of("error", e.getMessage()));
+            sendJson(exchange, 500, errorJson(e.getMessage()));
+        }
+    }
+    
     // ==================== Config API ====================
     
     private void handleConfig(HttpExchange exchange) throws IOException {
@@ -565,12 +625,22 @@ public class WebConsoleServer {
             if ("/api/config/model".equals(path) && "GET".equals(method)) {
                 ObjectNode result = objectMapper.createObjectNode();
                 result.put("model", config.getAgents().getDefaults().getModel());
+                // 获取当前配置的 provider
+                String currentProvider = getCurrentProvider();
+                result.put("provider", currentProvider);
                 sendJson(exchange, 200, result);
             } else if ("/api/config/model".equals(path) && "PUT".equals(method)) {
                 String body = readRequestBody(exchange);
                 JsonNode json = objectMapper.readTree(body);
-                String model = json.path("model").asText();
-                config.getAgents().getDefaults().setModel(model);
+                if (json.has("model")) {
+                    String model = json.path("model").asText();
+                    config.getAgents().getDefaults().setModel(model);
+                }
+                if (json.has("provider")) {
+                    String provider = json.path("provider").asText();
+                    // 将 provider 信息存储到配置中（可选：我们可以通过模型名称推断，或存储明确的 provider）
+                    // 这里我们暂时不存储 provider，而是通过 API key 来推断
+                }
                 saveConfig();
                 sendJson(exchange, 200, successJson("Model updated"));
             } else if ("/api/config/agent".equals(path) && "GET".equals(method)) {
@@ -693,6 +763,23 @@ public class WebConsoleServer {
         if (secret == null || secret.isEmpty()) return "";
         if (secret.length() <= 8) return "****";
         return secret.substring(0, 4) + "****" + secret.substring(secret.length() - 4);
+    }
+    
+    /**
+     * 获取当前配置的第一个有效 Provider 名称
+     */
+    private String getCurrentProvider() {
+        ProvidersConfig pc = config.getProviders();
+        if (pc.getOpenrouter() != null && pc.getOpenrouter().isValid()) return "openrouter";
+        if (pc.getDashscope() != null && pc.getDashscope().isValid()) return "dashscope";
+        if (pc.getZhipu() != null && pc.getZhipu().isValid()) return "zhipu";
+        if (pc.getOpenai() != null && pc.getOpenai().isValid()) return "openai";
+        if (pc.getAnthropic() != null && pc.getAnthropic().isValid()) return "anthropic";
+        if (pc.getGroq() != null && pc.getGroq().isValid()) return "groq";
+        if (pc.getGemini() != null && pc.getGemini().isValid()) return "gemini";
+        if (pc.getOllama() != null && pc.getOllama().isValid()) return "ollama";
+        if (pc.getVllm() != null && pc.getVllm().isValid()) return "vllm";
+        return "";
     }
     
     private void saveConfig() {

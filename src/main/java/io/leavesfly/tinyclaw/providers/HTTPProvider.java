@@ -13,8 +13,8 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 /**
- * HTTP-based LLM Provider implementation
- * Supports OpenAI-compatible APIs (OpenRouter, Anthropic, Zhipu, etc.)
+ * 基于 HTTP 的 LLM Provider 实现
+ * 支持 OpenAI 兼容的 API（OpenRouter、Anthropic、智谱等）
  *
  */
 public class HTTPProvider implements LLMProvider {
@@ -50,11 +50,11 @@ public class HTTPProvider implements LLMProvider {
             throw new IllegalStateException("API base not configured");
         }
         
-        // 构建 request body
+        // 构建请求体
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("model", model);
         
-        // Add messages
+        // 添加消息
         ArrayNode messagesArray = requestBody.putArray("messages");
         for (Message msg : messages) {
             ObjectNode msgNode = messagesArray.addObject();
@@ -83,7 +83,7 @@ public class HTTPProvider implements LLMProvider {
             }
         }
         
-        // Add tools
+        // 添加工具
         if (tools != null && !tools.isEmpty()) {
             ArrayNode toolsArray = requestBody.putArray("tools");
             for (ToolDefinition tool : tools) {
@@ -97,10 +97,10 @@ public class HTTPProvider implements LLMProvider {
             requestBody.put("tool_choice", "auto");
         }
         
-        // Add options
+        // 添加选项
         if (options != null) {
             if (options.containsKey("max_tokens")) {
-                // 处理 different models' max_tokens parameter names
+                // 处理不同模型的 max_tokens 参数名称
                 String lowerModel = model.toLowerCase();
                 if (lowerModel.contains("glm") || lowerModel.contains("o1")) {
                     requestBody.put("max_completion_tokens", ((Number) options.get("max_tokens")).intValue());
@@ -121,7 +121,7 @@ public class HTTPProvider implements LLMProvider {
                 "request_length", requestJson.length()
         ));
         
-        // 构建 HTTP request
+        // 构建 HTTP 请求
         String url = apiBase + CHAT_COMPLETIONS_ENDPOINT;
         RequestBody body = RequestBody.create(requestJson, JSON);
         Request.Builder requestBuilder = new Request.Builder()
@@ -133,7 +133,7 @@ public class HTTPProvider implements LLMProvider {
             requestBuilder.header("Authorization", AUTHORIZATION_PREFIX + apiKey);
         }
         
-        // 执行 request
+        // 执行请求
         try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
             String responseBody = response.body() != null ? response.body().string() : "";
             
@@ -153,7 +153,7 @@ public class HTTPProvider implements LLMProvider {
         JsonNode root = objectMapper.readTree(responseBody);
         LLMResponse response = new LLMResponse();
         
-        // Parse usage
+        // 解析使用量统计
         if (root.has("usage")) {
             JsonNode usageNode = root.get("usage");
             LLMResponse.UsageInfo usage = new LLMResponse.UsageInfo();
@@ -163,7 +163,7 @@ public class HTTPProvider implements LLMProvider {
             response.setUsage(usage);
         }
         
-        // Parse choices
+        // 解析响应选项
         if (!root.has("choices") || !root.get("choices").isArray() || root.get("choices").isEmpty()) {
             response.setContent("");
             response.setFinishReason("stop");
@@ -177,7 +177,7 @@ public class HTTPProvider implements LLMProvider {
         response.setContent(messageNode.has("content") && !messageNode.get("content").isNull() 
                 ? messageNode.get("content").asText() : "");
         
-        // Parse tool calls
+        // 解析工具调用
         if (messageNode.has("tool_calls") && messageNode.get("tool_calls").isArray()) {
             List<ToolCall> toolCalls = new ArrayList<>();
             for (JsonNode tcNode : messageNode.get("tool_calls")) {
@@ -222,7 +222,7 @@ public class HTTPProvider implements LLMProvider {
     }
     
     /**
-     * Create a provider based on configuration
+     * 根据配置创建 Provider
      * 
      * 路由机制：
      * 1. 从 models.definitions 中精确匹配模型

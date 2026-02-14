@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * TinyClaw Logger - Structured logging with component support
+ * TinyClaw 日志记录器 - 支持组件化的结构化日志记录
  */
 public class TinyClawLogger {
     
@@ -43,27 +43,27 @@ public class TinyClawLogger {
     }
     
     /**
-     * 获取 or create a logger for the given component
+     * 获取或创建指定组件的日志记录器
      */
     public static TinyClawLogger getLogger(String component) {
         return loggers.computeIfAbsent(component, TinyClawLogger::new);
     }
     
     /**
-     * 设置 the global log level
+     * 设置全局日志级别
      */
     public static void setLevel(Level level) {
         currentLevel = level;
     }
     
     /**
-     * 获取 the current log level
+     * 获取当前日志级别
      */
     public static Level getLevel() {
         return currentLevel;
     }
     
-    // Debug methods
+    // Debug 调试日志方法
     public void debug(String message) {
         if (currentLevel.toInt() <= Level.DEBUG.toInt()) {
             logger.debug(formatMessage(message, null));
@@ -76,7 +76,7 @@ public class TinyClawLogger {
         }
     }
     
-    // Info methods
+    // Info 信息日志方法
     public void info(String message) {
         if (currentLevel.toInt() <= Level.INFO.toInt()) {
             logger.info(formatMessage(message, null));
@@ -89,7 +89,7 @@ public class TinyClawLogger {
         }
     }
     
-    // Warn methods
+    // Warn 警告日志方法
     public void warn(String message) {
         if (currentLevel.toInt() <= Level.WARN.toInt()) {
             logger.warn(formatMessage(message, null));
@@ -102,7 +102,7 @@ public class TinyClawLogger {
         }
     }
     
-    // Error methods
+    // Error 错误日志方法
     public void error(String message) {
         logger.error(formatMessage(message, null));
     }
@@ -119,7 +119,7 @@ public class TinyClawLogger {
         logger.error(formatMessage(message, fields), throwable);
     }
     
-    // Fatal methods
+    // Fatal 致命错误日志方法
     public void fatal(String message) {
         logger.error(formatMessage(message, null));
     }
@@ -128,7 +128,7 @@ public class TinyClawLogger {
         logger.error(formatMessage(message, fields));
     }
     
-    // Formatting helpers
+    // 格式化辅助方法
     private String formatMessage(String message, Map<String, Object> fields) {
         StringBuilder sb = new StringBuilder();
         sb.append("[").append(component).append("] ");
@@ -166,7 +166,7 @@ public class TinyClawLogger {
         return String.valueOf(value);
     }
     
-    // Static convenience methods
+    // 静态便捷方法
     
     public static void debugC(String component, String message) {
         getLogger(component).debug(message);

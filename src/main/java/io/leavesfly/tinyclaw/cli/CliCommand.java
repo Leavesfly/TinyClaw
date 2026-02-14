@@ -7,6 +7,7 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
 import io.leavesfly.tinyclaw.config.ProvidersConfig;
 import io.leavesfly.tinyclaw.cron.CronService;
+import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
@@ -25,6 +26,7 @@ public abstract class CliCommand {
     
     protected static final String LOGO = "🦞";
     protected static final String VERSION = "0.1.0";
+    protected static final TinyClawLogger logger = TinyClawLogger.getLogger("cli");
     
     /**
      * 获取命令名称
@@ -255,5 +257,26 @@ public abstract class CliCommand {
                 config.getSocialNetwork().getApiKey()
             ));
         }
+    }
+    
+    /**
+     * 打印 Agent 启动状态信息
+     */
+    protected void printAgentStatus(AgentLoop agentLoop) {
+        System.out.println();
+        System.out.println("📦 Agent 状态:");
+        Map<String, Object> startupInfo = agentLoop.getStartupInfo();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> toolsInfo = (Map<String, Object>) startupInfo.get("tools");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> skillsInfo = (Map<String, Object>) startupInfo.get("skills");
+        System.out.println("  • 工具: " + toolsInfo.get("count") + " 已加载");
+        System.out.println("  • 技能: " + skillsInfo.get("available") + "/" + skillsInfo.get("total") + " 可用");
+        
+        logger.info("Agent initialized", Map.of(
+                "tools_count", toolsInfo.get("count"),
+                "skills_total", skillsInfo.get("total"),
+                "skills_available", skillsInfo.get("available")
+        ));
     }
 }

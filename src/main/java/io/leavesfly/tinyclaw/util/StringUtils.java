@@ -1,14 +1,14 @@
 package io.leavesfly.tinyclaw.util;
 
 /**
- * String utility functions
+ * 字符串工具类
  */
 public class StringUtils {
     
     private static final int ESTIMATED_CHARS_PER_TOKEN = 4;
     
     /**
-     * Truncate a string to a maximum length
+     * 将字符串截断到最大长度
      */
     public static String truncate(String s, int maxLen) {
         if (s == null) {
@@ -21,42 +21,42 @@ public class StringUtils {
     }
     
     /**
-     * 检查 if a string is null or empty
+     * 检查字符串是否为 null 或空
      */
     public static boolean isEmpty(String s) {
         return s == null || s.isEmpty();
     }
     
     /**
-     * 检查 if a string is not null and not empty
+     * 检查字符串是否不为 null 且不为空
      */
     public static boolean isNotEmpty(String s) {
         return s != null && !s.isEmpty();
     }
     
     /**
-     * 检查 if a string is null or blank (whitespace only)
+     * 检查字符串是否为 null 或空白（仅包含空格）
      */
     public static boolean isBlank(String s) {
         return s == null || s.trim().isEmpty();
     }
     
     /**
-     * 检查 if a string is not null and not blank
+     * 检查字符串是否不为 null 且不为空白
      */
     public static boolean isNotBlank(String s) {
         return s != null && !s.trim().isEmpty();
     }
     
     /**
-     * Trim a string, returning empty string if null
+     * 去除字符串首尾空格，如果为 null 则返回空字符串
      */
     public static String trim(String s) {
         return s == null ? "" : s.trim();
     }
     
     /**
-     * Escape XML special characters
+     * 转义 XML 特殊字符
      */
     public static String escapeXml(String s) {
         if (s == null) {
@@ -70,7 +70,7 @@ public class StringUtils {
     }
     
     /**
-     * Escape HTML special characters
+     * 转义 HTML 特殊字符
      */
     public static String escapeHtml(String s) {
         if (s == null) {
@@ -82,7 +82,7 @@ public class StringUtils {
     }
     
     /**
-     * Repeat a string n times
+     * 重复字符串 n 次
      */
     public static String repeat(String s, int times) {
         if (s == null || times <= 0) {
@@ -92,7 +92,7 @@ public class StringUtils {
     }
     
     /**
-     * Join strings with a separator
+     * 使用分隔符连接字符串数组
      */
     public static String join(String[] parts, String separator) {
         if (parts == null || parts.length == 0) {
@@ -102,7 +102,7 @@ public class StringUtils {
     }
     
     /**
-     * Join strings with a separator
+     * 使用分隔符连接字符串集合
      */
     public static String join(Iterable<String> parts, String separator) {
         if (parts == null) {
@@ -112,7 +112,7 @@ public class StringUtils {
     }
     
     /**
-     * Estimate token count for a string (simple heuristic: ~4 chars per token)
+     * 估算字符串的 token 数量（简单启发式：每 4 个字符约等于 1 个 token）
      */
     public static int estimateTokens(String s) {
         if (s == null || s.isEmpty()) {

@@ -129,11 +129,49 @@
                 
                 <!-- Sessions 页面 -->
                 <div id="page-sessions" class="page">
-                    <p class="page-desc">View and manage conversation sessions</p>
-                    <div class="sessions-container">
-                        <div class="sessions-list" id="sessionsList"></div>
-                        <div class="session-detail" id="sessionDetail">
-                            <p class="empty-state">Select a session to view history</p>
+                    <p class="page-desc">View and manage active chat sessions</p>
+                    
+                    <!-- 过滤工具栏 -->
+                    <div class="sessions-toolbar">
+                        <div class="filter-group">
+                            <input type="text" class="form-control filter-input" id="filterUserId" placeholder="Filter by User ID">
+                            <select class="form-control filter-input" id="filterChannel">
+                                <option value="">Filter by Channel</option>
+                            </select>
+                        </div>
+                        <div class="pagination-info" id="paginationInfo">0 / 0</div>
+                    </div>
+                    
+                    <!-- Sessions 表格 -->
+                    <div class="sessions-table-container">
+                        <table class="sessions-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-checkbox">
+                                        <input type="checkbox" id="selectAllSessions">
+                                    </th>
+                                    <th class="col-id">ID</th>
+                                    <th class="col-name">Name</th>
+                                    <th class="col-session-id">SessionID</th>
+                                    <th class="col-user-id">UserID</th>
+                                    <th class="col-action">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sessionsTableBody">
+                                <tr>
+                                    <td colspan="6" class="empty-state">No sessions yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- 分页 -->
+                    <div class="pagination-container">
+                        <div class="pagination-left">Total <span id="totalSessions">0</span> items</div>
+                        <div class="pagination-right">
+                            <button class="btn-page" id="prevPage">◀</button>
+                            <span class="page-number" id="currentPage">1</span>
+                            <button class="btn-page" id="nextPage">▶</button>
                         </div>
                     </div>
                 </div>
@@ -149,15 +187,50 @@
                 
                 <!-- Workspace 页面 -->
                 <div id="page-workspace" class="page">
-                    <p class="page-desc">Edit workspace configuration files</p>
+                    <div class="workspace-header">
+                        <div class="workspace-path">
+                            <span class="workspace-label">Workspace:</span>
+                            <span class="workspace-path-value" id="workspacePath">/app/working</span>
+                        </div>
+                        <div class="workspace-actions">
+                            <button class="btn btn-secondary btn-sm" id="uploadFileBtn">
+                                <span>↑</span> Upload
+                            </button>
+                            <button class="btn btn-secondary btn-sm" id="downloadFileBtn">
+                                <span>↓</span> Download
+                            </button>
+                        </div>
+                    </div>
+                    
                     <div class="workspace-container">
-                        <div class="workspace-files" id="workspaceFiles"></div>
-                        <div class="workspace-editor">
-                            <div class="editor-header">
-                                <span id="editorFileName">Select a file</span>
-                                <button class="btn btn-primary btn-sm" id="saveFileBtn" disabled>Save</button>
+                        <!-- 左侧文件列表 -->
+                        <div class="workspace-sidebar">
+                            <div class="workspace-section">
+                                <div class="workspace-section-header">
+                                    <h3>Core Files</h3>
+                                    <button class="btn-refresh" id="refreshFilesBtn" title="Refresh">
+                                        <span>↻</span>
+                                    </button>
+                                </div>
+                                <p class="workspace-section-desc">Bootstrap persona, identity, and tool guidance.</p>
+                                <div class="workspace-files" id="workspaceFiles">
+                                    <div class="empty-state">Loading files...</div>
+                                </div>
                             </div>
-                            <textarea class="editor-content" id="editorContent" placeholder="Select a file to edit..." disabled></textarea>
+                        </div>
+                        
+                        <!-- 右侧编辑器 -->
+                        <div class="workspace-editor">
+                            <div class="editor-placeholder" id="editorPlaceholder">
+                                <span>Select a file to edit</span>
+                            </div>
+                            <div class="editor-container" id="editorContainer" style="display: none;">
+                                <div class="editor-header">
+                                    <span id="editorFileName">Select a file</span>
+                                    <button class="btn btn-primary btn-sm" id="saveFileBtn">Save</button>
+                                </div>
+                                <textarea class="editor-content" id="editorContent" placeholder="Select a file to edit..."></textarea>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -173,7 +246,7 @@
                     <div class="section">
                         <h2 class="section-title">Providers</h2>
                         <p class="page-desc">Configure API keys and endpoints for each provider</p>
-                        <div class="card-grid" id="providersGrid"></div>
+                        <div class="provider-grid" id="providersGrid"></div>
                     </div>
                     <div class="section">
                         <h2 class="section-title">LLM</h2>
@@ -181,14 +254,28 @@
                         <div class="config-card">
                             <div class="config-card-header">
                                 <h3>LLM Configuration</h3>
-                                <span class="badge badge-outline" id="activeModelBadge">Active: -</span>
+                                <span class="badge badge-active" id="activeModelBadge">Active: -</span>
                             </div>
-                            <div class="config-form">
-                                <div class="form-group">
-                                    <label>Model</label>
-                                    <input type="text" class="form-control" id="modelInput" placeholder="e.g. gpt-4, claude-3-opus">
+                            <div class="config-form llm-config-form">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Provider</label>
+                                        <select class="form-control" id="providerSelect">
+                                            <option value="">Select a provider</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Model</label>
+                                        <select class="form-control" id="modelSelect">
+                                            <option value="">Select a model</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group form-group-btn">
+                                        <button class="btn btn-success" id="saveModelBtn" disabled>
+                                            <span class="btn-icon">✓</span> Saved
+                                        </button>
+                                    </div>
                                 </div>
-                                <button class="btn btn-primary" id="saveModelBtn">Save</button>
                             </div>
                         </div>
                     </div>
