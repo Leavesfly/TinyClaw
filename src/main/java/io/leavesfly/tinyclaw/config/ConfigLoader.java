@@ -160,11 +160,6 @@ public class ConfigLoader {
             config.getProviders().getZhipu().setApiKey(envValue);
         }
         
-        envValue = getEnv("TINYCLAW_PROVIDERS_GROQ_API_KEY");
-        if (envValue != null) {
-            config.getProviders().getGroq().setApiKey(envValue);
-        }
-        
         envValue = getEnv("TINYCLAW_PROVIDERS_GEMINI_API_KEY");
         if (envValue != null) {
             config.getProviders().getGemini().setApiKey(envValue);

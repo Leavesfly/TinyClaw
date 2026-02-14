@@ -160,11 +160,6 @@ public class Config {
             return providers.getZhipu().getApiBase();
         }
         
-        // vLLM
-        if (hasValidApiKey(providers.getVllm()) && isNotEmpty(providers.getVllm().getApiBase())) {
-            return providers.getVllm().getApiBase();
-        }
-        
         // DashScope
         if (hasValidApiKey(providers.getDashscope())) {
             String base = providers.getDashscope().getApiBase();

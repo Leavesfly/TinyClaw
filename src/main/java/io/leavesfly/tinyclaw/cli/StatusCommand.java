@@ -72,12 +72,8 @@ public class StatusCommand extends CliCommand {
                 && !config.getProviders().getGemini().getApiKey().isEmpty();
         boolean hasZhipu = config.getProviders().getZhipu().getApiKey() != null 
                 && !config.getProviders().getZhipu().getApiKey().isEmpty();
-        boolean hasGroq = config.getProviders().getGroq().getApiKey() != null 
-                && !config.getProviders().getGroq().getApiKey().isEmpty();
         boolean hasDashscope = config.getProviders().getDashscope().getApiKey() != null 
                 && !config.getProviders().getDashscope().getApiKey().isEmpty();
-        boolean hasVLLM = config.getProviders().getVllm().getApiBase() != null 
-                && !config.getProviders().getVllm().getApiBase().isEmpty();
         boolean hasOllama = config.getProviders().getOllama().getApiBase() != null 
                 && !config.getProviders().getOllama().getApiBase().isEmpty();
         
@@ -86,13 +82,7 @@ public class StatusCommand extends CliCommand {
         System.out.println("  OpenAI API: " + status(hasOpenAI));
         System.out.println("  Gemini API: " + status(hasGemini));
         System.out.println("  Zhipu API: " + status(hasZhipu));
-        System.out.println("  Groq API: " + status(hasGroq));
         System.out.println("  DashScope API: " + status(hasDashscope));
-        if (hasVLLM) {
-            System.out.println("  vLLM/本地: ✓ " + config.getProviders().getVllm().getApiBase());
-        } else {
-            System.out.println("  vLLM/本地: 未设置");
-        }
         if (hasOllama) {
             System.out.println("  Ollama: ✓ " + config.getProviders().getOllama().getApiBase());
         } else {

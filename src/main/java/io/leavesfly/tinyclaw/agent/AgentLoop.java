@@ -255,7 +255,7 @@ public class AgentLoop {
     
     private String ensureResponse(String response) {
         if (StringUtils.isBlank(response)) {
-            return "I've completed processing but have no response to give.";
+            return "已完成处理但没有回复内容。";
         }
         return response;
     }

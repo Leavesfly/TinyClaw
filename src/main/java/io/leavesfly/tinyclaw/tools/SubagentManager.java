@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 子代理管理器
@@ -26,6 +29,7 @@ public class SubagentManager {
     private final MessageBus bus;
     private final String workspace;
     private final AtomicInteger nextId = new AtomicInteger(1);
+    private final ExecutorService executor;
     
     /**
      * 表示一个子代理任务
@@ -72,6 +76,13 @@ public class SubagentManager {
         this.provider = provider;
         this.workspace = workspace;
         this.bus = bus;
+        // 使用线程池管理子代理任务
+        this.executor = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            t.setName("subagent-pool-" + t.getId());
+            return t;
+        });
     }
     
     /**
@@ -91,10 +102,8 @@ public class SubagentManager {
         
         tasks.put(taskId, subagentTask);
         
-        // 在后台运行任务
-        Thread thread = new Thread(() -> runTask(subagentTask), "subagent-" + taskId);
-        thread.setDaemon(true);
-        thread.start();
+        // 在线程池中运行任务
+        executor.submit(() -> runTask(subagentTask));
         
         logger.info("Spawned subagent", Map.of(
                 "task_id", taskId,
@@ -131,24 +140,33 @@ public class SubagentManager {
                     "task_id", task.getId(),
                     "error", e.getMessage()
             ));
+        } finally {
+            // 发送通知消息回主 Agent
+            sendTaskCompletion(task);
+        }
+    }
+    
+    /**
+     * 发送任务完成通知
+     */
+    private void sendTaskCompletion(SubagentTask task) {
+        if (bus == null) {
+            return;
         }
         
-        // 发送通知消息回主 Agent
-        if (bus != null) {
-            String announceContent;
-            if (task.getLabel() != null && !task.getLabel().isEmpty()) {
-                announceContent = "任务 '" + task.getLabel() + "' 已完成。\n\n结果:\n" + task.getResult();
-            } else {
-                announceContent = "任务已完成。\n\n结果:\n" + task.getResult();
-            }
-            
-            bus.publishInbound(new InboundMessage(
-                    "system",
-                    "subagent:" + task.getId(),
-                    task.getOriginChannel() + ":" + task.getOriginChatId(),
-                    announceContent
-            ));
+        String announceContent;
+        if (task.getLabel() != null && !task.getLabel().isEmpty()) {
+            announceContent = "任务 '" + task.getLabel() + "' 已完成。\n\n结果:\n" + task.getResult();
+        } else {
+            announceContent = "任务已完成。\n\n结果:\n" + task.getResult();
         }
+        
+        bus.publishInbound(new InboundMessage(
+                "system",
+                "subagent:" + task.getId(),
+                task.getOriginChannel() + ":" + task.getOriginChatId(),
+                announceContent
+        ));
     }
     
     /**
@@ -170,5 +188,21 @@ public class SubagentManager {
      */
     public int getTaskCount() {
         return tasks.size();
+    }
+    
+    /**
+     * 关闭线程池
+     */
+    public void shutdown() {
+        logger.info("关闭 SubagentManager");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

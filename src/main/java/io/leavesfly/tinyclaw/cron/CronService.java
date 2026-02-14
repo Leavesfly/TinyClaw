@@ -135,14 +135,16 @@ public class CronService {
     }
     
     private void checkJobs() {
-        lock.writeLock().lock();
+        List<CronJob> dueJobs;
+        
+        // 收集到期任务（需要写锁）
+        lock.writeLock().lock();  
         try {
             if (!running) return;
             
             long now = System.currentTimeMillis();
-            List<CronJob> dueJobs = new ArrayList<>();
+            dueJobs = new ArrayList<>();
             
-            // 收集到期的任务
             for (CronJob job : store.getJobs()) {
                 if (job.isEnabled() && job.getState().getNextRunAtMs() != null 
                         && job.getState().getNextRunAtMs() <= now) {
@@ -155,18 +157,13 @@ public class CronService {
             if (!dueJobs.isEmpty()) {
                 saveStoreUnsafe();
             }
-            
-            // 在锁外执行（但我们需要释放并重新获取锁）
-            lock.writeLock().unlock();
-            try {
-                for (CronJob job : dueJobs) {
-                    executeJob(job);
-                }
-            } finally {
-                lock.writeLock().lock();
-            }
         } finally {
             lock.writeLock().unlock();
+        }
+        
+        // 在锁外执行任务（避免长时间持有锁）
+        for (CronJob job : dueJobs) {
+            executeJob(job);
         }
     }
     

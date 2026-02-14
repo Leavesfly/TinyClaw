@@ -24,8 +24,6 @@ public class ExecTool implements Tool {
     private final SecurityGuard securityGuard;
     private final String workingDir;
     private final long timeoutSeconds;
-    // 已废弃：使用 SecurityGuard.checkCommand() 代替
-    private final Pattern[] denyPatterns;
     
     public ExecTool(String workingDir) {
         this(workingDir, null);
@@ -35,18 +33,6 @@ public class ExecTool implements Tool {
         this.securityGuard = securityGuard;
         this.workingDir = workingDir;
         this.timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
-        
-        // 危险命令模式（旧版，使用 SecurityGuard 代替）
-        this.denyPatterns = new Pattern[]{
-                Pattern.compile("\\brm\\s+-[rf]{1,2}\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bdel\\s+/[fq]\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\brmdir\\s+/s\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\b(format|mkfs|diskpart)\\b\\s", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bdd\\s+if=", Pattern.CASE_INSENSITIVE),
-                Pattern.compile(">\\s*/dev/sd[a-z]\\b"),
-                Pattern.compile("\\b(shutdown|reboot|poweroff)\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile(":\\(\\)\\s*\\{.*\\};\\s*:")
-        };
     }
     
     @Override
@@ -181,13 +167,8 @@ public class ExecTool implements Tool {
             return securityGuard.checkCommand(command);
         }
         
-        // 退到旧版模式匹配
-        String lower = command.toLowerCase();
-        for (Pattern pattern : denyPatterns) {
-            if (pattern.matcher(lower).find()) {
-                return "命令被安全防护阻止（检测到危险模式）";
-            }
-        }
+        // 如果没有 SecurityGuard，则不限制（不推荐）
+        logger.warn("命令执行未启用 SecurityGuard，存在安全风险");
         return null;
     }
 }

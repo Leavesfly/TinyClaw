@@ -35,14 +35,28 @@ public class MessageBus {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("bus");
     
+    // 队列大小配置（可以通过系统属性覆盖）
+    private static final int DEFAULT_QUEUE_SIZE = 100;
+    private static final int INBOUND_QUEUE_SIZE = Integer.getInteger(
+        "tinyclaw.bus.inbound.queue.size", DEFAULT_QUEUE_SIZE
+    );
+    private static final int OUTBOUND_QUEUE_SIZE = Integer.getInteger(
+        "tinyclaw.bus.outbound.queue.size", DEFAULT_QUEUE_SIZE
+    );
+    
     private final LinkedBlockingQueue<InboundMessage> inbound;
     private final LinkedBlockingQueue<OutboundMessage> outbound;
     private final Map<String, Function<InboundMessage, Void>> handlers;
     
     public MessageBus() {
-        this.inbound = new LinkedBlockingQueue<>(100);
-        this.outbound = new LinkedBlockingQueue<>(100);
+        this.inbound = new LinkedBlockingQueue<>(INBOUND_QUEUE_SIZE);
+        this.outbound = new LinkedBlockingQueue<>(OUTBOUND_QUEUE_SIZE);
         this.handlers = new ConcurrentHashMap<>();
+        
+        logger.info("MessageBus initialized", Map.of(
+            "inbound_queue_size", INBOUND_QUEUE_SIZE,
+            "outbound_queue_size", OUTBOUND_QUEUE_SIZE
+        ));
     }
     
     /**

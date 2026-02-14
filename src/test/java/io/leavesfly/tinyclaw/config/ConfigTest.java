@@ -151,9 +151,7 @@ class ConfigTest {
         assertNotNull(providers.getOpenai());
         assertNotNull(providers.getAnthropic());
         assertNotNull(providers.getZhipu());
-        assertNotNull(providers.getGroq());
         assertNotNull(providers.getGemini());
-        assertNotNull(providers.getVllm());
         assertNotNull(providers.getDashscope());
         assertNotNull(providers.getOllama());
     }

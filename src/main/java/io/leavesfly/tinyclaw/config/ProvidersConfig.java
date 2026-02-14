@@ -20,14 +20,13 @@ public class ProvidersConfig {
     private ProviderConfig ollama;
     
     public ProvidersConfig() {
-        this.openrouter = new ProviderConfig();
-        this.anthropic = new ProviderConfig();
-        this.openai = new ProviderConfig();
-        this.zhipu = new ProviderConfig();
-        this.gemini = new ProviderConfig();
-        this.vllm = new ProviderConfig();
-        this.dashscope = new ProviderConfig();
-        this.ollama = new ProviderConfig();
+        this.openrouter = new ProviderConfig(getDefaultApiBase("openrouter"));
+        this.anthropic = new ProviderConfig(getDefaultApiBase("anthropic"));
+        this.openai = new ProviderConfig(getDefaultApiBase("openai"));
+        this.zhipu = new ProviderConfig(getDefaultApiBase("zhipu"));
+        this.gemini = new ProviderConfig(getDefaultApiBase("gemini"));
+        this.dashscope = new ProviderConfig(getDefaultApiBase("dashscope"));
+        this.ollama = new ProviderConfig(getDefaultApiBase("ollama"));
     }
     
     // Getters and Setters
@@ -96,7 +95,7 @@ public class ProvidersConfig {
     public List<ProviderConfig> getAllProviders() {
         return Arrays.asList(
             openrouter, anthropic, openai, gemini, 
-            zhipu, groq, vllm, dashscope, ollama
+            zhipu, dashscope, ollama
         );
     }
     
@@ -151,6 +150,11 @@ public class ProvidersConfig {
         public ProviderConfig() {
             this.apiKey = "";
             this.apiBase = "";
+        }
+        
+        public ProviderConfig(String defaultApiBase) {
+            this.apiKey = "";
+            this.apiBase = defaultApiBase;
         }
         
         public String getApiKey() {

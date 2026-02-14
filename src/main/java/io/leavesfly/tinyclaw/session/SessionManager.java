@@ -84,7 +84,7 @@ public class SessionManager {
     }
     
     /**
-     * Add a simple message to a session
+     * 添加简单消息到会话
      */
     public void addMessage(String sessionKey, String role, String content) {
         Session session = getOrCreate(sessionKey);
@@ -92,7 +92,7 @@ public class SessionManager {
     }
     
     /**
-     * Add a full message (including tool calls) to a session
+     * 添加完整消息（包括工具调用）到会话
      */
     public void addFullMessage(String sessionKey, Message message) {
         Session session = getOrCreate(sessionKey);
@@ -100,7 +100,7 @@ public class SessionManager {
     }
     
     /**
-     * 获取 消息 history for a session
+     * 获取会话的消息历史
      */
     public List<Message> getHistory(String sessionKey) {
         Session session = sessions.get(sessionKey);
@@ -108,7 +108,7 @@ public class SessionManager {
     }
     
     /**
-     * 获取 the summary for a session
+     * 获取会话的摘要
      */
     public String getSummary(String sessionKey) {
         Session session = sessions.get(sessionKey);
@@ -116,7 +116,7 @@ public class SessionManager {
     }
     
     /**
-     * 设置 the summary for a session
+     * 设置会话的摘要
      */
     public void setSummary(String sessionKey, String summary) {
         Session session = sessions.get(sessionKey);
@@ -127,7 +127,7 @@ public class SessionManager {
     }
     
     /**
-     * Truncate the history of a session
+     * 截断会话的历史记录
      */
     public void truncateHistory(String sessionKey, int keepLast) {
         Session session = sessions.get(sessionKey);
@@ -137,7 +137,7 @@ public class SessionManager {
     }
     
     /**
-     * 保存 a session to disk
+     * 保存会话到磁盘
      */
     public void save(Session session) {
         if (storagePath == null || storagePath.isEmpty()) {
@@ -155,7 +155,7 @@ public class SessionManager {
     }
     
     /**
-     * 加载 all sessions from disk
+     * 从磁盘加载所有会话
      */
     private void loadSessions() {
         if (storagePath == null) {
@@ -187,14 +187,14 @@ public class SessionManager {
     }
     
     /**
-     * 获取 all session keys
+     * 获取所有会话键
      */
     public java.util.Set<String> getSessionKeys() {
         return sessions.keySet();
     }
     
     /**
-     * Delete a session
+     * 删除会话
      */
     public void deleteSession(String key) {
         Session removed = sessions.remove(key);

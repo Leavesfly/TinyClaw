@@ -93,6 +93,10 @@ public class WebConsoleServer {
     public void stop() {
         if (httpServer != null) {
             httpServer.stop(2);
+            // 关闭线程池
+            if (httpServer.getExecutor() != null) {
+                ((java.util.concurrent.ExecutorService) httpServer.getExecutor()).shutdown();
+            }
             logger.info("Web Console Server stopped");
         }
     }
@@ -509,10 +513,8 @@ public class WebConsoleServer {
                 addProviderInfo(providers, "anthropic", pc.getAnthropic());
                 addProviderInfo(providers, "zhipu", pc.getZhipu());
                 addProviderInfo(providers, "dashscope", pc.getDashscope());
-                addProviderInfo(providers, "groq", pc.getGroq());
                 addProviderInfo(providers, "gemini", pc.getGemini());
                 addProviderInfo(providers, "ollama", pc.getOllama());
-                addProviderInfo(providers, "vllm", pc.getVllm());
                 
                 sendJson(exchange, 200, providers);
             } else if (path.startsWith("/api/providers/") && "PUT".equals(method)) {
@@ -566,10 +568,8 @@ public class WebConsoleServer {
             case "anthropic": return pc.getAnthropic();
             case "zhipu": return pc.getZhipu();
             case "dashscope": return pc.getDashscope();
-            case "groq": return pc.getGroq();
             case "gemini": return pc.getGemini();
             case "ollama": return pc.getOllama();
-            case "vllm": return pc.getVllm();
             default: return null;
         }
     }
@@ -775,10 +775,8 @@ public class WebConsoleServer {
         if (pc.getZhipu() != null && pc.getZhipu().isValid()) return "zhipu";
         if (pc.getOpenai() != null && pc.getOpenai().isValid()) return "openai";
         if (pc.getAnthropic() != null && pc.getAnthropic().isValid()) return "anthropic";
-        if (pc.getGroq() != null && pc.getGroq().isValid()) return "groq";
         if (pc.getGemini() != null && pc.getGemini().isValid()) return "gemini";
         if (pc.getOllama() != null && pc.getOllama().isValid()) return "ollama";
-        if (pc.getVllm() != null && pc.getVllm().isValid()) return "vllm";
         return "";
     }
     

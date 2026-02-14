@@ -232,19 +232,7 @@ public class GatewayBootstrap {
      * 初始化语音转写器
      */
     private void initializeTranscriber() {
-        String groqApiKey = config.getProviders() != null && config.getProviders().getGroq() != null 
-                ? config.getProviders().getGroq().getApiKey() : null;
-        
-        if (groqApiKey == null || groqApiKey.isEmpty()) {
-            return;
-        }
-        
-        GroqTranscriber transcriber = new GroqTranscriber(groqApiKey);
-        logger.info("Groq transcriber initialized");
-        
-        // 配置转写器到各个通道
-        attachTranscriberToChannel("telegram", TelegramChannel.class, transcriber);
-        attachTranscriberToChannel("discord", DiscordChannel.class, transcriber);
+        // Groq provider 已移除，语音转写功能暂时禁用
     }
     
     /**

@@ -280,11 +280,6 @@ public class HTTPProvider implements LLMProvider {
                 apiKey = provider.getApiKey();
                 apiBase = resolveApiBase(provider.getApiBase(), "https://open.bigmodel.cn/api/paas/v4");
             }
-            case "groq" -> {
-                var provider = config.getProviders().getGroq();
-                apiKey = provider.getApiKey();
-                apiBase = resolveApiBase(provider.getApiBase(), "https://api.groq.com/openai/v1");
-            }
             case "gemini" -> {
                 var provider = config.getProviders().getGemini();
                 apiKey = provider.getApiKey();
@@ -294,11 +289,6 @@ public class HTTPProvider implements LLMProvider {
                 var provider = config.getProviders().getOllama();
                 apiKey = ""; // Ollama 不需要 API Key
                 apiBase = resolveApiBase(provider.getApiBase(), "http://localhost:11434/v1");
-            }
-            case "vllm" -> {
-                var provider = config.getProviders().getVllm();
-                apiKey = provider.getApiKey(); // vLLM 可能为空
-                apiBase = provider.getApiBase(); // vLLM 没有默认值，必须配置
             }
             case "openrouter" -> {
                 var provider = config.getProviders().getOpenrouter();
@@ -320,9 +310,8 @@ public class HTTPProvider implements LLMProvider {
         }
         
         // 对于非本地服务，检查 apiKey
-        if (!providerName.equals("ollama") && 
-            !providerName.equals("vllm") && 
-            (apiKey == null || apiKey.isEmpty())) {
+        boolean isLocalService = providerName.equals("ollama") || providerName.equals("vllm");
+        if (!isLocalService && (apiKey == null || apiKey.isEmpty())) {
             throw new IllegalStateException(
                 "Provider " + providerName + " 的 apiKey 未配置 (model: " + modelName + ")"
             );

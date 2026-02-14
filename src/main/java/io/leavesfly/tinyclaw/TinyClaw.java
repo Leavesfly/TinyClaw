@@ -122,8 +122,9 @@ public class TinyClaw {
                 return 1;
             }
         } catch (Exception e) {
+            TinyClawLogger logger = TinyClawLogger.getLogger("main");
+            logger.error("Application error", Map.of("error", e.getMessage()));
             System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
             return 1;
         }
     }
