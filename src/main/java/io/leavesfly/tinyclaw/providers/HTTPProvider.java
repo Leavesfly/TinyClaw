@@ -223,71 +223,115 @@ public class HTTPProvider implements LLMProvider {
     
     /**
      * Create a provider based on configuration
+     * 
+     * 路由机制：
+     * 1. 从 models.definitions 中精确匹配模型
+     * 2. 根据 provider 名称获取对应的 API Key 和 API Base
      */
     public static LLMProvider createProvider(Config config) {
-        String model = config.getAgents().getDefaults().getModel();
+        String modelName = config.getAgents().getDefaults().getModel();
+        
+        // 精确匹配：从 models.definitions 中查找
+        var modelDef = config.getModels().getDefinitions().get(modelName);
+        
+        if (modelDef == null) {
+            // 生成友好的错误提示，列出所有可用模型
+            var availableModels = config.getModels().getDefinitions().keySet();
+            String availableList = availableModels.isEmpty() 
+                ? "无可用模型" 
+                : String.join(", ", availableModels);
+            
+            throw new IllegalStateException(
+                "未知模型: " + modelName + "\n" +
+                "请在 config.models.definitions 中定义此模型\n" +
+                "可用模型: " + availableList
+            );
+        }
+        
+        String providerName = modelDef.getProvider();
+        logger.info("创建 Provider", Map.of(
+            "model", modelName,
+            "provider", providerName,
+            "max_context", modelDef.getMaxContextSize() != null ? modelDef.getMaxContextSize() : "unknown"
+        ));
+        
+        // 获取 provider 配置
         String apiKey = null;
         String apiBase = null;
         
-        String lowerModel = model.toLowerCase();
-        
-        // Determine provider based on model name
-        if (model.startsWith("openrouter/") || model.startsWith("anthropic/") || 
-            model.startsWith("openai/") || model.startsWith("meta-llama/") || 
-            model.startsWith("deepseek/") || model.startsWith("google/")) {
-            apiKey = config.getProviders().getOpenrouter().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getOpenrouter().getApiBase(), "https://openrouter.ai/api/v1");
-        } else if ((lowerModel.contains("claude") || model.startsWith("anthropic/")) && 
-                   config.getProviders().getAnthropic().getApiKey() != null && 
-                   !config.getProviders().getAnthropic().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getAnthropic().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getAnthropic().getApiBase(), "https://api.anthropic.com/v1");
-        } else if ((lowerModel.contains("gpt") || model.startsWith("openai/")) && 
-                   config.getProviders().getOpenai().getApiKey() != null && 
-                   !config.getProviders().getOpenai().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getOpenai().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getOpenai().getApiBase(), "https://api.openai.com/v1");
-        } else if ((lowerModel.contains("gemini") || model.startsWith("google/")) && 
-                   config.getProviders().getGemini().getApiKey() != null && 
-                   !config.getProviders().getGemini().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getGemini().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getGemini().getApiBase(), "https://generativelanguage.googleapis.com/v1beta");
-        } else if ((lowerModel.contains("glm") || lowerModel.contains("zhipu") || lowerModel.contains("zai")) && 
-                   config.getProviders().getZhipu().getApiKey() != null && 
-                   !config.getProviders().getZhipu().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getZhipu().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getZhipu().getApiBase(), "https://open.bigmodel.cn/api/paas/v4");
-        } else if ((lowerModel.contains("qwen") || lowerModel.contains("dashscope")) && 
-                   config.getProviders().getDashscope().getApiKey() != null && 
-                   !config.getProviders().getDashscope().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getDashscope().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getDashscope().getApiBase(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
-        } else if ((lowerModel.contains("groq") || model.startsWith("groq/")) && 
-                   config.getProviders().getGroq().getApiKey() != null && 
-                   !config.getProviders().getGroq().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getGroq().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getGroq().getApiBase(), "https://api.groq.com/openai/v1");
-        } else if (config.getProviders().getVllm().getApiBase() != null && 
-                   !config.getProviders().getVllm().getApiBase().isEmpty()) {
-            apiKey = config.getProviders().getVllm().getApiKey();
-            apiBase = config.getProviders().getVllm().getApiBase();
-        } else if (config.getProviders().getOpenrouter().getApiKey() != null && 
-                   !config.getProviders().getOpenrouter().getApiKey().isEmpty()) {
-            apiKey = config.getProviders().getOpenrouter().getApiKey();
-            apiBase = resolveApiBase(config.getProviders().getOpenrouter().getApiBase(), "https://openrouter.ai/api/v1");
+        switch (providerName) {
+            case "dashscope" -> {
+                var provider = config.getProviders().getDashscope();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
+            }
+            case "openai" -> {
+                var provider = config.getProviders().getOpenai();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://api.openai.com/v1");
+            }
+            case "anthropic" -> {
+                var provider = config.getProviders().getAnthropic();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://api.anthropic.com/v1");
+            }
+            case "zhipu" -> {
+                var provider = config.getProviders().getZhipu();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://open.bigmodel.cn/api/paas/v4");
+            }
+            case "groq" -> {
+                var provider = config.getProviders().getGroq();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://api.groq.com/openai/v1");
+            }
+            case "gemini" -> {
+                var provider = config.getProviders().getGemini();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://generativelanguage.googleapis.com/v1beta");
+            }
+            case "ollama" -> {
+                var provider = config.getProviders().getOllama();
+                apiKey = ""; // Ollama 不需要 API Key
+                apiBase = resolveApiBase(provider.getApiBase(), "http://localhost:11434/v1");
+            }
+            case "vllm" -> {
+                var provider = config.getProviders().getVllm();
+                apiKey = provider.getApiKey(); // vLLM 可能为空
+                apiBase = provider.getApiBase(); // vLLM 没有默认值，必须配置
+            }
+            case "openrouter" -> {
+                var provider = config.getProviders().getOpenrouter();
+                apiKey = provider.getApiKey();
+                apiBase = resolveApiBase(provider.getApiBase(), "https://openrouter.ai/api/v1");
+            }
+            default -> {
+                throw new IllegalStateException(
+                    "不支持的 provider: " + providerName + ". 请检查配置"
+                );
+            }
         }
         
-        if (apiKey == null || apiKey.isEmpty()) {
-            throw new IllegalStateException("No API key configured for model: " + model);
-        }
-        
+        // 验证配置
         if (apiBase == null || apiBase.isEmpty()) {
-            throw new IllegalStateException("No API base configured for provider (model: " + model + ")");
+            throw new IllegalStateException(
+                "Provider " + providerName + " 的 apiBase 未配置 (model: " + modelName + ")"
+            );
+        }
+        
+        // 对于非本地服务，检查 apiKey
+        if (!providerName.equals("ollama") && 
+            !providerName.equals("vllm") && 
+            (apiKey == null || apiKey.isEmpty())) {
+            throw new IllegalStateException(
+                "Provider " + providerName + " 的 apiKey 未配置 (model: " + modelName + ")"
+            );
         }
         
         logger.info("Created HTTP provider", Map.of(
-                "api_base", apiBase,
-                "model", model
+            "provider", providerName,
+            "model", modelName,
+            "api_base", apiBase
         ));
         
         return new HTTPProvider(apiKey, apiBase);

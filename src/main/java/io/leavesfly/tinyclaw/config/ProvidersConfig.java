@@ -190,11 +190,21 @@ public class ProvidersConfig {
         }
         
         /**
-         * 检查此 Provider 是否有效（有 API Key）
+         * 检查此 Provider 是否有效
+         * 对于本地部署服务（vllm/ollama），只需要有 apiBase 即可
+         * 对于云服务，需要有 apiKey
          */
         @JsonIgnore
         public boolean isValid() {
             return apiKey != null && !apiKey.isEmpty();
+        }
+        
+        /**
+         * 检查是否配置了 API Base（用于 vllm/ollama 等本地服务）
+         */
+        @JsonIgnore
+        public boolean hasApiBase() {
+            return apiBase != null && !apiBase.isEmpty();
         }
         
         /**

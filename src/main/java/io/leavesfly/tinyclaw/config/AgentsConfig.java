@@ -39,7 +39,7 @@ public class AgentsConfig {
         
         public AgentDefaults() {
             this.workspace = "~/.tinyclaw/workspace";
-            this.model = "glm-4.7";
+            this.model = "qwen3-max";
             this.maxTokens = 8192;
             this.temperature = 0.7;
             this.maxToolIterations = 20;

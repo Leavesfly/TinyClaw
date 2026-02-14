@@ -51,6 +51,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
  */
 public class Config {
     
+    private ModelsConfig models;
     private AgentsConfig agents;
     private ChannelsConfig channels;
     private ProvidersConfig providers;
@@ -60,6 +61,7 @@ public class Config {
     
     public Config() {
         // 设置 defaults
+        this.models = new ModelsConfig();
         this.agents = new AgentsConfig();
         this.channels = new ChannelsConfig();
         this.providers = new ProvidersConfig();
@@ -69,6 +71,14 @@ public class Config {
     }
     
     // Getters and Setters
+    public ModelsConfig getModels() {
+        return models;
+    }
+    
+    public void setModels(ModelsConfig models) {
+        this.models = models;
+    }
+    
     public AgentsConfig getAgents() {
         return agents;
     }
@@ -207,7 +217,7 @@ public class Config {
         
         // Agents defaults
         config.getAgents().getDefaults().setWorkspace("~/.tinyclaw/workspace");
-        config.getAgents().getDefaults().setModel("glm-4.7");
+        config.getAgents().getDefaults().setModel("qwen3-max");
         config.getAgents().getDefaults().setMaxTokens(8192);
         config.getAgents().getDefaults().setTemperature(0.7);
         config.getAgents().getDefaults().setMaxToolIterations(20);
