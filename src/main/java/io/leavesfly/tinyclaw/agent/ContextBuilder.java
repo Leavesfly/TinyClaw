@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 上下文构建器 - 用于构建 Agent 运行所需的完整上下文
+ * 上下文构建器，用于构建 Agent 运行所需的完整上下文。
  * 
  * 这是 Agent 系统的核心组件之一，负责组装发送给 LLM 的系统提示词和消息上下文。
  * 
@@ -44,13 +44,18 @@ public class ContextBuilder {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("context");
     
-    private final String workspace;
-    private ToolRegistry tools;
-    private final MemoryStore memory;
-    private final SkillsLoader skillsLoader;
+    private static final String SECTION_SEPARATOR = "\n\n---\n\n";  // 部分分隔符
+    private static final String[] BOOTSTRAP_FILES = {               // 引导文件列表
+        "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"
+    };
+    
+    private final String workspace;          // 工作空间路径
+    private ToolRegistry tools;              // 工具注册表
+    private final MemoryStore memory;        // 记忆存储
+    private final SkillsLoader skillsLoader; // 技能加载器
     
     /**
-     * 创建上下文构建器
+     * 创建上下文构建器。
      * 
      * 初始化时会自动创建 MemoryStore 和 SkillsLoader 实例。
      * SkillsLoader 会尝试从多个位置加载技能：
@@ -69,7 +74,7 @@ public class ContextBuilder {
     }
     
     /**
-     * 创建带完整配置的上下文构建器
+     * 创建带完整配置的上下文构建器。
      * 
      * 允许指定全局和内置技能目录，用于高级配置场景。
      * 
@@ -84,14 +89,16 @@ public class ContextBuilder {
     }
     
     /**
-     * 设置工具注册表用于动态工具摘要生成
+     * 设置工具注册表用于动态工具摘要生成。
+     * 
+     * @param tools 工具注册表实例
      */
     public void setTools(ToolRegistry tools) {
         this.tools = tools;
     }
     
     /**
-     * 构建系统提示词
+     * 构建系统提示词。
      * 
      * 这是上下文构建的核心方法，按照特定顺序组装各个部分：
      * 1. 身份信息：Agent 的基本身份和当前环境信息
@@ -107,38 +114,41 @@ public class ContextBuilder {
     public String buildSystemPrompt() {
         List<String> parts = new ArrayList<>();
         
-        // 核心身份部分
+        // 1. 核心身份部分
         parts.add(getIdentity());
         
-        // 引导文件
-        String bootstrapContent = loadBootstrapFiles();
-        if (StringUtils.isNotBlank(bootstrapContent)) {
-            parts.add(bootstrapContent);
-        }
+        // 2. 引导文件
+        addSectionIfNotBlank(parts, loadBootstrapFiles());
         
-        // 工具部分
-        String toolsSection = buildToolsSection();
-        if (StringUtils.isNotBlank(toolsSection)) {
-            parts.add(toolsSection);
-        }
+        // 3. 工具部分
+        addSectionIfNotBlank(parts, buildToolsSection());
         
-        // 技能摘要部分
-        String skillsSection = buildSkillsSection();
-        if (StringUtils.isNotBlank(skillsSection)) {
-            parts.add(skillsSection);
-        }
+        // 4. 技能摘要部分
+        addSectionIfNotBlank(parts, buildSkillsSection());
         
-        // 记忆上下文
+        // 5. 记忆上下文
         String memoryContext = memory.getMemoryContext();
         if (StringUtils.isNotBlank(memoryContext)) {
             parts.add("# Memory\n\n" + memoryContext);
         }
         
-        return String.join("\n\n---\n\n", parts);
+        return String.join(SECTION_SEPARATOR, parts);
     }
     
     /**
-     * 构建技能摘要部分
+     * 添加非空部分到列表。
+     * 
+     * @param parts 部分列表
+     * @param section 要添加的部分内容
+     */
+    private void addSectionIfNotBlank(List<String> parts, String section) {
+        if (StringUtils.isNotBlank(section)) {
+            parts.add(section);
+        }
+    }
+    
+    /**
+     * 构建技能摘要部分。
      * 
      * 生成已安装技能的简要说明，采用渐进式披露策略：
      * - 只显示技能名称、描述和位置
@@ -155,24 +165,64 @@ public class ContextBuilder {
         
         // 已安装技能摘要
         if (StringUtils.isNotBlank(skillsSummary)) {
-            sb.append("## Installed Skills\n\n");
-            sb.append("The following skills extend your capabilities. ");
-            sb.append("To use a skill, read its SKILL.md file using the read_file tool.\n\n");
-            sb.append(skillsSummary);
-            sb.append("\n\n");
+            appendInstalledSkillsSummary(sb, skillsSummary);
         }
         
         // AI 自主学习技能的引导
+        appendSkillSelfLearningGuide(sb);
+        
+        return sb.toString();
+    }
+    
+    /**
+     * 追加已安装技能摘要。
+     * 
+     * @param sb 字符串构建器
+     * @param skillsSummary 技能摘要内容
+     */
+    private void appendInstalledSkillsSummary(StringBuilder sb, String skillsSummary) {
+        sb.append("## Installed Skills\n\n");
+        sb.append("The following skills extend your capabilities. ");
+        sb.append("To use a skill, read its SKILL.md file using the read_file tool.\n\n");
+        sb.append(skillsSummary);
+        sb.append("\n\n");
+    }
+    
+    /**
+     * 追加技能自主学习引导。
+     * 
+     * @param sb 字符串构建器
+     */
+    private void appendSkillSelfLearningGuide(StringBuilder sb) {
         sb.append("## Skill Self-Learning\n\n");
         sb.append("You have the ability to **autonomously learn and manage skills** using the `skills` tool. ");
         sb.append("This means you are not limited to pre-installed skills — you can grow your capabilities over time.\n\n");
         
+        appendWhenToLearnSkills(sb);
+        appendHowToManageSkills(sb);
+        appendInvokingSkillsWithScripts(sb);
+        appendCreatingLearnableSkills(sb);
+    }
+    
+    /**
+     * 追加何时学习新技能的说明。
+     * 
+     * @param sb 字符串构建器
+     */
+    private void appendWhenToLearnSkills(StringBuilder sb) {
         sb.append("### When to learn new skills\n\n");
         sb.append("- When you encounter a task that no existing skill covers, consider **creating a new skill** to handle it.\n");
         sb.append("- When a user mentions a community skill or a GitHub repository with useful skills, **install it** directly.\n");
         sb.append("- When you find yourself repeatedly performing similar multi-step operations, **extract the pattern into a reusable skill**.\n");
         sb.append("- When an existing skill could be improved based on new experience, **edit it** to make it better.\n\n");
-        
+    }
+    
+    /**
+     * 追加如何管理技能的说明。
+     * 
+     * @param sb 字符串构建器
+     */
+    private void appendHowToManageSkills(StringBuilder sb) {
         sb.append("### How to manage skills\n\n");
         sb.append("Use the `skills` tool with these actions:\n");
         sb.append("- `skills(action='list')` — See all installed skills\n");
@@ -182,7 +232,14 @@ public class ContextBuilder {
         sb.append("- `skills(action='create', name='...', content='...', skill_description='...')` — Create a new skill from your experience\n");
         sb.append("- `skills(action='edit', name='...', content='...')` — Improve an existing skill\n");
         sb.append("- `skills(action='remove', name='...')` — Remove a skill you no longer need\n\n");
-        
+    }
+    
+    /**
+     * 追加调用带脚本技能的说明。
+     * 
+     * @param sb 字符串构建器
+     */
+    private void appendInvokingSkillsWithScripts(StringBuilder sb) {
         sb.append("### Invoking skills with scripts\n\n");
         sb.append("When a skill contains executable scripts (like Python files), use `invoke` instead of `show`:\n");
         sb.append("1. Call `skills(action='invoke', name='skill-name')` to get the skill's base path and instructions\n");
@@ -193,7 +250,14 @@ public class ContextBuilder {
         sb.append("1. skills(action='invoke', name='pptx')  → Get base path: /path/to/skills/pptx/\n");
         sb.append("2. exec(command='python3 /path/to/skills/pptx/create_pptx.py output.pptx')\n");
         sb.append("```\n\n");
-        
+    }
+    
+    /**
+     * 追加创建可学习技能的说明。
+     * 
+     * @param sb 字符串构建器
+     */
+    private void appendCreatingLearnableSkills(StringBuilder sb) {
         sb.append("### Creating learnable skills\n\n");
         sb.append("When creating a skill, write it as a **Markdown instruction manual** with YAML frontmatter. A good skill should include:\n");
         sb.append("1. Clear description of what the skill does\n");
@@ -203,12 +267,12 @@ public class ContextBuilder {
         
         sb.append("Skills you create are saved to `").append(Paths.get(workspace).toAbsolutePath())
                 .append("/skills/` and will be automatically available in future conversations.\n");
-        
-        return sb.toString();
     }
     
     /**
-     * 获取 Agent 身份和基本信息
+     * 获取 Agent 身份和基本信息。
+     * 
+     * @return 身份信息字符串
      */
     private String getIdentity() {
         String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"));
@@ -236,15 +300,12 @@ public class ContextBuilder {
     }
     
     /**
-     * 构建系统提示词的工具部分
+     * 构建系统提示词的工具部分。
+     * 
+     * @return 工具部分字符串，无工具时返回空字符串
      */
     private String buildToolsSection() {
-        if (tools == null) {
-            return "";
-        }
-        
-        List<String> summaries = tools.getSummaries();
-        if (summaries.isEmpty()) {
+        if (tools == null || tools.getSummaries().isEmpty()) {
             return "";
         }
         
@@ -252,30 +313,29 @@ public class ContextBuilder {
         sb.append("## 可用工具\n\n");
         sb.append("**重要**: 你必须使用工具来执行操作。不要假装执行命令或安排任务。\n\n");
         sb.append("你可以访问以下工具:\n\n");
-        for (String s : summaries) {
-            sb.append(s).append("\n");
+        
+        for (String summary : tools.getSummaries()) {
+            sb.append(summary).append("\n");
         }
         
         return sb.toString();
     }
     
     /**
-     * 从工作空间加载引导文件
+     * 从工作空间加载引导文件。
+     * 
+     * 尝试加载 AGENTS.md、SOUL.md、USER.md、IDENTITY.md 等文件。
+     * 
+     * @return 引导文件内容，无文件时返回空字符串
      */
     private String loadBootstrapFiles() {
-        String[] bootstrapFiles = {"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"};
-        
         StringBuilder result = new StringBuilder();
-        for (String filename : bootstrapFiles) {
-            String filePath = Paths.get(workspace, filename).toString();
-            try {
-                if (Files.exists(Paths.get(filePath))) {
-                    String content = Files.readString(Paths.get(filePath));
-                    result.append("## ").append(filename).append("\n\n");
-                    result.append(content).append("\n\n");
-                }
-            } catch (IOException e) {
-                // 忽略读取个别文件时的错误
+        
+        for (String filename : BOOTSTRAP_FILES) {
+            String content = loadBootstrapFile(filename);
+            if (StringUtils.isNotBlank(content)) {
+                result.append("## ").append(filename).append("\n\n");
+                result.append(content).append("\n\n");
             }
         }
         
@@ -283,29 +343,46 @@ public class ContextBuilder {
     }
     
     /**
-     * 为 LLM 构建消息
+     * 加载单个引导文件。
+     * 
+     * @param filename 文件名
+     * @return 文件内容，失败时返回空字符串
+     */
+    private String loadBootstrapFile(String filename) {
+        try {
+            String filePath = Paths.get(workspace, filename).toString();
+            if (Files.exists(Paths.get(filePath))) {
+                return Files.readString(Paths.get(filePath));
+            }
+        } catch (IOException e) {
+            // 忽略读取个别文件时的错误
+        }
+        return "";
+    }
+    
+    /**
+     * 为 LLM 构建消息列表。
+     * 
+     * 组装完整的消息上下文，包括系统提示词、历史消息和当前用户消息。
+     * 
+     * @param history 历史消息列表
+     * @param summary 之前对话的摘要
+     * @param currentMessage 当前用户消息
+     * @param channel 当前通道名称
+     * @param chatId 当前聊天 ID
+     * @return 完整的消息列表
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         String channel, String chatId) {
         List<Message> messages = new ArrayList<>();
         
         // 构建系统提示词
-        String systemPrompt = buildSystemPrompt();
-        
-        // 如果提供了当前会话信息则添加
-        if (StringUtils.isNotBlank(channel) && StringUtils.isNotBlank(chatId)) {
-            systemPrompt += "\n\n## 当前会话\n通道: " + channel + "\n聊天 ID: " + chatId;
-        }
+        String systemPrompt = buildSystemPromptWithSession(channel, chatId, summary);
         
         logger.debug("System prompt built", Map.of(
                 "total_chars", systemPrompt.length(),
                 "total_lines", systemPrompt.split("\n").length
         ));
-        
-        // 如果有摘要则添加
-        if (StringUtils.isNotBlank(summary)) {
-            systemPrompt += "\n\n## 之前对话的摘要\n\n" + summary;
-        }
         
         // 添加系统消息
         messages.add(Message.system(systemPrompt));
@@ -322,7 +399,32 @@ public class ContextBuilder {
     }
     
     /**
-     * 获取已加载技能的信息
+     * 构建包含会话信息的系统提示词。
+     * 
+     * @param channel 通道名称
+     * @param chatId 聊天 ID
+     * @param summary 对话摘要
+     * @return 完整的系统提示词
+     */
+    private String buildSystemPromptWithSession(String channel, String chatId, String summary) {
+        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt());
+        
+        // 添加当前会话信息
+        if (StringUtils.isNotBlank(channel) && StringUtils.isNotBlank(chatId)) {
+            systemPrompt.append("\n\n## 当前会话\n通道: ").append(channel)
+                       .append("\n聊天 ID: ").append(chatId);
+        }
+        
+        // 添加对话摘要
+        if (StringUtils.isNotBlank(summary)) {
+            systemPrompt.append("\n\n## 之前对话的摘要\n\n").append(summary);
+        }
+        
+        return systemPrompt.toString();
+    }
+    
+    /**
+     * 获取已加载技能的信息。
      * 
      * 返回当前已安装技能的统计信息，包括：
      * - total: 技能总数
@@ -335,10 +437,9 @@ public class ContextBuilder {
      */
     public Map<String, Object> getSkillsInfo() {
         List<SkillInfo> allSkills = skillsLoader.listSkills();
-        List<String> skillNames = new ArrayList<>();
-        for (SkillInfo s : allSkills) {
-            skillNames.add(s.getName());
-        }
+        List<String> skillNames = allSkills.stream()
+                .map(SkillInfo::getName)
+                .toList();
         
         Map<String, Object> info = new HashMap<>();
         info.put("total", allSkills.size());

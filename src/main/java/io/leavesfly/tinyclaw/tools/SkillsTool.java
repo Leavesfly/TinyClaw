@@ -14,9 +14,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 技能管理工具 - 赋予 Agent 自主学习和管理技能的能力
+ * 技能管理工具，赋予 Agent 自主学习和管理技能的能力。
  * 
- * 这是实现"AI 自主学习 Skill"的核心工具，让 Agent 不再依赖人工安装技能，
+ * 这是实现 AI 自主学习 Skill 的核心工具，让 Agent 不再依赖人工安装技能，
  * 而是能够自主发现、安装、创建和编辑技能。
  * 
  * 支持的操作：
@@ -37,12 +37,12 @@ public class SkillsTool implements Tool {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("skills");
 
-    private final SkillsLoader skillsLoader;
-    private final SkillsInstaller skillsInstaller;
-    private final String workspace;
+    private final SkillsLoader skillsLoader;       // 技能加载器
+    private final SkillsInstaller skillsInstaller; // 技能安装器
+    private final String workspace;                // 工作空间路径
 
     /**
-     * 创建技能管理工具
+     * 创建技能管理工具。
      *
      * @param workspace 工作空间路径
      */
@@ -53,7 +53,7 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 创建带完整配置的技能管理工具
+     * 创建带完整配置的技能管理工具。
      *
      * @param workspace     工作空间路径
      * @param globalSkills  全局技能目录路径
@@ -132,29 +132,23 @@ public class SkillsTool implements Tool {
             throw new IllegalArgumentException("操作参数是必需的");
         }
 
-        switch (action) {
-            case "list":
-                return executeList();
-            case "show":
-                return executeShow(args);
-            case "invoke":
-                return executeInvoke(args);
-            case "install":
-                return executeInstall(args);
-            case "create":
-                return executeCreate(args);
-            case "edit":
-                return executeEdit(args);
-            case "remove":
-                return executeRemove(args);
-            default:
-                throw new IllegalArgumentException("未知操作: " + action
-                        + "。有效操作：list、show、invoke、install、create、edit、remove");
-        }
+        return switch (action) {
+            case "list" -> executeList();
+            case "show" -> executeShow(args);
+            case "invoke" -> executeInvoke(args);
+            case "install" -> executeInstall(args);
+            case "create" -> executeCreate(args);
+            case "edit" -> executeEdit(args);
+            case "remove" -> executeRemove(args);
+            default -> throw new IllegalArgumentException("未知操作: " + action
+                    + "。有效操作：list、show、invoke、install、create、edit、remove");
+        };
     }
 
     /**
-     * 列出所有已安装的技能
+     * 列出所有已安装的技能。
+     * 
+     * @return 技能列表的格式化字符串
      */
     private String executeList() {
         List<SkillInfo> skills = skillsLoader.listSkills();
@@ -179,7 +173,10 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 查看指定技能的完整内容
+     * 查看指定技能的完整内容。
+     * 
+     * @param args 参数映射，必须包含 name 字段
+     * @return 技能内容或错误信息
      */
     private String executeShow(Map<String, Object> args) {
         String skillName = (String) args.get("name");
@@ -196,7 +193,7 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 调用技能 - 返回基础路径和完整指令
+     * 调用技能，返回基础路径和完整指令。
      * 
      * 这是执行带脚本技能的核心方法，符合 Claude Code Skills 行业标准。
      * 返回内容包含：Base Path（技能目录绝对路径）和技能的完整 Markdown 指令。
@@ -245,13 +242,15 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 查找技能所在位置
+     * 查找技能所在位置。
+     * 
+     * 按优先级顺序查找：workspace > global > builtin
      * 
      * @param skillName 技能名称
      * @return 技能位置信息，未找到返回 null
      */
     private SkillLocation findSkillLocation(String skillName) {
-        // 按优先级顺序查找：workspace > global > builtin
+        // 优先查找工作空间技能
         Path workspacePath = Paths.get(workspace, "skills", skillName, "SKILL.md");
         if (Files.exists(workspacePath)) {
             return new SkillLocation(
@@ -275,7 +274,7 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 技能位置信息内部类
+     * 技能位置信息封装类。
      */
     private static class SkillLocation {
         final String basePath;  // 技能目录绝对路径
@@ -288,7 +287,11 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 从 GitHub 安装技能
+     * 从 GitHub 安装技能。
+     * 
+     * @param args 参数映射，必须包含 repo 字段
+     * @return 安装结果信息
+     * @throws Exception 安装失败时抛出异常
      */
     private String executeInstall(Map<String, Object> args) throws Exception {
         String repo = (String) args.get("repo");
@@ -302,7 +305,11 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 创建新技能 — AI 自主学习的核心能力
+     * 创建新技能，AI 自主学习的核心能力。
+     * 
+     * @param args 参数映射，必须包含 name 字段，可选 content 或 skill_description 字段
+     * @return 创建结果信息
+     * @throws Exception 创建失败时抛出异常
      */
     private String executeCreate(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
@@ -321,10 +328,7 @@ public class SkillsTool implements Tool {
         }
 
         // 确保内容包含 frontmatter
-        if (!content.trim().startsWith("---")) {
-            String description = skillDescription != null ? skillDescription : "A skill for " + skillName;
-            content = "---\nname: \"" + skillName + "\"\ndescription: \"" + description + "\"\n---\n\n" + content;
-        }
+        content = ensureFrontmatter(content, skillName, skillDescription);
 
         Path skillDir = Paths.get(workspace, "skills", skillName);
         Path skillFile = skillDir.resolve("SKILL.md");
@@ -347,7 +351,11 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 编辑已有技能的内容
+     * 编辑已有技能的内容。
+     * 
+     * @param args 参数映射，必须包含 name 和 content 字段
+     * @return 编辑结果信息
+     * @throws Exception 编辑失败时抛出异常
      */
     private String executeEdit(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
@@ -383,11 +391,7 @@ public class SkillsTool implements Tool {
         }
 
         // 确保内容包含 frontmatter
-        if (!content.trim().startsWith("---")) {
-            String skillDescription = (String) args.get("skill_description");
-            String description = skillDescription != null ? skillDescription : "A skill for " + skillName;
-            content = "---\nname: \"" + skillName + "\"\ndescription: \"" + description + "\"\n---\n\n" + content;
-        }
+        content = ensureFrontmatter(content, skillName, (String) args.get("skill_description"));
 
         Files.writeString(workspaceSkillFile, content);
 
@@ -401,7 +405,11 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 删除指定技能
+     * 删除指定技能。
+     * 
+     * @param args 参数映射，必须包含 name 字段
+     * @return 删除结果信息
+     * @throws Exception 删除失败时抛出异常
      */
     private String executeRemove(Map<String, Object> args) throws Exception {
         String skillName = (String) args.get("name");
@@ -422,7 +430,28 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 构建技能模板
+     * 确保内容包含 frontmatter。
+     * 
+     * @param content 原始内容
+     * @param skillName 技能名称
+     * @param skillDescription 技能描述
+     * @return 包含 frontmatter 的内容
+     */
+    private String ensureFrontmatter(String content, String skillName, String skillDescription) {
+        if (content.trim().startsWith("---")) {
+            return content;
+        }
+        
+        String description = skillDescription != null ? skillDescription : "A skill for " + skillName;
+        return "---\nname: \"" + skillName + "\"\ndescription: \"" + description + "\"\n---\n\n" + content;
+    }
+
+    /**
+     * 构建技能模板。
+     * 
+     * @param skillName 技能名称
+     * @param description 技能描述
+     * @return 技能模板内容
      */
     private String buildSkillTemplate(String skillName, String description) {
         return "---\n"
@@ -439,17 +468,22 @@ public class SkillsTool implements Tool {
     }
 
     /**
-     * 递归删除目录
+     * 递归删除目录。
+     * 
+     * @param directory 要删除的目录路径
+     * @throws IOException 删除失败时抛出异常
      */
     private void deleteDirectory(Path directory) throws IOException {
         if (Files.isDirectory(directory)) {
-            Files.list(directory).forEach(path -> {
-                try {
-                    deleteDirectory(path);
-                } catch (IOException e) {
-                    throw new RuntimeException("删除失败: " + path, e);
-                }
-            });
+            try (var stream = Files.list(directory)) {
+                stream.forEach(path -> {
+                    try {
+                        deleteDirectory(path);
+                    } catch (IOException e) {
+                        throw new RuntimeException("删除失败: " + path, e);
+                    }
+                });
+            }
         }
         Files.deleteIfExists(directory);
     }

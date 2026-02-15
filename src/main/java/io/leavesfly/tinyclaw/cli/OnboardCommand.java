@@ -13,9 +13,46 @@ import java.util.Map;
 import java.util.Scanner;
 
 /**
- * 初始化命令 - 初始化 TinyClaw 配置
+ * 初始化命令，初始化 TinyClaw 配置和工作空间。
+ * 
+ * 核心功能：
+ * - 创建默认配置文件（~/.tinyclaw/config.json）
+ * - 创建工作空间目录结构（workspace、memory、skills、sessions、cron）
+ * - 生成模板文件（AGENTS.md、SOUL.md、USER.md、IDENTITY.md、MEMORY.md）
+ * - 提供下一步操作指引
+ * 
+ * 工作空间结构：
+ * - workspace/：主工作目录
+ *   - memory/：长期记忆和每日笔记
+ *   - skills/：技能目录
+ *   - sessions/：会话历史
+ *   - cron/：定时任务配置
+ *   - AGENTS.md：Agent 行为指令
+ *   - SOUL.md：Agent 个性定义
+ *   - USER.md：用户信息模板
+ *   - IDENTITY.md：Agent 身份信息
+ * 
+ * 使用场景：
+ * - 首次安装 TinyClaw
+ * - 重置配置和工作空间
+ * - 创建新的工作环境
  */
 public class OnboardCommand extends CliCommand {
+    
+    private static final String CONFIRM_YES = "y";                    // 确认覆盖的输入
+    private static final String ABORT_MESSAGE = "已中止。";            // 中止消息
+    private static final String READY_MESSAGE = " tinyclaw 已就绪！"; // 就绪消息
+    
+    private static final String DIR_MEMORY = "memory";      // 记忆目录
+    private static final String DIR_SKILLS = "skills";      // 技能目录
+    private static final String DIR_SESSIONS = "sessions";  // 会话目录
+    private static final String DIR_CRON = "cron";          // 定时任务目录
+    
+    private static final String FILE_AGENTS = "AGENTS.md";     // Agent 指令文件
+    private static final String FILE_SOUL = "SOUL.md";         // Agent 灵魂文件
+    private static final String FILE_USER = "USER.md";         // 用户信息文件
+    private static final String FILE_IDENTITY = "IDENTITY.md"; // 身份信息文件
+    private static final String FILE_MEMORY = "MEMORY.md";     // 记忆文件
     
     @Override
     public String name() {
@@ -31,48 +68,103 @@ public class OnboardCommand extends CliCommand {
     public int execute(String[] args) throws Exception {
         String configPath = getConfigPath();
         
-        File configFile = new File(configPath);
-        if (configFile.exists()) {
-            System.out.println("配置已存在于 " + configPath);
-            System.out.print("覆盖？");
-            Scanner scanner = new Scanner(System.in);
-            String response = scanner.nextLine().trim().toLowerCase();
-            if (!response.equals("y")) {
-                System.out.println("已中止。");
-                return 0;
-            }
+        // 检查配置是否存在并确认覆盖
+        if (!confirmOverwriteIfExists(configPath)) {
+            return 0;
         }
         
-        // 创建默认配置
+        // 创建并保存默认配置
+        Config config = createAndSaveConfig(configPath);
+        
+        // 创建工作空间目录结构
+        createWorkspaceDirectories(config.getWorkspacePath());
+        
+        // 创建工作空间模板文件
+        createWorkspaceTemplates(config.getWorkspacePath());
+        
+        // 打印完成信息和下一步指引
+        printCompletionMessage(configPath);
+        
+        return 0;
+    }
+    
+    /**
+     * 确认覆盖已存在的配置。
+     * 
+     * @param configPath 配置文件路径
+     * @return 如果可以继续返回 true，否则返回 false
+     */
+    private boolean confirmOverwriteIfExists(String configPath) {
+        File configFile = new File(configPath);
+        if (!configFile.exists()) {
+            return true;
+        }
+        
+        System.out.println("配置已存在于 " + configPath);
+        System.out.print("覆盖？");
+        
+        Scanner scanner = new Scanner(System.in);
+        String response = scanner.nextLine().trim().toLowerCase();
+        
+        if (!CONFIRM_YES.equals(response)) {
+            System.out.println(ABORT_MESSAGE);
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * 创建并保存默认配置。
+     * 
+     * @param configPath 配置文件路径
+     * @return 配置对象
+     */
+    private Config createAndSaveConfig(String configPath) throws IOException {
         Config config = Config.defaultConfig();
         
         // 确保父目录存在
+        File configFile = new File(configPath);
         configFile.getParentFile().mkdirs();
         
         // 保存配置
         ConfigLoader.save(configPath, config);
         
-        // 创建工作空间目录结构
-        String workspace = config.getWorkspacePath();
+        return config;
+    }
+    
+    /**
+     * 创建工作空间目录结构。
+     * 
+     * @param workspace 工作空间路径
+     */
+    private void createWorkspaceDirectories(String workspace) {
         createDirectory(workspace);
-        createDirectory(workspace + "/memory");
-        createDirectory(workspace + "/skills");
-        createDirectory(workspace + "/sessions");
-        createDirectory(workspace + "/cron");
-        
-        // 创建工作空间模板
-        createWorkspaceTemplates(workspace);
-        
-        System.out.println(LOGO + " tinyclaw 已就绪！");
+        createDirectory(workspace + "/" + DIR_MEMORY);
+        createDirectory(workspace + "/" + DIR_SKILLS);
+        createDirectory(workspace + "/" + DIR_SESSIONS);
+        createDirectory(workspace + "/" + DIR_CRON);
+    }
+    
+    /**
+     * 打印完成信息和下一步指引。
+     * 
+     * @param configPath 配置文件路径
+     */
+    private void printCompletionMessage(String configPath) {
+        System.out.println(LOGO + READY_MESSAGE);
         System.out.println();
         System.out.println("下一步：");
         System.out.println("  1. 将你的 API 密钥添加到 " + configPath);
         System.out.println("     在此获取：https://openrouter.ai/keys");
         System.out.println("  2. 聊天：java -jar tinyclaw.jar agent -m \"Hello!\"");
-        
-        return 0;
     }
     
+    /**
+     * 创建目录（如果不存在）。
+     * 
+     * @param path 目录路径
+     */
     private void createDirectory(String path) {
         File dir = new File(path);
         if (!dir.exists()) {
@@ -80,10 +172,46 @@ public class OnboardCommand extends CliCommand {
         }
     }
     
+    /**
+     * 创建工作空间模板文件。
+     * 
+     * @param workspace 工作空间路径
+     */
     private void createWorkspaceTemplates(String workspace) {
+        Map<String, String> templates = buildTemplateMap();
+        
+        // 创建模板文件
+        for (Map.Entry<String, String> entry : templates.entrySet()) {
+            createTemplateFile(workspace, entry.getKey(), entry.getValue());
+        }
+        
+        // 创建记忆文件
+        createMemoryFile(workspace);
+    }
+    
+    /**
+     * 构建模板映射。
+     * 
+     * @return 文件名到内容的映射
+     */
+    private Map<String, String> buildTemplateMap() {
         Map<String, String> templates = new HashMap<>();
         
-        templates.put("AGENTS.md", "# Agent 指令\n\n" +
+        templates.put(FILE_AGENTS, buildAgentsTemplate());
+        templates.put(FILE_SOUL, buildSoulTemplate());
+        templates.put(FILE_USER, buildUserTemplate());
+        templates.put(FILE_IDENTITY, buildIdentityTemplate());
+        
+        return templates;
+    }
+    
+    /**
+     * 构建 AGENTS.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildAgentsTemplate() {
+        return "# Agent 指令\n\n" +
                 "你是一个有用的 AI 助手。要简洁、准确和友好。\n\n" +
                 "## 指导原则\n\n" +
                 "- 在采取行动之前始终解释你在做什么\n" +
@@ -91,9 +219,16 @@ public class OnboardCommand extends CliCommand {
                 "- 使用工具来帮助完成任务\n" +
                 "- 在你的记忆文件中记住重要信息\n" +
                 "- 要积极主动和乐于助人\n" +
-                "- 从用户反馈中学习\n");
-        
-        templates.put("SOUL.md", "# 灵魂\n\n" +
+                "- 从用户反馈中学习\n";
+    }
+    
+    /**
+     * 构建 SOUL.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildSoulTemplate() {
+        return "# 灵魂\n\n" +
                 "我是 tinyclaw，一个由 AI 驱动的轻量级 AI 助手。\n\n" +
                 "## 个性\n\n" +
                 "- 乐于助人和友好\n" +
@@ -104,9 +239,16 @@ public class OnboardCommand extends CliCommand {
                 "- 准确性优于速度\n" +
                 "- 用户隐私和安全\n" +
                 "- 行动透明\n" +
-                "- 持续改进\n");
-        
-        templates.put("USER.md", "# 用户\n\n" +
+                "- 持续改进\n";
+    }
+    
+    /**
+     * 构建 USER.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildUserTemplate() {
+        return "# 用户\n\n" +
                 "此处填写用户信息。\n\n" +
                 "## 偏好\n\n" +
                 "- 沟通风格：（随意/正式）\n" +
@@ -119,9 +261,16 @@ public class OnboardCommand extends CliCommand {
                 "## 学习目标\n\n" +
                 "- 用户希望从 AI 学到什么\n" +
                 "- 首选的交互风格\n" +
-                "- 兴趣领域\n");
-        
-        templates.put("IDENTITY.md", "# 身份\n\n" +
+                "- 兴趣领域\n";
+    }
+    
+    /**
+     * 构建 IDENTITY.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildIdentityTemplate() {
+        return "# 身份\n\n" +
                 "## 名称\n" +
                 "TinyClaw 🦞\n\n" +
                 "## 描述\n" +
@@ -138,41 +287,67 @@ public class OnboardCommand extends CliCommand {
                 "- Shell 命令执行\n" +
                 "- 多通道消息传递（Telegram、Discord、WhatsApp）\n" +
                 "- 基于技能的可扩展性\n" +
-                "- 内存和上下文管理\n");
+                "- 内存和上下文管理\n";
+    }
+    
+    /**
+     * 创建模板文件。
+     * 
+     * @param workspace 工作空间路径
+     * @param filename 文件名
+     * @param content 文件内容
+     */
+    private void createTemplateFile(String workspace, String filename, String content) {
+        Path filePath = Paths.get(workspace, filename);
         
-        for (Map.Entry<String, String> entry : templates.entrySet()) {
-            String filename = entry.getKey();
-            String content = entry.getValue();
-            Path filePath = Paths.get(workspace, filename);
-            
-            if (!Files.exists(filePath)) {
-                try {
-                    Files.writeString(filePath, content);
-                    System.out.println("  已创建 " + filename);
-                } catch (IOException e) {
-                    System.err.println("  创建文件失败 " + filename + ": " + e.getMessage());
-                }
-            }
+        if (Files.exists(filePath)) {
+            return;
         }
         
-        // 创建记忆文件
-        Path memoryFile = Paths.get(workspace, "memory", "MEMORY.md");
-        if (!Files.exists(memoryFile)) {
-            String memoryContent = "# 长期记忆\n\n" +
-                    "此文件存储应该在各会话之间持久化的重要信息。\n\n" +
-                    "## 用户信息\n\n" +
-                    "（关于用户的重要事实）\n\n" +
-                    "## 偏好\n\n" +
-                    "（随时间学习到的用户偏好）\n\n" +
-                    "## 重要笔记\n\n" +
-                    "（需要记住的事情）\n";
-            try {
-                Files.writeString(memoryFile, memoryContent);
-                System.out.println("  已创建 memory/MEMORY.md");
-            } catch (IOException e) {
-                System.err.println("  创建内存文件失败: " + e.getMessage());
-            }
+        try {
+            Files.writeString(filePath, content);
+            System.out.println("  已创建 " + filename);
+        } catch (IOException e) {
+            System.err.println("  创建文件失败 " + filename + ": " + e.getMessage());
         }
+    }
+    
+    /**
+     * 创建记忆文件。
+     * 
+     * @param workspace 工作空间路径
+     */
+    private void createMemoryFile(String workspace) {
+        Path memoryFile = Paths.get(workspace, DIR_MEMORY, FILE_MEMORY);
+        
+        if (Files.exists(memoryFile)) {
+            return;
+        }
+        
+        String memoryContent = buildMemoryTemplate();
+        
+        try {
+            Files.writeString(memoryFile, memoryContent);
+            System.out.println("  已创建 " + DIR_MEMORY + "/" + FILE_MEMORY);
+        } catch (IOException e) {
+            System.err.println("  创建内存文件失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 构建 MEMORY.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildMemoryTemplate() {
+        return "# 长期记忆\n\n" +
+                "此文件存储应该在各会话之间持久化的重要信息。\n\n" +
+                "## 用户信息\n\n" +
+                "（关于用户的重要事实）\n\n" +
+                "## 偏好\n\n" +
+                "（随时间学习到的用户偏好）\n\n" +
+                "## 重要笔记\n\n" +
+                "（需要记住的事情）\n";
     }
     
     @Override

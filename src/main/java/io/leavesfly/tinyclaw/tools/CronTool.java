@@ -13,25 +13,24 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 定时任务工具 - 调度提醒和任务
+ * 定时任务工具，调度提醒和任务。
  * 
- * 允许Agent创建、管理和执行定时任务。
- * 这是系统自动化能力的核心工具。
+ * 允许 Agent 创建、管理和执行定时任务，这是系统自动化能力的核心工具。
  * 
  * 核心功能：
- * - 任务调度：使用标准cron表达式创建定时任务
+ * - 任务调度：使用标准 cron 表达式创建定时任务
  * - 任务管理：支持列出、启用、禁用、删除任务
  * - 消息发送：定时任务触发时自动发送消息到指定通道
  * - 灵活执行：支持立即执行或延迟执行任务
  * 
  * 支持的操作：
- * - add：添加新任务（指定cron表达式、消息内容、目标通道）
+ * - add：添加新任务（指定 cron 表达式、消息内容、目标通道）
  * - list：列出所有已调度的任务
  * - remove：删除指定任务
  * - enable/disable：启用或禁用任务
  * 
  * 设计特点：
- * - 与CronService紧密集成
+ * - 与 CronService 紧密集成
  * - 支持多通道消息发送
  * - 提供友好的错误处理和用户反馈
  * - 任务状态持久化存储
@@ -46,23 +45,34 @@ public class CronTool implements Tool {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("tools.cron");
     
-    private final CronService cronService;
-    private final JobExecutor executor;
-    private final MessageBus msgBus;
+    private static final int MESSAGE_PREVIEW_LENGTH = 30;  // 任务名称预览长度
+    private static final String DEFAULT_CHANNEL = "cli";   // 默认通道
+    private static final String DEFAULT_CHAT_ID = "direct";// 默认聊天 ID
     
-    private String channel = "";
-    private String chatId = "";
+    private final CronService cronService;   // 定时任务服务
+    private final JobExecutor executor;      // 任务执行器
+    private final MessageBus msgBus;         // 消息总线
+    
+    private String channel = "";             // 当前通道
+    private String chatId = "";              // 当前聊天 ID
     
     /**
-     * 通过Agent执行任务的接口
+     * 通过 Agent 执行任务的接口。
      * 
      * 定义了定时任务执行器需要实现的方法，
-     * 用于将定时任务的结果通过Agent处理并发送。
+     * 用于将定时任务的结果通过 Agent 处理并发送。
      */
     public interface JobExecutor {
         String processDirectWithChannel(String content, String sessionKey, String channel, String chatId) throws Exception;
     }
     
+    /**
+     * 构造定时任务工具。
+     * 
+     * @param cronService 定时任务服务
+     * @param executor 任务执行器
+     * @param msgBus 消息总线
+     */
     public CronTool(CronService cronService, JobExecutor executor, MessageBus msgBus) {
         this.cronService = cronService;
         this.executor = executor;
@@ -135,7 +145,10 @@ public class CronTool implements Tool {
     }
     
     /**
-     * 设置任务创建的上下文
+     * 设置任务创建的上下文。
+     * 
+     * @param channel 通道名称
+     * @param chatId 聊天 ID
      */
     public void setContext(String channel, String chatId) {
         this.channel = channel;
@@ -149,63 +162,50 @@ public class CronTool implements Tool {
             return "错误: 操作参数是必需的";
         }
         
-        switch (action) {
-            case "add":
-                return addJob(args);
-            case "list":
-                return listJobs();
-            case "remove":
-                return removeJob(args);
-            case "enable":
-                return enableJob(args, true);
-            case "disable":
-                return enableJob(args, false);
-            default:
-                return "错误: 未知操作: " + action;
-        }
+        return switch (action) {
+            case "add" -> addJob(args);
+            case "list" -> listJobs();
+            case "remove" -> removeJob(args);
+            case "enable" -> enableJob(args, true);
+            case "disable" -> enableJob(args, false);
+            default -> "错误: 未知操作: " + action;
+        };
     }
     
+    /**
+     * 添加定时任务。
+     * 
+     * @param args 参数映射，必须包含 message 和调度参数
+     * @return 添加结果信息
+     */
     private String addJob(Map<String, Object> args) {
+        // 验证上下文
         if (channel.isEmpty() || chatId.isEmpty()) {
             return "错误: 无会话上下文（通道/聊天ID未设置）。请在活跃对话中使用此工具。";
         }
         
+        // 验证消息参数
         String message = (String) args.get("message");
         if (message == null || message.isEmpty()) {
-            return "错误: add 操作需要消息参数";
+            return "错误: add 操作需要 message 参数";
         }
         
-        CronSchedule schedule;
-        
-        // 检查 at_seconds、every_seconds 或 cron_expr
-        Number atSeconds = (Number) args.get("at_seconds");
-        Number everySeconds = (Number) args.get("every_seconds");
-        String cronExpr = (String) args.get("cron_expr");
-        
-        if (atSeconds != null) {
-            long atMs = System.currentTimeMillis() + atSeconds.longValue() * 1000;
-            schedule = CronSchedule.at(atMs);
-        } else if (everySeconds != null) {
-            long everyMs = everySeconds.longValue() * 1000;
-            schedule = CronSchedule.every(everyMs);
-        } else if (cronExpr != null && !cronExpr.isEmpty()) {
-            schedule = CronSchedule.cron(cronExpr);
-        } else {
+        // 解析调度类型
+        CronSchedule schedule = parseSchedule(args);
+        if (schedule == null) {
             return "错误: 必须提供 at_seconds、every_seconds 或 cron_expr 之一";
         }
         
         // 读取 deliver 参数，默认为 true
-        boolean deliver = true;
-        if (args.containsKey("deliver") && args.get("deliver") instanceof Boolean) {
-            deliver = (Boolean) args.get("deliver");
-        }
+        boolean deliver = args.containsKey("deliver") && args.get("deliver") instanceof Boolean
+                ? (Boolean) args.get("deliver")
+                : true;
         
-        // Truncate message for job name
-        String messagePreview = StringUtils.truncate(message, 30);
-        
+        // 创建任务
+        String messagePreview = StringUtils.truncate(message, MESSAGE_PREVIEW_LENGTH);
         CronJob job = cronService.addJob(messagePreview, schedule, message, deliver, channel, chatId);
         
-        logger.info("Added cron job", java.util.Map.of(
+        logger.info("Added cron job", Map.of(
                 "job_id", job.getId(),
                 "name", messagePreview,
                 "kind", schedule.getKind()
@@ -214,6 +214,35 @@ public class CronTool implements Tool {
         return "Created job '" + job.getName() + "' (id: " + job.getId() + ")";
     }
     
+    /**
+     * 解析调度参数。
+     * 
+     * @param args 参数映射
+     * @return 调度对象，如果参数不合法返回 null
+     */
+    private CronSchedule parseSchedule(Map<String, Object> args) {
+        Number atSeconds = (Number) args.get("at_seconds");
+        Number everySeconds = (Number) args.get("every_seconds");
+        String cronExpr = (String) args.get("cron_expr");
+        
+        if (atSeconds != null) {
+            long atMs = System.currentTimeMillis() + atSeconds.longValue() * 1000;
+            return CronSchedule.at(atMs);
+        } else if (everySeconds != null) {
+            long everyMs = everySeconds.longValue() * 1000;
+            return CronSchedule.every(everyMs);
+        } else if (cronExpr != null && !cronExpr.isEmpty()) {
+            return CronSchedule.cron(cronExpr);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * 列出所有定时任务。
+     * 
+     * @return 任务列表的格式化字符串
+     */
     private String listJobs() {
         List<CronJob> jobs = cronService.listJobs(false);
         
@@ -223,16 +252,7 @@ public class CronTool implements Tool {
         
         StringBuilder result = new StringBuilder("Scheduled jobs:\n");
         for (CronJob j : jobs) {
-            String scheduleInfo;
-            if (CronSchedule.ScheduleKind.EVERY == j.getSchedule().getKind() && j.getSchedule().getEveryMs() != null) {
-                scheduleInfo = "every " + (j.getSchedule().getEveryMs() / 1000) + "s";
-            } else if (CronSchedule.ScheduleKind.CRON == j.getSchedule().getKind()) {
-                scheduleInfo = j.getSchedule().getExpr();
-            } else if (CronSchedule.ScheduleKind.AT == j.getSchedule().getKind()) {
-                scheduleInfo = "one-time";
-            } else {
-                scheduleInfo = "unknown";
-            }
+            String scheduleInfo = formatScheduleInfo(j.getSchedule());
             result.append("- ").append(j.getName())
                   .append(" (id: ").append(j.getId())
                   .append(", ").append(scheduleInfo).append(")\n");
@@ -241,18 +261,47 @@ public class CronTool implements Tool {
         return result.toString();
     }
     
+    /**
+     * 格式化调度信息。
+     * 
+     * @param schedule 调度对象
+     * @return 格式化的调度描述
+     */
+    private String formatScheduleInfo(CronSchedule schedule) {
+        return switch (schedule.getKind()) {
+            case EVERY -> schedule.getEveryMs() != null 
+                    ? "every " + (schedule.getEveryMs() / 1000) + "s"
+                    : "unknown";
+            case CRON -> schedule.getExpr();
+            case AT -> "one-time";
+            default -> "unknown";
+        };
+    }
+    
+    /**
+     * 删除定时任务。
+     * 
+     * @param args 参数映射，必须包含 job_id 字段
+     * @return 删除结果信息
+     */
     private String removeJob(Map<String, Object> args) {
         String jobId = (String) args.get("job_id");
         if (jobId == null || jobId.isEmpty()) {
             return "Error: job_id is required for remove";
         }
         
-        if (cronService.removeJob(jobId)) {
-            return "Removed job " + jobId;
-        }
-        return "Job " + jobId + " not found";
+        return cronService.removeJob(jobId) 
+                ? "Removed job " + jobId
+                : "Job " + jobId + " not found";
     }
     
+    /**
+     * 启用或禁用定时任务。
+     * 
+     * @param args 参数映射，必须包含 job_id 字段
+     * @param enable true 表示启用，false 表示禁用
+     * @return 操作结果信息
+     */
     private String enableJob(Map<String, Object> args, boolean enable) {
         String jobId = (String) args.get("job_id");
         if (jobId == null || jobId.isEmpty()) {
@@ -269,27 +318,58 @@ public class CronTool implements Tool {
     }
     
     /**
-     * 执行 a cron job through Agent
+     * 执行定时任务。
+     * 
+     * 根据任务配置决定是直接发送消息还是通过 Agent 处理。
+     * 
+     * @param job 要执行的定时任务
+     * @return 执行结果
      */
     public String executeJob(CronJob job) {
-        String jobChannel = job.getPayload().getChannel();
-        String jobChatId = job.getPayload().getTo();
+        String jobChannel = getJobChannel(job);
+        String jobChatId = getJobChatId(job);
         
-        // Default values if not set
-        if (jobChannel == null || jobChannel.isEmpty()) {
-            jobChannel = "cli";
-        }
-        if (jobChatId == null || jobChatId.isEmpty()) {
-            jobChatId = "direct";
-        }
-        
-        // If deliver=true, send message directly without agent processing
+        // 如果 deliver=true，直接发送消息不经过 agent 处理
         if (job.getPayload().isDeliver()) {
             msgBus.publishOutbound(new OutboundMessage(jobChannel, jobChatId, job.getPayload().getMessage()));
             return "ok";
         }
         
-        // For deliver=false, process through agent (for complex tasks)
+        // 对于 deliver=false，通过 agent 处理（用于复杂任务）
+        return executeJobThroughAgent(job, jobChannel, jobChatId);
+    }
+    
+    /**
+     * 获取任务的通道名称。
+     * 
+     * @param job 定时任务
+     * @return 通道名称，未设置时返回默认值
+     */
+    private String getJobChannel(CronJob job) {
+        String jobChannel = job.getPayload().getChannel();
+        return (jobChannel != null && !jobChannel.isEmpty()) ? jobChannel : DEFAULT_CHANNEL;
+    }
+    
+    /**
+     * 获取任务的聊天 ID。
+     * 
+     * @param job 定时任务
+     * @return 聊天 ID，未设置时返回默认值
+     */
+    private String getJobChatId(CronJob job) {
+        String jobChatId = job.getPayload().getTo();
+        return (jobChatId != null && !jobChatId.isEmpty()) ? jobChatId : DEFAULT_CHAT_ID;
+    }
+    
+    /**
+     * 通过 Agent 执行任务。
+     * 
+     * @param job 定时任务
+     * @param jobChannel 通道名称
+     * @param jobChatId 聊天 ID
+     * @return 执行结果
+     */
+    private String executeJobThroughAgent(CronJob job, String jobChannel, String jobChatId) {
         String sessionKey = "cron-" + job.getId();
         
         try {
@@ -299,15 +379,14 @@ public class CronTool implements Tool {
                     jobChannel,
                     jobChatId
             );
-            // Response is automatically sent via MessageBus by AgentLoop
+            // 响应会通过 MessageBus 由 AgentLoop 自动发送
+            return "ok";
         } catch (Exception e) {
-            logger.error("Failed to execute cron job", java.util.Map.of(
+            logger.error("Failed to execute cron job", Map.of(
                     "job_id", job.getId(),
                     "error", e.getMessage()
             ));
             return "Error: " + e.getMessage();
         }
-        
-        return "ok";
     }
 }
