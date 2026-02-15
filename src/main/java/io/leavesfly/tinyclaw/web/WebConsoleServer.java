@@ -7,7 +7,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.leavesfly.tinyclaw.agent.AgentLoop;
-import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.*;
 import io.leavesfly.tinyclaw.cron.CronJob;
 import io.leavesfly.tinyclaw.cron.CronSchedule;
@@ -49,20 +48,18 @@ public class WebConsoleServer {
     private final int port;
     private final Config config;
     private final AgentLoop agentLoop;
-    private final ChannelManager channelManager;
     private final SessionManager sessionManager;
     private final CronService cronService;
     private final SkillsLoader skillsLoader;
     private HttpServer httpServer;
     
     public WebConsoleServer(String host, int port, Config config, AgentLoop agentLoop,
-                            ChannelManager channelManager, SessionManager sessionManager,
+                            SessionManager sessionManager,
                             CronService cronService, SkillsLoader skillsLoader) {
         this.host = host;
         this.port = port;
         this.config = config;
         this.agentLoop = agentLoop;
-        this.channelManager = channelManager;
         this.sessionManager = sessionManager;
         this.cronService = cronService;
         this.skillsLoader = skillsLoader;

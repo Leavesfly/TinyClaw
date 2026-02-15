@@ -1,13 +1,19 @@
-## 🦞 TinyClaw
+<div align="center">
 
-**超轻量个人 AI 助手** — 用 Java 编写，支持多模型、多通道、多技能的一站式 AI Agent 框架。
+
+# 🦞 TinyClaw
+
+**超轻量个人 AI 助手** — 用 Java 编写，支持多模型、多通道、多技能的一站式 AI Agent 框架
 
 [![Java](https://img.shields.io/badge/Java-17-orange)](https://openjdk.org/)
 [![Maven](https://img.shields.io/badge/Maven-3.x-blue)](https://maven.apache.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-0.1.0-brightgreen)]()
 
+</div>
+
 ---
+
 
 ### ✨ 特性一览
 
@@ -23,6 +29,8 @@
 - **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
 - **🖥️ Web 控制台** — 内置 Web UI，可视化管理 Agent 状态和会话
 - **🎬 Demo 模式** — 一键演示核心功能，方便现场展示和教学
+
+![TinyClaw Logo](src/main/resources/tinyclaw.png)
 
 ---
 

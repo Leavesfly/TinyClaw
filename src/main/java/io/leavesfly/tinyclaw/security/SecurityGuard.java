@@ -12,20 +12,18 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * Security guard for workspace sandbox and command blacklist
+ * 安全守卫 - 工作空间沙箱和命令黑名单
  * 
- * Provides two main security features:
- * 1. Workspace sandbox: Restrict file operations to workspace directory
- * 2. Command blacklist: Block dangerous shell commands
+ * 提供两个主要的安全特性：
+ * 1. 工作空间沙箱：限制文件操作在工作空间目录内
+ * 2. 命令黑名单：阻止危险的 shell 命令
  * 
- * Usage example:
- * <pre>
+ * 使用示例：
  *   SecurityGuard guard = new SecurityGuard(workspace, true);
  *   String error = guard.checkFilePath(filePath);
  *   if (error != null) {
  *       throw new SecurityException(error);
  *   }
- * </pre>
  */
 public class SecurityGuard {
     
@@ -36,10 +34,10 @@ public class SecurityGuard {
     private final List<Pattern> commandBlacklist;
     
     /**
-     * Constructor with default command blacklist
+     * 构造函数 - 使用默认命令黑名单
      * 
-     * @param workspace workspace directory path
-     * @param restrictToWorkspace whether to restrict file access to workspace
+     * @param workspace 工作空间目录路径
+     * @param restrictToWorkspace 是否限制文件访问在工作空间内
      */
     public SecurityGuard(String workspace, boolean restrictToWorkspace) {
         this.workspace = normalizeWorkspacePath(workspace);
@@ -54,11 +52,11 @@ public class SecurityGuard {
     }
     
     /**
-     * Constructor with custom command blacklist
+     * 构造函数 - 使用自定义命令黑名单
      * 
-     * @param workspace workspace directory path
-     * @param restrictToWorkspace whether to restrict file access to workspace
-     * @param customBlacklist custom command blacklist patterns
+     * @param workspace 工作空间目录路径
+     * @param restrictToWorkspace 是否限制文件访问在工作空间内
+     * @param customBlacklist 自定义命令黑名单模式
      */
     public SecurityGuard(String workspace, boolean restrictToWorkspace, List<String> customBlacklist) {
         this.workspace = normalizeWorkspacePath(workspace);
@@ -73,14 +71,14 @@ public class SecurityGuard {
     }
     
     /**
-     * Check if a file path is allowed
+     * 检查文件路径是否允许访问
      * 
-     * @param filePath file path to check
-     * @return error message if blocked, null if allowed
+     * @param filePath 待检查的文件路径
+     * @return 如果被阻止则返回错误消息，允许则返回 null
      */
     public String checkFilePath(String filePath) {
         if (!restrictToWorkspace) {
-            return null; // No restriction
+            return null; // 无限制
         }
         
         if (filePath == null || filePath.isEmpty()) {
@@ -88,11 +86,11 @@ public class SecurityGuard {
         }
         
         try {
-            // Resolve to absolute path
+            // 解析为绝对路径
             Path absPath = Paths.get(filePath).toAbsolutePath().normalize();
             Path workspacePath = Paths.get(workspace).toAbsolutePath().normalize();
             
-            // Check if path is within workspace
+            // 检查路径是否在工作空间内
             if (!absPath.startsWith(workspacePath)) {
                 logger.warn("File path blocked (outside workspace)", Map.of(
                     "path", filePath,
@@ -105,7 +103,7 @@ public class SecurityGuard {
                 );
             }
             
-            return null; // Allowed
+            return null; // 允许访问
             
         } catch (Exception e) {
             logger.error("Error checking file path", Map.of("path", filePath, "error", e.getMessage()));
@@ -114,17 +112,17 @@ public class SecurityGuard {
     }
     
     /**
-     * Check if a command is allowed
+     * 检查命令是否允许执行
      * 
-     * @param command shell command to check
-     * @return error message if blocked, null if allowed
+     * @param command 待检查的 shell 命令
+     * @return 如果被阻止则返回错误消息，允许则返回 null
      */
     public String checkCommand(String command) {
         if (command == null || command.isEmpty()) {
             return "Command is required";
         }
         
-        // Check against blacklist
+        // 检查命令是否匹配黑名单
         for (Pattern pattern : commandBlacklist) {
             if (pattern.matcher(command).find()) {
                 logger.warn("Command blocked by blacklist", Map.of(
@@ -138,50 +136,50 @@ public class SecurityGuard {
             }
         }
         
-        return null; // Allowed
+        return null; // 允许执行
     }
     
     /**
-     * Check if a working directory is allowed for command execution
+     * 检查工作目录是否允许执行命令
      * 
-     * @param workingDir working directory path
-     * @return error message if blocked, null if allowed
+     * @param workingDir 工作目录路径
+     * @return 如果被阻止则返回错误消息，允许则返回 null
      */
     public String checkWorkingDir(String workingDir) {
         if (!restrictToWorkspace) {
-            return null; // No restriction
+            return null; // 无限制
         }
         
         if (workingDir == null || workingDir.isEmpty()) {
-            return null; // Will use default workspace
+            return null; // 将使用默认工作空间
         }
         
         return checkFilePath(workingDir);
     }
     
     /**
-     * Get the workspace path
+     * 获取工作空间路径
      */
     public String getWorkspace() {
         return workspace;
     }
     
     /**
-     * Check if workspace restriction is enabled
+     * 检查是否启用了工作空间限制
      */
     public boolean isRestrictToWorkspace() {
         return restrictToWorkspace;
     }
     
     /**
-     * Normalize workspace path
+     * 规范化工作空间路径
      */
     private String normalizeWorkspacePath(String path) {
         if (path == null || path.isEmpty()) {
             return System.getProperty("user.home") + "/.tinyclaw/workspace";
         }
         
-        // Expand ~ to user home
+        // 展开 ~ 为用户主目录
         if (path.startsWith("~")) {
             path = System.getProperty("user.home") + path.substring(1);
         }
@@ -195,43 +193,43 @@ public class SecurityGuard {
     }
     
     /**
-     * Build default command blacklist
+     * 构建默认命令黑名单
      */
     private List<Pattern> buildDefaultCommandBlacklist() {
         List<String> defaultPatterns = List.of(
-            // File deletion
+            // 文件删除
             "\\brm\\s+-[rf]{1,2}\\b",
             "\\bdel\\s+/[fq]\\b",
             "\\brmdir\\s+/s\\b",
             
-            // Disk operations
+            // 磁盘操作
             "\\b(format|mkfs|diskpart)\\b\\s",
             "\\bdd\\s+if=",
             ">\\s*/dev/sd[a-z]\\b",
             
-            // System operations
+            // 系统操作
             "\\b(shutdown|reboot|poweroff|halt)\\b",
             
-            // Fork bomb
+            // Fork 炸弹
             ":\\(\\)\\s*\\{.*\\};\\s*:",
             
-            // Network attacks
+            // 网络攻击
             "\\b(curl|wget)\\s+.*\\|\\s*(sh|bash|zsh|python|perl|ruby)",
             
-            // Sudo/privilege escalation
+            // Sudo/权限提升
             "\\b(sudo|su)\\s+",
             
-            // Process killing
+            // 进程杀死
             "\\bkillall\\s+-9\\b",
             "\\bpkill\\s+-9\\b",
             
-            // Cron/scheduled tasks manipulation
+            // Cron/定时任务操作
             "\\bcrontab\\s+-r\\b",
             
-            // Environment variables manipulation (potential security risks)
+            // 环境变量操作（潜在安全风险）
             "\\bexport\\s+LD_PRELOAD\\b",
             
-            // Kernel module operations
+            // 内核模块操作
             "\\b(insmod|rmmod|modprobe)\\b"
         );
         
@@ -239,7 +237,7 @@ public class SecurityGuard {
     }
     
     /**
-     * Build command blacklist from patterns
+     * 从模式构建命令黑名单
      */
     private List<Pattern> buildCommandBlacklist(List<String> patterns) {
         List<Pattern> compiled = new ArrayList<>();
@@ -254,7 +252,7 @@ public class SecurityGuard {
     }
     
     /**
-     * Get command blacklist patterns (for debugging)
+     * 获取命令黑名单模式（用于调试）
      */
     public List<String> getBlacklistPatterns() {
         return commandBlacklist.stream()

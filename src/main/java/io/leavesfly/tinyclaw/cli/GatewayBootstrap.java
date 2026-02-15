@@ -93,7 +93,6 @@ public class GatewayBootstrap {
                 webPort,
                 config,
                 agentLoop,
-                channelManager,
                 sessionManager,
                 cronService,
                 skillsLoader
