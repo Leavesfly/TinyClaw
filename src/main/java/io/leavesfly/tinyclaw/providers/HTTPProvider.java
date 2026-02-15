@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import okhttp3.*;
+import okio.BufferedSource;
 
 import java.io.IOException;
 import java.util.*;
@@ -45,12 +46,247 @@ public class HTTPProvider implements LLMProvider {
     }
     
     @Override
-    public LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options) throws Exception {
+    public LLMResponse chatStream(List<Message> messages, List<ToolDefinition> tools, String model, 
+                                  Map<String, Object> options, StreamCallback callback) throws Exception {
         if (apiBase == null || apiBase.isEmpty()) {
             throw new IllegalStateException("API base not configured");
         }
         
         // 构建请求体
+        ObjectNode requestBody = buildRequestBody(messages, tools, model, options);
+        requestBody.put("stream", true);  // 启用流式输出
+        
+        String requestJson = objectMapper.writeValueAsString(requestBody);
+        logger.debug("LLM stream request", Map.of(
+                "model", model,
+                "messages_count", messages.size(),
+                "tools_count", tools != null ? tools.size() : 0
+        ));
+        
+        // 构建 HTTP 请求
+        String url = apiBase + CHAT_COMPLETIONS_ENDPOINT;
+        RequestBody body = RequestBody.create(requestJson, JSON);
+        Request.Builder requestBuilder = new Request.Builder()
+                .url(url)
+                .post(body)
+                .header("Content-Type", "application/json");
+        
+        if (apiKey != null && !apiKey.isEmpty()) {
+            requestBuilder.header("Authorization", AUTHORIZATION_PREFIX + apiKey);
+        }
+        
+        // 执行流式请求
+        try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
+            if (!response.isSuccessful()) {
+                String errorBody = response.body() != null ? response.body().string() : "";
+                logger.error("LLM API error", Map.of(
+                        "status_code", response.code(),
+                        "response", errorBody.substring(0, Math.min(MAX_ERROR_RESPONSE_LENGTH, errorBody.length()))
+                ));
+                throw new IOException("LLM API error (status " + response.code() + "): " + errorBody);
+            }
+            
+            return parseStreamResponse(response.body().source(), callback);
+        }
+    }
+    
+    /**
+     * 解析流式响应
+     */
+    private LLMResponse parseStreamResponse(BufferedSource source, StreamCallback callback) throws IOException {
+        StringBuilder fullContent = new StringBuilder();
+        List<ToolCall> toolCalls = new ArrayList<>();
+        String finishReason = "stop";
+        LLMResponse.UsageInfo usage = null;
+        
+        try {
+            while (!source.exhausted()) {
+                String line = source.readUtf8Line();
+                if (line == null || line.trim().isEmpty()) {
+                    continue;
+                }
+                
+                // SSE 格式: "data: {json}"
+                if (line.startsWith("data: ")) {
+                    String data = line.substring(6).trim();
+                    
+                    // 结束标记
+                    if (data.equals("[DONE]")) {
+                        break;
+                    }
+                    
+                    try {
+                        JsonNode chunk = objectMapper.readTree(data);
+                        
+                        // 解析 usage 信息（可能在最后一个 chunk）
+                        if (chunk.has("usage")) {
+                            usage = parseUsage(chunk.get("usage"));
+                        }
+                        
+                        if (!chunk.has("choices") || chunk.get("choices").isEmpty()) {
+                            continue;
+                        }
+                        
+                        JsonNode choice = chunk.get("choices").get(0);
+                        
+                        // 更新 finish_reason
+                        if (choice.has("finish_reason") && !choice.get("finish_reason").isNull()) {
+                            finishReason = choice.get("finish_reason").asText();
+                        }
+                        
+                        JsonNode delta = choice.get("delta");
+                        if (delta == null || delta.isNull()) {
+                            continue;
+                        }
+                        
+                        // 处理流式内容
+                        if (delta.has("content") && !delta.get("content").isNull()) {
+                            String content = delta.get("content").asText();
+                            if (content != null && !content.isEmpty()) {
+                                fullContent.append(content);
+                                if (callback != null) {
+                                    callback.onChunk(content);
+                                }
+                            }
+                        }
+                        
+                        // 处理工具调用（流式模式下可能分块传输）
+                        if (delta.has("tool_calls")) {
+                            parseStreamToolCalls(delta.get("tool_calls"), toolCalls);
+                        }
+                        
+                    } catch (Exception e) {
+                        logger.error("Failed to parse stream chunk", Map.of(
+                                "error", e.getMessage(),
+                                "data", data.length() > 200 ? data.substring(0, 200) : data
+                        ));
+                    }
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Stream read error", Map.of("error", e.getMessage()));
+            throw e;
+        }
+        
+        // 构建完整响应
+        LLMResponse response = new LLMResponse();
+        response.setContent(fullContent.toString());
+        response.setFinishReason(finishReason);
+        response.setUsage(usage);
+        
+        if (!toolCalls.isEmpty()) {
+            // 解析所有工具调用的 arguments
+            for (ToolCall toolCall : toolCalls) {
+                if (toolCall.getArguments() != null && toolCall.getArguments().containsKey("_raw_args")) {
+                    String rawArgs = (String) toolCall.getArguments().get("_raw_args");
+                    
+                    // 检查 rawArgs 是否为空或空白
+                    if (rawArgs == null || rawArgs.trim().isEmpty()) {
+                        // 空参数，设置为空 Map
+                        toolCall.setArguments(new HashMap<>());
+                        continue;
+                    }
+                    
+                    try {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> parsedArgs = objectMapper.readValue(rawArgs, Map.class);
+                        toolCall.setArguments(parsedArgs);
+                    } catch (Exception e) {
+                        // 解析失败，保留原始字符串
+                        Map<String, Object> args = new HashMap<>();
+                        args.put("raw", rawArgs);
+                        toolCall.setArguments(args);
+                        logger.warn("Failed to parse tool call arguments", Map.of(
+                                "error", e.getMessage(),
+                                "raw_args", rawArgs.length() > 100 ? rawArgs.substring(0, 100) : rawArgs
+                        ));
+                    }
+                }
+            }
+            response.setToolCalls(toolCalls);
+        }
+        
+        logger.debug("LLM stream response", Map.of(
+                "content_length", fullContent.length(),
+                "tool_calls_count", toolCalls.size(),
+                "finish_reason", finishReason
+        ));
+        
+        return response;
+    }
+    
+    /**
+     * 解析流式工具调用（增量模式）
+     */
+    private void parseStreamToolCalls(JsonNode toolCallsNode, List<ToolCall> toolCalls) {
+        for (JsonNode tcNode : toolCallsNode) {
+            int index = tcNode.has("index") ? tcNode.get("index").asInt() : 0;
+            
+            // 确保 list 有足够空间
+            while (toolCalls.size() <= index) {
+                ToolCall newToolCall = new ToolCall();
+                newToolCall.setArguments(new HashMap<>());
+                toolCalls.add(newToolCall);
+            }
+            
+            ToolCall toolCall = toolCalls.get(index);
+            
+            // 确保 arguments 不为 null
+            if (toolCall.getArguments() == null) {
+                toolCall.setArguments(new HashMap<>());
+            }
+            
+            // ID
+            if (tcNode.has("id")) {
+                toolCall.setId(tcNode.get("id").asText());
+            }
+            
+            // Type
+            if (tcNode.has("type")) {
+                toolCall.setType(tcNode.get("type").asText());
+            }
+            
+            // Function（增量拼接）
+            if (tcNode.has("function")) {
+                JsonNode funcNode = tcNode.get("function");
+                
+                if (funcNode.has("name") && !funcNode.get("name").isNull()) {
+                    String name = funcNode.get("name").asText();
+                    if (name != null && !name.isEmpty()) {
+                        toolCall.setName(name);
+                    }
+                }
+                
+                if (funcNode.has("arguments")) {
+                    String argsChunk = funcNode.get("arguments").asText();
+                    Map<String, Object> args = toolCall.getArguments();
+                    String existing = (String) args.get("_raw_args");
+                    if (existing == null) {
+                        args.put("_raw_args", argsChunk);
+                    } else {
+                        args.put("_raw_args", existing + argsChunk);
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * 解析 usage 信息
+     */
+    private LLMResponse.UsageInfo parseUsage(JsonNode usageNode) {
+        LLMResponse.UsageInfo usage = new LLMResponse.UsageInfo();
+        usage.setPromptTokens(usageNode.has("prompt_tokens") ? usageNode.get("prompt_tokens").asInt() : 0);
+        usage.setCompletionTokens(usageNode.has("completion_tokens") ? usageNode.get("completion_tokens").asInt() : 0);
+        usage.setTotalTokens(usageNode.has("total_tokens") ? usageNode.get("total_tokens").asInt() : 0);
+        return usage;
+    }
+    
+    /**
+     * 构建请求体（供 chat 和 chatStream 复用）
+     */
+    private ObjectNode buildRequestBody(List<Message> messages, List<ToolDefinition> tools, 
+                                       String model, Map<String, Object> options) throws Exception {
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("model", model);
         
@@ -112,6 +348,17 @@ public class HTTPProvider implements LLMProvider {
                 requestBody.put("temperature", ((Number) options.get("temperature")).doubleValue());
             }
         }
+        
+        return requestBody;
+    }
+    @Override
+    public LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options) throws Exception {
+        if (apiBase == null || apiBase.isEmpty()) {
+            throw new IllegalStateException("API base not configured");
+        }
+        
+        // 构建请求体
+        ObjectNode requestBody = buildRequestBody(messages, tools, model, options);
         
         String requestJson = objectMapper.writeValueAsString(requestBody);
         logger.debug("LLM request", Map.of(

@@ -67,12 +67,58 @@ public class LLMExecutor {
         return finalContent;
     }
     
+    /**
+     * 运行 LLM 流式迭代循环
+     * 
+     * @param messages 完整的对话历史
+     * @param sessionKey 会话标识符
+     * @param callback 流式内容回调
+     * @return LLM 的最终回答内容
+     * @throws Exception 调用 LLM 或执行工具时的异常
+     */
+    public String executeStream(List<Message> messages, String sessionKey, 
+                               LLMProvider.StreamCallback callback) throws Exception {
+        int iteration = 0;
+        String finalContent = null;
+        
+        while (iteration < maxIterations) {
+            iteration++;
+            logger.debug("LLM stream iteration", Map.of("iteration", iteration, "max", maxIterations));
+            
+            LLMResponse response = callLLMStream(messages, callback);
+            
+            if (!response.hasToolCalls()) {
+                finalContent = response.getContent();
+                logger.info("LLM stream response without tool calls", Map.of(
+                        "iteration", iteration,
+                        "content_chars", finalContent != null ? finalContent.length() : 0
+                ));
+                break;
+            }
+            
+            logToolCalls(response.getToolCalls(), iteration);
+            addAssistantMessage(messages, response, sessionKey);
+            executeToolCalls(messages, response.getToolCalls(), sessionKey, iteration);
+        }
+        
+        return finalContent;
+    }
+    
     private LLMResponse callLLM(List<Message> messages) throws Exception {
         List<ToolDefinition> toolDefs = tools.getDefinitions();
         Map<String, Object> options = new HashMap<>();
         options.put("max_tokens", DEFAULT_MAX_TOKENS);
         options.put("temperature", DEFAULT_TEMPERATURE);
         return provider.chat(messages, toolDefs, model, options);
+    }
+    
+    private LLMResponse callLLMStream(List<Message> messages, 
+                                      LLMProvider.StreamCallback callback) throws Exception {
+        List<ToolDefinition> toolDefs = tools.getDefinitions();
+        Map<String, Object> options = new HashMap<>();
+        options.put("max_tokens", DEFAULT_MAX_TOKENS);
+        options.put("temperature", DEFAULT_TEMPERATURE);
+        return provider.chatStream(messages, toolDefs, model, options, callback);
     }
     
     private void logToolCalls(List<ToolCall> toolCalls, int iteration) {

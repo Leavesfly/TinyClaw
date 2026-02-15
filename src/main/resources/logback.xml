@@ -1,26 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <!-- Console appender -->
+    <!-- 禁用 logback 启动时的状态信息输出 -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+    
+    <!-- 控制台输出配置：仅显示 WARN 及以上级别的日志 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- 阈值过滤器：过滤掉 INFO 级别的日志 -->
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>WARN</level>
+        </filter>
         <encoder>
+            <!-- 日志格式：时间 [级别] [logger名称] - 消息 -->
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%highlight(%-5level)] [%cyan(%logger{15})] - %msg%n</pattern>
         </encoder>
     </appender>
 
-    <!-- File appender -->
+    <!-- 文件输出配置：所有日志写入文件 -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!-- 当前日志文件路径 -->
         <file>${user.home}/.tinyclaw/logs/tinyclaw.log</file>
+        <!-- 滚动策略：按天归档 -->
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- 归档文件名模式 -->
             <fileNamePattern>${user.home}/.tinyclaw/logs/tinyclaw.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <!-- 保留最近7天的日志 -->
             <maxHistory>7</maxHistory>
+            <!-- 日志文件总大小上限 100MB -->
             <totalSizeCap>100MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
+            <!-- 文件日志格式 -->
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] [%logger{30}] - %msg%n</pattern>
         </encoder>
     </appender>
 
-    <!-- JSON file appender for structured logs -->
+    <!-- JSON 格式日志文件配置（用于结构化日志分析，当前未启用） -->
     <appender name="JSON_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${user.home}/.tinyclaw/logs/tinyclaw.json</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
@@ -35,15 +49,21 @@
         </encoder>
     </appender>
 
-    <!-- Logger levels -->
+    <!-- 特定包的日志级别配置 -->
+    <!-- TinyClaw 核心包：INFO 级别 -->
     <logger name="io.github.sipeed.tinyclaw" level="INFO"/>
+    <!-- OkHttp 网络库：仅 WARN -->
     <logger name="okhttp3" level="WARN"/>
+    <!-- Discord JDA 库：仅 WARN -->
     <logger name="net.dv8tion" level="WARN"/>
+    <!-- Telegram 库：仅 WARN -->
     <logger name="org.telegram" level="WARN"/>
 
-    <!-- Root logger -->
+    <!-- 根日志配置 -->
     <root level="INFO">
+        <!-- 输出到控制台（仅 WARN 及以上） -->
         <appender-ref ref="CONSOLE"/>
+        <!-- 输出到文件（所有级别） -->
         <appender-ref ref="FILE"/>
     </root>
 </configuration>

@@ -6,6 +6,8 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.Scanner;
 
@@ -30,8 +32,10 @@ public class AgentCommand extends CliCommand {
     @Override
     public int execute(String[] args) throws Exception {
         String message = "";
-        String sessionKey = "cli:default";
+        // 每次启动生成新的会话 ID，避免历史污染
+        String sessionKey = generateSessionKey();
         boolean debug = false;
+        boolean stream = true;  // 默认启用流式输出
         
         // 解析参数
         for (int i = 0; i < args.length; i++) {
@@ -47,6 +51,8 @@ public class AgentCommand extends CliCommand {
                 if (i + 1 < args.length) {
                     sessionKey = args[++i];
                 }
+            } else if (arg.equals("--no-stream")) {
+                stream = false;
             }
         }
         
@@ -84,24 +90,39 @@ public class AgentCommand extends CliCommand {
         
         if (!message.isEmpty()) {
             // 单条消息模式
-            String response = agentLoop.processDirect(message, sessionKey);
             System.out.println();
-            System.out.println(LOGO + " " + response);
+            System.out.print(LOGO + ": ");
+            
+            if (stream) {
+                // 流式输出
+                agentLoop.processDirectStream(message, sessionKey, chunk -> {
+                    System.out.print(chunk);
+                    System.out.flush();
+                });
+                System.out.println();
+            } else {
+                // 非流式输出
+                String response = agentLoop.processDirect(message, sessionKey);
+                System.out.println(response);
+            }
         } else {
             // 交互模式
             System.out.println(LOGO + " 交互模式 (Ctrl+C to exit)");
+            if (stream) {
+                System.out.println("🚀 流式输出已启用 (使用 --no-stream 关闭)");
+            }
             System.out.println();
-            interactiveMode(agentLoop, sessionKey);
+            interactiveMode(agentLoop, sessionKey, stream);
         }
         
         return 0;
     }
     
-    private void interactiveMode(AgentLoop agentLoop, String sessionKey) {
+    private void interactiveMode(AgentLoop agentLoop, String sessionKey, boolean stream) {
         Scanner scanner = new Scanner(System.in);
         
         while (true) {
-            System.out.print(LOGO + " 你: ");
+            System.out.print("你: ");
             String input;
             try {
                 input = scanner.nextLine().trim();
@@ -120,9 +141,22 @@ public class AgentCommand extends CliCommand {
             }
             
             try {
-                String response = agentLoop.processDirect(input, sessionKey);
                 System.out.println();
-                System.out.println(LOGO + " " + response);
+                System.out.print(LOGO + ": ");
+                
+                if (stream) {
+                    // 流式输出
+                    agentLoop.processDirectStream(input, sessionKey, chunk -> {
+                        System.out.print(chunk);
+                        System.out.flush();
+                    });
+                    System.out.println();
+                } else {
+                    // 非流式输出
+                    String response = agentLoop.processDirect(input, sessionKey);
+                    System.out.println(response);
+                }
+                
                 System.out.println();
             } catch (Exception e) {
                 System.err.println("错误: " + e.getMessage());
@@ -138,12 +172,22 @@ public class AgentCommand extends CliCommand {
         System.out.println();
         System.out.println("Options:");
         System.out.println("  -m, --message <text>    发送单条消息并退出");
-        System.out.println("  -s, --session <key>     会话键（默认：cli:default）");
+        System.out.println("  -s, --session <key>     指定会话键（默认每次启动创建新会话）");
         System.out.println("  -d, --debug             启用调试模式");
+        System.out.println("  --no-stream             禁用流式输出（默认启用）");
         System.out.println();
         System.out.println("Examples:");
-        System.out.println("  tinyclaw agent                         # 交互模式");
+        System.out.println("  tinyclaw agent                         # 交互模式（流式）");
+        System.out.println("  tinyclaw agent --no-stream             # 交互模式（非流式）");
         System.out.println("  tinyclaw agent -m \"Hello!\"            # 单条消息");
-        System.out.println("  tinyclaw agent -s my-session -m \"Hi\"  # 自定义会话");
+        System.out.println("  tinyclaw agent -s my-session -m \"Hi\"  # 指定会话（用于恢复历史对话）");
+    }
+    
+    /**
+     * 生成唯一的会话 ID，格式: cli_yyyyMMdd_HHmmss
+     */
+    private String generateSessionKey() {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+        return "cli_" + LocalDateTime.now().format(formatter);
     }
 }

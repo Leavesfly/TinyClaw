@@ -191,6 +191,42 @@ public class AgentLoop {
     }
     
     /**
+     * 直接处理消息（流式输出，用于 CLI 模式）
+     */
+    public String processDirectStream(String content, String sessionKey, 
+                                      LLMProvider.StreamCallback callback) throws Exception {
+        // 检查 Provider 是否已配置
+        if (!providerConfigured) {
+            String errorMsg = "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
+            if (callback != null) {
+                callback.onChunk(errorMsg);
+            }
+            return errorMsg;
+        }
+        
+        String preview = StringUtils.truncate(content, 80);
+        logger.info("Processing message (stream)", Map.of(
+                "channel", "cli",
+                "session_key", sessionKey,
+                "preview", preview
+        ));
+        
+        List<Message> messages = buildContext(sessionKey, 
+                new InboundMessage("cli", "user", "direct", content));
+        sessions.addMessage(sessionKey, "user", content);
+        
+        String response = llmExecutor.executeStream(messages, sessionKey, callback);
+        response = ensureResponse(response);
+        
+        sessions.addMessage(sessionKey, "assistant", response);
+        sessions.save(sessions.getOrCreate(sessionKey));
+        
+        summarizer.maybeSummarize(sessionKey);
+        
+        return response;
+    }
+    
+    /**
      * 处理带通道信息的消息
      */
     public String processDirectWithChannel(String content, String sessionKey, 
