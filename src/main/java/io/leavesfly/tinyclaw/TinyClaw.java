@@ -10,7 +10,7 @@ import java.util.function.Supplier;
 /**
  * TinyClaw - 超轻量个人AI助手
  * 
- * 这是一个基于 Java 实现的个人 AI 助手命令行工具，灵感来源于 PicoClaw。
+ * 这是一个基于 Java 实现的个人 AI 助手命令行工具。
  * TinyClaw 提供了一套简洁的命令行接口，帮助用户管理 AI Agent、网关、定时任务等。
  * 
  * 主要功能：

@@ -38,55 +38,71 @@
 
 ```
 src/main/java/io/leavesfly/tinyclaw/
-├── TinyClaw.java          # 应用入口，命令分发
-├── agent/                 # Agent 核心引擎
-│   ├── AgentLoop.java     #   Agent 主循环（工具调用、推理、响应）
-│   ├── ContextBuilder.java#   上下文构建器（系统提示、记忆、技能注入）
-│   └── MemoryStore.java   #   长期记忆存储
-├── bus/                   # 消息总线
-│   ├── MessageBus.java    #   发布/订阅消息中心
-│   ├── InboundMessage.java#   入站消息（来自通道）
-│   └── OutboundMessage.java#  出站消息（发往通道）
-├── channels/              # 消息通道适配器
-│   ├── Channel.java       #   通道接口
-│   ├── TelegramChannel.java
-│   ├── DiscordChannel.java
-│   ├── WhatsAppChannel.java
-│   ├── FeishuChannel.java #   飞书
-│   ├── DingTalkChannel.java#  钉钉
-│   ├── QQChannel.java
-│   └── MaixCamChannel.java#   MaixCam 硬件设备
-├── cli/                   # 命令行接口
-│   ├── CliCommand.java    #   命令基类
-│   ├── OnboardCommand.java#   初始化引导
-│   ├── AgentCommand.java  #   Agent 交互
-│   ├── GatewayCommand.java#   网关服务
-│   ├── StatusCommand.java #   状态查看
-│   ├── CronCommand.java   #   定时任务管理
-│   └── SkillsCommand.java #   技能管理
-├── config/                # 配置管理
-├── cron/                  # 定时任务引擎
-├── heartbeat/             # 心跳服务
-├── logger/                # 日志系统
-├── providers/             # LLM 提供商抽象
-│   ├── LLMProvider.java   #   提供商接口
-│   └── HTTPProvider.java  #   HTTP 通用实现
-├── session/               # 会话管理
-├── skills/                # 技能插件系统
-├── tools/                 # Agent 工具集
-│   ├── Tool.java          #   工具接口
-│   ├── ReadFileTool.java  #   读取文件
-│   ├── WriteFileTool.java #   写入文件
-│   ├── EditFileTool.java  #   编辑文件（diff 模式）
-│   ├── ExecTool.java      #   执行 Shell 命令
-│   ├── WebSearchTool.java #   网络搜索（Brave API）
-│   ├── WebFetchTool.java  #   网页内容抓取
-│   ├── CronTool.java      #   定时任务操作
-│   ├── MessageTool.java   #   跨通道消息发送
-│   ├── SpawnTool.java     #   子代理生成
-│   └── ...
-├── util/                  # 工具类
-└── voice/                 # 语音转写
+├── TinyClaw.java                # 应用入口，命令注册与分发
+├── agent/                       # Agent 核心引擎
+│   ├── AgentConstants.java      #   Agent 相关常量
+│   ├── AgentLoop.java           #   推理主循环与工具调用
+│   ├── ContextBuilder.java      #   上下文构建（系统提示、技能、记忆等）
+│   ├── LLMExecutor.java         #   LLM 调用与工具模式驱动
+│   ├── MemoryStore.java         #   长期记忆存储
+│   └── SessionSummarizer.java   #   会话摘要与上下文压缩
+├── bus/                         # 消息总线
+│   ├── MessageBus.java          #   发布/订阅消息中心（入站/出站队列）
+│   ├── InboundMessage.java      #   入站消息模型
+│   └── OutboundMessage.java     #   出站消息模型
+├── channels/                    # 消息通道适配器
+│   ├── Channel.java             #   通道接口
+│   ├── BaseChannel.java         #   通用通道基类
+│   ├── ChannelManager.java      #   通道生命周期与出站消息分发
+│   ├── WebhookServer.java       #   Webhook HTTP 服务器
+│   └── ...                      #   Telegram / Discord / Feishu / DingTalk / QQ / WhatsApp / MaixCam 等
+├── cli/                         # 命令行接口
+│   ├── CliCommand.java          #   命令基类
+│   ├── OnboardCommand.java      #   初始化引导
+│   ├── AgentCommand.java        #   Agent 交互
+│   ├── GatewayBootstrap.java    #   网关启动封装
+│   ├── GatewayCommand.java      #   网关服务
+│   ├── DemoCommand.java         #   Demo 演示流程
+│   ├── StatusCommand.java       #   状态查看
+│   ├── CronCommand.java         #   定时任务管理
+│   └── SkillsCommand.java       #   技能管理
+├── config/                      # 配置模型与加载
+│   ├── Config.java / ConfigLoader.java
+│   ├── AgentConfig.java         #   Agent 参数（模型、温度、心跳等）
+│   ├── ChannelsConfig.java      #   通道配置
+│   ├── ProvidersConfig.java     #   LLM 提供商配置
+│   ├── ModelsConfig.java        #   模型别名与默认模型
+│   ├── GatewayConfig.java       #   网关配置
+│   ├── ToolsConfig.java         #   工具配置
+│   └── SocialNetworkConfig.java #   Agent 社交网络配置
+├── cron/                        # 定时任务引擎
+├── heartbeat/                   # 心跳服务
+├── logger/                      # 结构化日志封装
+├── providers/                   # LLM 调用抽象（HTTPProvider 等）
+├── security/                    # 安全沙箱（SecurityGuard）
+├── session/                     # 会话管理与持久化
+├── skills/                      # 技能加载与安装
+├── tools/                       # Agent 工具集与子代理管理
+│   ├── Tool.java                #   工具接口
+│   ├── ToolRegistry.java        #   工具注册表
+│   ├── SubagentManager.java     #   子代理管理
+│   ├── ReadFileTool.java        #   读取文件
+│   ├── WriteFileTool.java       #   写入文件
+│   ├── AppendFileTool.java      #   追加文件
+│   ├── EditFileTool.java        #   编辑文件（diff 模式）
+│   ├── ListDirTool.java         #   列出目录
+│   ├── ExecTool.java            #   执行 Shell 命令
+│   ├── WebSearchTool.java       #   网络搜索
+│   ├── WebFetchTool.java        #   网页抓取
+│   ├── MessageTool.java         #   跨通道消息发送
+│   ├── CronTool.java            #   定时任务操作
+│   ├── SocialNetworkTool.java   #   Agent 社交网络工具
+│   ├── SkillsTool.java          #   技能查询与管理
+│   └── SpawnTool.java           #   子代理生成
+├── util/                        # 工具类
+│   └── StringUtils.java
+├── voice/                       # 语音转写（AliyunTranscriber）
+└── web/                         # Web 控制台服务器（WebConsoleServer）
 ```
 
 ---
