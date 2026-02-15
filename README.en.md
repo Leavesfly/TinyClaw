@@ -183,7 +183,7 @@ java -jar target/tinyclaw-0.1.0.jar agent
   - Use `tinyclaw cron add --name "demo" --message "This is a demo job" --every 30` to create a job that runs every 30 seconds.
   - Keep the gateway running, wait for the cron trigger and the broadcast message in the channel, and explain how `CronService` integrates with the agent.
 - **Demo 4: Web console**
-  - In gateway mode, visit `http://localhost:18790` (default port) to view the Web UI.
+  - In gateway mode, visit `http://localhost:18791` (default port) to view the Web UI.
   - You can inspect agent status, session list, tool usage, and skill status in real time.
 
 ---

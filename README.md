@@ -187,7 +187,7 @@ java -jar target/tinyclaw-0.1.0.jar agent
   - 使用 `tinyclaw cron add --name "demo" --message "这是一条演示任务" --every 30` 创建一个每 30 秒执行的任务。
   - 保持 gateway 运行，等待定时任务触发并在通道中看到播报消息，可以用来说明 `CronService` 与 Agent 的集成路径。
 - **Demo 4：Web 控制台**
-  - 在 gateway 模式下，访问 `http://localhost:18790`（默认端口），查看 Web UI 界面。
+  - 在 gateway 模式下，访问 `http://localhost:18791`（默认端口），查看 Web UI 界面。
   - 可以实时查看 Agent 状态、会话列表、工具使用情况等信息。
 
 ---
