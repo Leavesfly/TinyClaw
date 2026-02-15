@@ -213,18 +213,24 @@ public class GatewayBootstrap {
      * 获取 Webhook 服务地址
      */
     public String getWebhookUrl() {
-        return String.format("http://%s:%d", 
-                config.getGateway().getHost(), 
-                config.getGateway().getPort());
+        String host = config.getGateway().getHost();
+        // 0.0.0.0 是绑定地址，显示时用 127.0.0.1 更友好
+        if ("0.0.0.0".equals(host)) {
+            host = "127.0.0.1";
+        }
+        return String.format("http://%s:%d", host, config.getGateway().getPort());
     }
     
     /**
      * 获取 Web Console 服务地址
      */
     public String getWebConsoleUrl() {
-        return String.format("http://%s:%d", 
-                config.getGateway().getHost(), 
-                calculateWebConsolePort());
+        String host = config.getGateway().getHost();
+        // 0.0.0.0 是绑定地址，显示时用 127.0.0.1 更友好
+        if ("0.0.0.0".equals(host)) {
+            host = "127.0.0.1";
+        }
+        return String.format("http://%s:%d", host, calculateWebConsolePort());
     }
     
     // ==================== 私有辅助方法 ====================

@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TinyClaw Console</title>
     <link rel="stylesheet" href="/css/style.css">
+    <!-- Markdown 渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <div class="app">
@@ -111,6 +113,28 @@
                                     <div class="welcome-icon">🦞</div>
                                     <h2>Hello, how can I help you today?</h2>
                                     <p>I am a helpful assistant that can help you with your questions.</p>
+                                    <div class="quick-prompts">
+                                        <div class="quick-prompt" data-prompt="你有哪些技能？">
+                                            <span class="prompt-icon">✦</span>
+                                            <span class="prompt-text">你有哪些技能？</span>
+                                            <span class="prompt-arrow">→</span>
+                                        </div>
+                                        <div class="quick-prompt" data-prompt="今天杭州天气怎么样？">
+                                            <span class="prompt-icon">✦</span>
+                                            <span class="prompt-text">今天杭州天气怎么样？</span>
+                                            <span class="prompt-arrow">→</span>
+                                        </div>
+                                        <div class="quick-prompt" data-prompt="帮我创建一个每小时执行的定时任务">
+                                            <span class="prompt-icon">✦</span>
+                                            <span class="prompt-text">帮我创建一个每小时执行的定时任务</span>
+                                            <span class="prompt-arrow">→</span>
+                                        </div>
+                                        <div class="quick-prompt" data-prompt="读取我的工作目录有哪些文件">
+                                            <span class="prompt-icon">✦</span>
+                                            <span class="prompt-text">读取我的工作目录有哪些文件</span>
+                                            <span class="prompt-arrow">→</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="chat-input-container">

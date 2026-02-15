@@ -109,7 +109,7 @@ public class WebConsoleServer {
         
         try {
             if ("/api/chat".equals(path) && "POST".equals(method)) {
-                // 发送消息给 Agent
+                // 发送消息给 Agent（非流式）
                 String body = readRequestBody(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 String message = json.path("message").asText();
@@ -121,6 +121,9 @@ public class WebConsoleServer {
                 result.put("response", response);
                 result.put("sessionId", sessionId);
                 sendJson(exchange, 200, result);
+            } else if ("/api/chat/stream".equals(path) && "POST".equals(method)) {
+                // 流式聊天 - 使用 SSE
+                handleChatStream(exchange);
             } else {
                 sendJson(exchange, 404, errorJson("Not found"));
             }
@@ -128,6 +131,59 @@ public class WebConsoleServer {
             logger.error("Chat API error", Map.of("error", e.getMessage()));
             sendJson(exchange, 500, errorJson(e.getMessage()));
         }
+    }
+    
+    /**
+     * 处理流式聊天请求，使用 Server-Sent Events (SSE) 返回响应
+     */
+    private void handleChatStream(HttpExchange exchange) throws IOException {
+        String body = readRequestBody(exchange);
+        JsonNode json = objectMapper.readTree(body);
+        String message = json.path("message").asText();
+        String sessionId = json.path("sessionId").asText("web:default");
+        
+        // 设置 SSE 响应头
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.getResponseHeaders().set("Connection", "keep-alive");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        exchange.sendResponseHeaders(200, 0); // chunked transfer
+        
+        OutputStream os = exchange.getResponseBody();
+        
+        try {
+            // 使用流式 API
+            agentLoop.processDirectStream(message, sessionId, chunk -> {
+                try {
+                    // SSE 格式: data: <content>\n\n
+                    String sseData = "data: " + escapeSSE(chunk) + "\n\n";
+                    os.write(sseData.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                } catch (IOException e) {
+                    logger.error("SSE write error", Map.of("error", e.getMessage()));
+                }
+            });
+            
+            // 发送完成信号
+            os.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        } catch (Exception e) {
+            logger.error("Chat stream error", Map.of("error", e.getMessage()));
+            String errorData = "data: [ERROR] " + escapeSSE(e.getMessage()) + "\n\n";
+            os.write(errorData.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        } finally {
+            os.close();
+        }
+    }
+    
+    /**
+     * 转义 SSE 数据中的换行符
+     */
+    private String escapeSSE(String content) {
+        if (content == null) return "";
+        // SSE 中换行需要多个 data: 行
+        return content.replace("\n", "\ndata: ");
     }
     
     // ==================== Channels API ====================

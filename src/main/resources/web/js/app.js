@@ -10,6 +10,11 @@ class TinyClawConsole {
     }
 
     init() {
+        // 配置 Markdown 渲染：启用换行符转 <br>
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({ breaks: true });
+        }
+        
         this.bindNavigation();
         this.bindChat();
         this.bindModal();
@@ -82,6 +87,7 @@ class TinyClawConsole {
 
     loadPageData(page) {
         switch (page) {
+            case 'chat': this.loadChatHistory(); this.loadChatSessions(); break;
             case 'channels': this.loadChannels(); break;
             case 'sessions': this.loadSessions(); break;
             case 'cron': this.loadCronJobs(); break;
@@ -114,14 +120,170 @@ class TinyClawConsole {
 
         newChatBtn.addEventListener('click', () => {
             this.chatSessionId = 'web:' + Date.now();
-            document.getElementById('chatMessages').innerHTML = `
-                <div class="chat-welcome">
-                    <div class="welcome-icon">🦞</div>
-                    <h2>Hello, how can I help you today?</h2>
-                    <p>I am a helpful assistant that can help you with your questions.</p>
-                </div>
-            `;
+            document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
+            this.bindQuickPrompts();
         });
+
+        // 绑定初始的快捷提示语
+        this.bindQuickPrompts();
+    }
+
+    /**
+     * 获取欢迎界面 HTML
+     */
+    getWelcomeHtml() {
+        return `
+            <div class="chat-welcome">
+                <div class="welcome-icon">🦞</div>
+                <h2>Hello, how can I help you today?</h2>
+                <p>I am a helpful assistant that can help you with your questions.</p>
+                <div class="quick-prompts">
+                    <div class="quick-prompt" data-prompt="你有哪些技能？">
+                        <span class="prompt-icon">✦</span>
+                        <span class="prompt-text">你有哪些技能？</span>
+                        <span class="prompt-arrow">→</span>
+                    </div>
+                    <div class="quick-prompt" data-prompt="今天杭州天气怎么样？">
+                        <span class="prompt-icon">✦</span>
+                        <span class="prompt-text">今天杭州天气怎么样？</span>
+                        <span class="prompt-arrow">→</span>
+                    </div>
+                    <div class="quick-prompt" data-prompt="帮我创建一个每小时执行的定时任务">
+                        <span class="prompt-icon">✦</span>
+                        <span class="prompt-text">帮我创建一个每小时执行的定时任务</span>
+                        <span class="prompt-arrow">→</span>
+                    </div>
+                    <div class="quick-prompt" data-prompt="读取我的工作目录有哪些文件">
+                        <span class="prompt-icon">✦</span>
+                        <span class="prompt-text">读取我的工作目录有哪些文件</span>
+                        <span class="prompt-arrow">→</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    /**
+     * 绑定快捷提示语点击事件
+     */
+    bindQuickPrompts() {
+        document.querySelectorAll('.quick-prompt').forEach(prompt => {
+            prompt.addEventListener('click', () => {
+                const text = prompt.dataset.prompt;
+                document.getElementById('chatInput').value = text;
+                this.sendMessage();
+            });
+        });
+    }
+
+    /**
+     * 加载当前 session 的聊天历史
+     */
+    async loadChatHistory() {
+        try {
+            const response = await fetch(`/api/sessions/${encodeURIComponent(this.chatSessionId)}`);
+            if (!response.ok) return;
+            
+            const messages = await response.json();
+            if (!messages || messages.length === 0) return;
+            
+            const messagesDiv = document.getElementById('chatMessages');
+            // 清除欢迎消息
+            messagesDiv.innerHTML = '';
+            
+            // 显示历史消息
+            for (const msg of messages) {
+                if (msg.role === 'user' || msg.role === 'assistant') {
+                    this.addMessage(msg.content || '', msg.role);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load chat history:', error);
+        }
+    }
+
+    /**
+     * 加载左侧历史聊天会话列表
+     */
+    async loadChatSessions() {
+        try {
+            const response = await fetch('/api/sessions');
+            const sessions = await response.json();
+            
+            // 只显示 web: 开头的会话
+            const webSessions = sessions.filter(s => s.key.startsWith('web:'));
+            
+            const historyDiv = document.getElementById('chatHistory');
+            if (webSessions.length === 0) {
+                historyDiv.innerHTML = '<div class="chat-history-empty">No chat history</div>';
+                return;
+            }
+            
+            historyDiv.innerHTML = webSessions.map(s => {
+                const isActive = s.key === this.chatSessionId;
+                const title = this.extractChatTitle(s.key);
+                return `
+                    <div class="chat-history-item ${isActive ? 'active' : ''}" data-session="${this.escapeHtml(s.key)}">
+                        <span class="history-title">${this.escapeHtml(title)}</span>
+                        <button class="history-delete" onclick="event.stopPropagation(); app.deleteChatSession('${this.escapeHtml(s.key)}')" title="Delete">×</button>
+                    </div>
+                `;
+            }).join('');
+            
+            // 绑定点击事件
+            historyDiv.querySelectorAll('.chat-history-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const sessionKey = item.dataset.session;
+                    this.switchChatSession(sessionKey);
+                });
+            });
+        } catch (error) {
+            console.error('Failed to load chat sessions:', error);
+        }
+    }
+
+    /**
+     * 从会话 key 提取标题（用第一条用户消息或时间戳）
+     */
+    extractChatTitle(key) {
+        // web:1234567890 -> 显示时间
+        if (key.startsWith('web:')) {
+            const timestamp = key.substring(4);
+            if (/^\d+$/.test(timestamp)) {
+                const date = new Date(parseInt(timestamp));
+                return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            }
+            return timestamp === 'default' ? 'Default Chat' : timestamp;
+        }
+        return key;
+    }
+
+    /**
+     * 切换到指定聊天会话
+     */
+    switchChatSession(sessionKey) {
+        this.chatSessionId = sessionKey;
+        this.loadChatHistory();
+        this.loadChatSessions(); // 刷新列表高亮
+    }
+
+    /**
+     * 删除聊天会话
+     */
+    async deleteChatSession(key) {
+        if (!confirm('Delete this chat?')) return;
+        try {
+            await fetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
+            // 如果删除的是当前会话，切换到新会话
+            if (key === this.chatSessionId) {
+                this.chatSessionId = 'web:default';
+                document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
+                this.bindQuickPrompts();
+            }
+            this.loadChatSessions();
+        } catch (error) {
+            console.error('Failed to delete chat session:', error);
+        }
     }
 
     async sendMessage() {
@@ -141,25 +303,64 @@ class TinyClawConsole {
         // Add user message
         this.addMessage(message, 'user');
 
-        // Add loading indicator
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'message assistant';
-        loadingDiv.innerHTML = '<div class="message-content"><div class="loading"></div></div>';
-        messagesDiv.appendChild(loadingDiv);
+        // Add assistant message placeholder for streaming
+        const assistantDiv = document.createElement('div');
+        assistantDiv.className = 'message assistant';
+        assistantDiv.innerHTML = '<div class="message-content"><span class="streaming-cursor"></span></div>';
+        messagesDiv.appendChild(assistantDiv);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        
+        const contentDiv = assistantDiv.querySelector('.message-content');
+        let fullResponse = '';
 
         try {
-            const response = await fetch('/api/chat', {
+            // 使用流式 API
+            const response = await fetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message, sessionId: this.chatSessionId })
             });
-            const data = await response.json();
-            loadingDiv.remove();
-            this.addMessage(data.response || data.error, 'assistant');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        if (data === '[DONE]') {
+                            // 流结束
+                            break;
+                        } else if (data.startsWith('[ERROR]')) {
+                            fullResponse += data.slice(8);
+                        } else {
+                            fullResponse += data;
+                        }
+                        // 更新显示内容
+                        contentDiv.innerHTML = this.escapeHtml(fullResponse) + '<span class="streaming-cursor"></span>';
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    }
+                }
+            }
+
+            // 移除光标，使用 Markdown 渲染最终内容
+            if (typeof marked !== 'undefined') {
+                contentDiv.classList.add('markdown-body');
+                contentDiv.innerHTML = marked.parse(fullResponse);
+            } else {
+                contentDiv.innerHTML = this.escapeHtml(fullResponse);
+            }
+            
+            // 刷新左侧会话列表
+            this.loadChatSessions();
         } catch (error) {
-            loadingDiv.remove();
-            this.addMessage('Error: ' + error.message, 'assistant');
+            contentDiv.innerHTML = this.escapeHtml('Error: ' + error.message);
         }
     }
 
@@ -167,7 +368,14 @@ class TinyClawConsole {
         const messagesDiv = document.getElementById('chatMessages');
         const div = document.createElement('div');
         div.className = `message ${role}`;
-        div.innerHTML = `<div class="message-content">${this.escapeHtml(content)}</div>`;
+        
+        // assistant 消息使用 Markdown 渲染，user 消息纯文本
+        if (role === 'assistant' && typeof marked !== 'undefined') {
+            div.innerHTML = `<div class="message-content markdown-body">${marked.parse(content)}</div>`;
+        } else {
+            div.innerHTML = `<div class="message-content">${this.escapeHtml(content)}</div>`;
+        }
+        
         messagesDiv.appendChild(div);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
