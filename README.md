@@ -10,6 +10,8 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-0.1.0-brightgreen)]()
 
+[English README](./README.en.md)
+
 </div>
 
 ---
