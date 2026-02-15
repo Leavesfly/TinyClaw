@@ -623,7 +623,7 @@ public class WebConsoleServer {
         try {
             if ("/api/config/model".equals(path) && "GET".equals(method)) {
                 ObjectNode result = objectMapper.createObjectNode();
-                result.put("model", config.getAgents().getDefaults().getModel());
+                result.put("model", config.getAgent().getModel());
                 // 获取当前配置的 provider
                 String currentProvider = getCurrentProvider();
                 result.put("provider", currentProvider);
@@ -633,7 +633,7 @@ public class WebConsoleServer {
                 JsonNode json = objectMapper.readTree(body);
                 if (json.has("model")) {
                     String model = json.path("model").asText();
-                    config.getAgents().getDefaults().setModel(model);
+                    config.getAgent().setModel(model);
                 }
                 if (json.has("provider")) {
                     String provider = json.path("provider").asText();
@@ -643,26 +643,26 @@ public class WebConsoleServer {
                 saveConfig();
                 sendJson(exchange, 200, successJson("Model updated"));
             } else if ("/api/config/agent".equals(path) && "GET".equals(method)) {
-                AgentsConfig.AgentDefaults defaults = config.getAgents().getDefaults();
+                AgentConfig agentConfig = config.getAgent();
                 ObjectNode result = objectMapper.createObjectNode();
-                result.put("workspace", defaults.getWorkspace());
-                result.put("model", defaults.getModel());
-                result.put("maxTokens", defaults.getMaxTokens());
-                result.put("temperature", defaults.getTemperature());
-                result.put("maxToolIterations", defaults.getMaxToolIterations());
-                result.put("heartbeatEnabled", defaults.isHeartbeatEnabled());
-                result.put("restrictToWorkspace", defaults.isRestrictToWorkspace());
+                result.put("workspace", agentConfig.getWorkspace());
+                result.put("model", agentConfig.getModel());
+                result.put("maxTokens", agentConfig.getMaxTokens());
+                result.put("temperature", agentConfig.getTemperature());
+                result.put("maxToolIterations", agentConfig.getMaxToolIterations());
+                result.put("heartbeatEnabled", agentConfig.isHeartbeatEnabled());
+                result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
                 sendJson(exchange, 200, result);
             } else if ("/api/config/agent".equals(path) && "PUT".equals(method)) {
                 String body = readRequestBody(exchange);
                 JsonNode json = objectMapper.readTree(body);
-                AgentsConfig.AgentDefaults defaults = config.getAgents().getDefaults();
-                if (json.has("model")) defaults.setModel(json.get("model").asText());
-                if (json.has("maxTokens")) defaults.setMaxTokens(json.get("maxTokens").asInt());
-                if (json.has("temperature")) defaults.setTemperature(json.get("temperature").asDouble());
-                if (json.has("maxToolIterations")) defaults.setMaxToolIterations(json.get("maxToolIterations").asInt());
-                if (json.has("heartbeatEnabled")) defaults.setHeartbeatEnabled(json.get("heartbeatEnabled").asBoolean());
-                if (json.has("restrictToWorkspace")) defaults.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
+                AgentConfig agentConfig = config.getAgent();
+                if (json.has("model")) agentConfig.setModel(json.get("model").asText());
+                if (json.has("maxTokens")) agentConfig.setMaxTokens(json.get("maxTokens").asInt());
+                if (json.has("temperature")) agentConfig.setTemperature(json.get("temperature").asDouble());
+                if (json.has("maxToolIterations")) agentConfig.setMaxToolIterations(json.get("maxToolIterations").asInt());
+                if (json.has("heartbeatEnabled")) agentConfig.setHeartbeatEnabled(json.get("heartbeatEnabled").asBoolean());
+                if (json.has("restrictToWorkspace")) agentConfig.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
                 saveConfig();
                 sendJson(exchange, 200, successJson("Agent config updated"));
             } else {

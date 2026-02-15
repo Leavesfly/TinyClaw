@@ -10,6 +10,7 @@ dependency-reduced-pom.xml
 *.iml
 *.ipr
 *.class
+.jimi
 
 ### Eclipse ###
 .apt_generated
@@ -19,6 +20,9 @@ dependency-reduced-pom.xml
 .settings
 .springBeans
 .sts4-cache
+
+**/.gradle/
+**/gradle/
 
 ### NetBeans ###
 /nbproject/private/
@@ -33,7 +37,8 @@ build/
 ### VS Code ###
 .vscode/
 .qoder/
-**/.jimi/config.json
+**/.jimi/config.yml
+
 
 ### Mac OS ###
 .DS_Store

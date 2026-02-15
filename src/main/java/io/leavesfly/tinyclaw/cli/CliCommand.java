@@ -195,8 +195,8 @@ public abstract class CliCommand {
         
         // 初始化 SecurityGuard
         SecurityGuard securityGuard = null;
-        if (config.getAgents().getDefaults().isRestrictToWorkspace()) {
-            List<String> customBlacklist = config.getAgents().getDefaults().getCommandBlacklist();
+        if (config.getAgent().isRestrictToWorkspace()) {
+            List<String> customBlacklist = config.getAgent().getCommandBlacklist();
             if (customBlacklist != null && !customBlacklist.isEmpty()) {
                 securityGuard = new SecurityGuard(workspace, true, customBlacklist);
             } else {

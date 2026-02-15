@@ -6,7 +6,7 @@ import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.ChannelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.util.StringUtils;
-import io.leavesfly.tinyclaw.voice.GroqTranscriber;
+import io.leavesfly.tinyclaw.voice.Transcriber;
 
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
@@ -39,7 +39,7 @@ import java.util.regex.Pattern;
  * - 长轮询模式接收消息
  * - 文本消息收发
  * - 图片、语音、音频、文档处理
- * - 语音消息转录（配合 GroqTranscriber）
+ * - 语音消息转录（配合 AliyunTranscriber）
  * - "正在输入..." 动画指示器
  * - Markdown 到 HTML 格式转换
  * 
@@ -63,7 +63,7 @@ public class TelegramChannel extends BaseChannel {
     private final ChannelsConfig.TelegramConfig config;
     private TelegramBotsApi botsApi;
     private TelegramBot bot;
-    private GroqTranscriber transcriber;
+    private Transcriber transcriber;
     
     // 占位消息管理 - chatId -> messageId
     private final Map<String, Integer> placeholders = new ConcurrentHashMap<>();
@@ -86,9 +86,9 @@ public class TelegramChannel extends BaseChannel {
      * 
      * 启用后，收到的语音消息会自动转录为文本。
      * 
-     * @param transcriber Groq 语音转录器实例
+     * @param transcriber 语音转录器实例（AliyunTranscriber）
      */
-    public void setTranscriber(GroqTranscriber transcriber) {
+    public void setTranscriber(Transcriber transcriber) {
         this.transcriber = transcriber;
     }
     
@@ -245,7 +245,7 @@ public class TelegramChannel extends BaseChannel {
                 String transcribedText = null;
                 if (transcriber != null && transcriber.isAvailable()) {
                     try {
-                        GroqTranscriber.TranscriptionResponse response = transcriber.transcribe(localPath);
+                        Transcriber.TranscriptionResult response = transcriber.transcribe(localPath);
                         transcribedText = response.getText();
                         logger.info("语音转录成功", Map.of(
                             "duration_seconds", voice.getDuration(),

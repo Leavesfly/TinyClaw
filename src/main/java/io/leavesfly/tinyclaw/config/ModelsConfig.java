@@ -46,8 +46,9 @@ public class ModelsConfig {
         definitions.put("gemini-2.0-flash-exp", new ModelDefinition("gemini", "gemini-2.0-flash-exp", 1000000));
         
         // 本地模型示例
-        definitions.put("qwen2.5", new ModelDefinition("ollama", "qwen2.5", 32768));
         definitions.put("llama3.1", new ModelDefinition("ollama", "llama3.1", 128000));
+        definitions.put("qwen3:4b-instruct-2507-q8_0", new ModelDefinition("ollama", "qwen3:4b-instruct-2507-q8_0", 128000));
+
     }
     
     public Map<String, ModelDefinition> getDefinitions() {

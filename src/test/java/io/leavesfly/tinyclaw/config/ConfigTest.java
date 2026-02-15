@@ -39,7 +39,7 @@ class ConfigTest {
         Config config = Config.defaultConfig();
         
         assertNotNull(config);
-        assertNotNull(config.getAgents());
+        assertNotNull(config.getAgent());
         assertNotNull(config.getProviders());
         assertNotNull(config.getChannels());
         assertNotNull(config.getGateway());
@@ -50,7 +50,7 @@ class ConfigTest {
     @DisplayName("defaultConfig: Agent 默认值正确")
     void defaultConfig_AgentDefaults_AreCorrect() {
         Config config = Config.defaultConfig();
-        AgentsConfig.AgentDefaults defaults = config.getAgents().getDefaults();
+        AgentConfig defaults = config.getAgent();
         
         assertNotNull(defaults.getWorkspace());
         assertNotNull(defaults.getModel());
@@ -69,13 +69,12 @@ class ConfigTest {
         assertTrue(gateway.getPort() > 0);
     }
 
-    // ==================== AgentsConfig 测试 ====================
+    // ==================== AgentConfig 测试 ====================
 
     @Test
-    @DisplayName("AgentsConfig: Getter/Setter 正常工作")
-    void agentsConfig_GetterSetter_Works() {
-        AgentsConfig agentsConfig = new AgentsConfig();
-        AgentsConfig.AgentDefaults defaults = agentsConfig.getDefaults();
+    @DisplayName("AgentConfig: Getter/Setter 正常工作")
+    void agentConfig_GetterSetter_Works() {
+        AgentConfig defaults = new AgentConfig();
         
         defaults.setModel("gpt-4");
         defaults.setMaxTokens(4096);
@@ -204,7 +203,7 @@ class ConfigTest {
     void configLoader_SaveAndLoad_Works() throws IOException {
         Path configPath = tempDir.resolve("config.json");
         Config original = Config.defaultConfig();
-        original.getAgents().getDefaults().setModel("test-model");
+        original.getAgent().setModel("test-model");
         original.getGateway().setPort(9999);
         
         ConfigLoader.save(configPath.toString(), original);
@@ -212,7 +211,7 @@ class ConfigTest {
         
         Config loaded = ConfigLoader.load(configPath.toString());
         
-        assertEquals("test-model", loaded.getAgents().getDefaults().getModel());
+        assertEquals("test-model", loaded.getAgent().getModel());
         assertEquals(9999, loaded.getGateway().getPort());
     }
 
@@ -225,7 +224,7 @@ class ConfigTest {
         
         assertNotNull(config);
         // 应该返回默认配置
-        assertNotNull(config.getAgents());
+        assertNotNull(config.getAgent());
     }
 
     @Test

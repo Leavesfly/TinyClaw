@@ -74,9 +74,9 @@ public class AgentLoop {
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
         
-        String model = config.getAgents().getDefaults().getModel();
-        int contextWindow = config.getAgents().getDefaults().getMaxTokens();
-        int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
+        String model = config.getAgent().getModel();
+        int contextWindow = config.getAgent().getMaxTokens();
+        int maxIterations = config.getAgent().getMaxToolIterations();
         
         // 如果 provider 不为空，初始化执行器
         if (provider != null) {
@@ -108,9 +108,9 @@ public class AgentLoop {
         synchronized (providerLock) {
             this.provider = provider;
             
-            String model = config.getAgents().getDefaults().getModel();
-            int contextWindow = config.getAgents().getDefaults().getMaxTokens();
-            int maxIterations = config.getAgents().getDefaults().getMaxToolIterations();
+            String model = config.getAgent().getModel();
+            int contextWindow = config.getAgent().getMaxTokens();
+            int maxIterations = config.getAgent().getMaxToolIterations();
             
             this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
             this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
@@ -118,7 +118,7 @@ public class AgentLoop {
         }
         
         logger.info("Provider configured dynamically", Map.of(
-                "model", config.getAgents().getDefaults().getModel()
+                "model", config.getAgent().getModel()
         ));
     }
     

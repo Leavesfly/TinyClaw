@@ -12,7 +12,8 @@ import io.leavesfly.tinyclaw.heartbeat.HeartbeatService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
-import io.leavesfly.tinyclaw.voice.GroqTranscriber;
+import io.leavesfly.tinyclaw.voice.AliyunTranscriber;
+import io.leavesfly.tinyclaw.voice.Transcriber;
 import io.leavesfly.tinyclaw.web.WebConsoleServer;
 
 import java.nio.file.Paths;
@@ -230,23 +231,42 @@ public class GatewayBootstrap {
     
     /**
      * 初始化语音转写器
+     * 
+     * 优先使用阿里云 DashScope（国内），否则回退到 Groq（海外）
      */
     private void initializeTranscriber() {
-        // Groq provider 已移除，语音转写功能暂时禁用
+        Transcriber transcriber = null;
+        
+        // 优先尝试使用阿里云 DashScope
+        if (config.getProviders() != null && config.getProviders().getDashscope() != null) {
+            String dashscopeApiKey = config.getProviders().getDashscope().getApiKey();
+            if (dashscopeApiKey != null && !dashscopeApiKey.isEmpty()) {
+                transcriber = new AliyunTranscriber(dashscopeApiKey);
+                logger.info("Using Aliyun DashScope for voice transcription");
+            }
+        }
+        
+        // 将转写器附加到支持的通道
+        if (transcriber != null) {
+            attachTranscriberToChannel("telegram", TelegramChannel.class, transcriber);
+            attachTranscriberToChannel("discord", DiscordChannel.class, transcriber);
+        } else {
+            logger.warn("Voice transcription disabled: DashScope API key not configured");
+        }
     }
     
     /**
      * 将转写器附加到指定通道
      */
-    private <T> void attachTranscriberToChannel(String channelName, Class<T> channelClass, GroqTranscriber transcriber) {
+    private <T> void attachTranscriberToChannel(String channelName, Class<T> channelClass, Transcriber transcriber) {
         channelManager.getChannel(channelName).ifPresent(channel -> {
             if (channelClass.isInstance(channel)) {
                 if (channel instanceof TelegramChannel) {
                     ((TelegramChannel) channel).setTranscriber(transcriber);
-                    logger.info("Transcriber attached to Telegram channel");
+                    logger.info("Transcriber attached to Telegram channel", Map.of("provider", transcriber.getProviderName()));
                 } else if (channel instanceof DiscordChannel) {
                     ((DiscordChannel) channel).setTranscriber(transcriber);
-                    logger.info("Transcriber attached to Discord channel");
+                    logger.info("Transcriber attached to Discord channel", Map.of("provider", transcriber.getProviderName()));
                 }
             }
         });
@@ -256,9 +276,8 @@ public class GatewayBootstrap {
      * 初始化心跳服务
      */
     private void initializeHeartbeat() {
-        boolean heartbeatEnabled = config.getAgents() != null 
-                && config.getAgents().getDefaults() != null 
-                && config.getAgents().getDefaults().isHeartbeatEnabled();
+        boolean heartbeatEnabled = config.getAgent() != null 
+                && config.getAgent().isHeartbeatEnabled();
         
         heartbeatService = new HeartbeatService(
                 workspace,

@@ -4,6 +4,7 @@ import io.leavesfly.tinyclaw.agent.AgentLoop;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
+import io.leavesfly.tinyclaw.config.ProvidersConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -13,15 +14,13 @@ import java.util.Map;
 /**
  * Demo 命令 - 一键运行可复现的演示流程
  *
- * <p>当前支持的子模式：</p>
- * <ul>
- *   <li><code>agent-basic</code>：构造一个固定问题，直接通过 AgentLoop 跑完一轮 CLI 对话链路，方便现场演示。</li>
- * </ul>
+ * 当前支持的子模式：
+ * - agent-basic：构造一个固定问题，直接通过 AgentLoop 跑完一轮 CLI 对话链路，方便现场演示。
  *
- * <p>学习/演示提示：
- * 结合 README 中的“5 分钟 Demo / Demo 1”，可以先执行
- * <code>tinyclaw demo agent-basic</code>，再对照 TinyClaw → DemoCommand → AgentLoop 的调用关系，
- * 向听众讲解从配置加载、LLM Provider 初始化，到一次完整推理流程的关键步骤。</p>
+ * 学习/演示提示：
+ * 结合 README 中的"5 分钟 Demo / Demo 1"，可以先执行 tinyclaw demo agent-basic，
+ * 再对照 TinyClaw → DemoCommand → AgentLoop 的调用关系，向听众讲解从配置加载、
+ * LLM Provider 初始化，到一次完整推理流程的关键步骤。
  */
 public class DemoCommand extends CliCommand {
 
@@ -68,19 +67,37 @@ public class DemoCommand extends CliCommand {
             return 1;
         }
 
-        // 2. 创建 LLM Provider（沿用 openrouter/openai 优先策略）
+        // 2. 创建 LLM Provider（通过 Config 获取第一个可用的 provider）
         LLMProvider provider;
+        String modelName;
+        String providerName;
         try {
-            String apiKey = config.getProviders().getOpenrouter().getApiKey();
-            String apiBase = config.getProviders().getOpenrouter().getApiBase();
-            if (apiKey == null || apiKey.isEmpty()) {
-                apiKey = config.getProviders().getOpenai().getApiKey();
-                apiBase = "https://api.openai.com/v1";
+            var providerWithName = config.getProviders().getFirstAvailableProvider()
+                .orElseThrow(() -> new IllegalStateException("未配置任何可用的 Provider。请先运行 'tinyclaw onboard' 完成配置。"));
+            
+            providerName = providerWithName.name;
+            var providerConfig = providerWithName.config;
+            
+            // 获取 apiKey 和 apiBase
+            String apiKey = providerConfig.getApiKey();
+            if (apiKey == null) apiKey = ""; // ollama 不需要 apiKey
+            
+            String apiBase = resolveApiBase(
+                providerConfig.getApiBase(), 
+                ProvidersConfig.getDefaultApiBase(providerName)
+            );
+            
+            // 确定模型名称
+            if ("ollama".equals(providerName)) {
+                modelName = "qwen3:4b-instruct-2507-q8_0";
+                config.getAgent().setModel(modelName);
+
+            } else {
+                modelName = config.getAgent().getModel();
             }
-            if (apiKey == null || apiKey.isEmpty()) {
-                throw new IllegalStateException("No API key configured. Please set OpenRouter or OpenAI API key.");
-            }
-            provider = new HTTPProvider(apiKey, apiBase != null ? apiBase : "https://openrouter.ai/api/v1");
+            
+            System.out.println("使用 Provider: " + providerName + " (model: " + modelName + ")");
+            provider = new HTTPProvider(apiKey, apiBase);
         } catch (Exception e) {
             System.err.println("Error creating provider: " + e.getMessage());
             return 1;
@@ -104,7 +121,7 @@ public class DemoCommand extends CliCommand {
 
         // 4. 构造固定问题并调用 processDirect
         String sessionKey = "demo:agent-basic";
-        String question = "请用 2~3 句中文介绍一下 tinyclaw 的架构，并简要说明一次消息是如何从命令行流经 Agent 再返回给用户的。";
+        String question = "请用中文介绍一下 tinyclaw 的架构，并简要说明一次消息是如何从命令行流经 Agent 再返回给用户的。";
 
         System.out.println("示例问题: " + question + "\n");
         try {
@@ -132,5 +149,12 @@ public class DemoCommand extends CliCommand {
         System.out.println();
         System.out.println("示例:");
         System.out.println("  tinyclaw demo agent-basic");
+    }
+    
+    /**
+     * 解析 API Base 地址，如果配置为空则使用默认值
+     */
+    private String resolveApiBase(String configuredBase, String defaultBase) {
+        return (configuredBase != null && !configuredBase.isEmpty()) ? configuredBase : defaultBase;
     }
 }

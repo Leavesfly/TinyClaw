@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * LLM 提供商配置类
@@ -107,6 +108,46 @@ public class ProvidersConfig {
         return getAllProviders().stream()
             .filter(p -> p != null && p.isValid())
             .findFirst();
+    }
+    
+    /**
+     * 获取第一个可用的 Provider（优先 ollama，其次其他有效 provider）
+     * ollama 只需要 apiBase，其他 provider 需要 apiKey
+     * 返回 provider 的名称和配置
+     */
+    @JsonIgnore
+    public Optional<ProviderWithName> getFirstAvailableProvider() {
+        // 优先检查 ollama（本地服务）
+        if (ollama != null && ollama.isValidForLocal()) {
+            return Optional.of(new ProviderWithName("ollama", ollama));
+        }
+        
+        // 按优先级查找其他有效的 provider
+        List<ProviderWithName> providers = Arrays.asList(
+            new ProviderWithName("openrouter", openrouter),
+            new ProviderWithName("openai", openai),
+            new ProviderWithName("anthropic", anthropic),
+            new ProviderWithName("zhipu", zhipu),
+            new ProviderWithName("dashscope", dashscope),
+            new ProviderWithName("gemini", gemini)
+        );
+        
+        return providers.stream()
+            .filter(p -> p.config != null && p.config.isValid())
+            .findFirst();
+    }
+    
+    /**
+     * Provider 配置及其名称
+     */
+    public static class ProviderWithName {
+        public final String name;
+        public final ProviderConfig config;
+        
+        public ProviderWithName(String name, ProviderConfig config) {
+            this.name = name;
+            this.config = config;
+        }
     }
     
     /**

@@ -16,41 +16,26 @@ import java.util.function.Function;
 /**
  * 心跳服务 - 用于周期性检查和主动行动的定时任务
  * 
- * <p>HeartbeatService 提供了一个可配置的定时心跳机制，用于定期执行自定义的检查逻辑。
- * 该服务支持通过回调函数实现灵活的心跳处理，并提供了完善的启动、停止和状态管理功能。</p>
+ * HeartbeatService 提供了一个可配置的定时心跳机制，用于定期执行自定义的检查逻辑。
+ * 该服务支持通过回调函数实现灵活的心跳处理，并提供了完善的启动、停止和状态管理功能。
  * 
- * <h2>主要功能：</h2>
- * <ul>
- *   <li>可配置的执行间隔（秒级）</li>
- *   <li>支持启用/禁用开关</li>
- *   <li>线程安全的启动和停止控制</li>
- *   <li>自定义心跳回调处理函数</li>
- *   <li>自动读取和构建心跳提示信息</li>
- *   <li>完善的日志记录和错误处理</li>
- * </ul>
+ * 主要功能：
+ * - 可配置的执行间隔（秒级）
+ * - 支持启用/禁用开关
+ * - 线程安全的启动和停止控制
+ * - 自定义心跳回调处理函数
+ * - 自动读取和构建心跳提示信息
+ * - 完善的日志记录和错误处理
  * 
- * <h2>使用示例：</h2>
- * <pre>
- * // 创建心跳服务
+ * 使用示例：
  * HeartbeatService service = new HeartbeatService(
  *     "/path/to/workspace",
- *     prompt -&gt; { // 心跳回调处理
- *         // 处理心跳逻辑
- *         return "处理结果";
- *     },
+ *     prompt -> { return "处理结果"; },
  *     60,  // 每60秒执行一次
  *     true // 启用服务
  * );
- * 
- * // 启动服务
- * service.start();
- * 
- * // 停止服务
- * service.stop();
- * </pre>
- * 
- * @author TinyClaw Team
- * @version 0.1.0
+ * service.start();  // 启动服务
+ * service.stop();   // 停止服务
  */
 public class HeartbeatService {
     
@@ -97,8 +82,8 @@ public class HeartbeatService {
     /**
      * 启动心跳服务
      * 
-     * <p>该方法会创建一个守护线程来定期执行心跳检查。如果服务已经在运行，则直接返回。
-     * 如果服务被禁用，则抛出异常。</p>
+     * 该方法会创建一个守护线程来定期执行心跳检查。
+     * 如果服务已经在运行，则直接返回。如果服务被禁用，则抛出异常。
      * 
      * @throws IllegalStateException 如果服务被禁用
      * @throws Exception 如果启动过程中发生其他错误
@@ -130,7 +115,8 @@ public class HeartbeatService {
     /**
      * 停止心跳服务
      * 
-     * <p>该方法会中断心跳线程并标记服务为停止状态。如果服务未在运行，则直接返回。</p>
+     * 该方法会中断心跳线程并标记服务为停止状态。
+     * 如果服务未在运行，则直接返回。
      */
     public void stop() {
         lock.lock();
@@ -153,8 +139,8 @@ public class HeartbeatService {
     /**
      * 心跳主循环
      * 
-     * <p>该方法在独立的守护线程中运行，按照配置的间隔定期执行心跳检查。
-     * 如果线程被中断或发生异常，则会退出循环。</p>
+     * 该方法在独立的守护线程中运行，按照配置的间隔定期执行心跳检查。
+     * 如果线程被中断或发生异常，则会退出循环。
      */
     private void runLoop() {
         while (running) {
@@ -177,7 +163,8 @@ public class HeartbeatService {
     /**
      * 执行心跳检查
      * 
-     * <p>构建心跳提示信息并调用回调函数进行处理。如果回调执行失败，则记录错误日志。</p>
+     * 构建心跳提示信息并调用回调函数进行处理。
+     * 如果回调执行失败，则记录错误日志。
      */
     private void checkHeartbeat() {
         // 检查服务状态
@@ -202,8 +189,8 @@ public class HeartbeatService {
     /**
      * 构建心跳提示信息
      * 
-     * <p>从工作空间的 memory/HEARTBEAT.md 文件中读取额外的上下文信息，
-     * 并结合当前时间构建完整的心跳提示字符串。</p>
+     * 从工作空间的 memory/HEARTBEAT.md 文件中读取额外的上下文信息，
+     * 并结合当前时间构建完整的心跳提示字符串。
      * 
      * @return 构建好的心跳提示字符串
      */
@@ -240,7 +227,8 @@ public class HeartbeatService {
     /**
      * 记录日志到文件
      * 
-     * <p>将日志消息追加写入到工作空间的 memory/heartbeat.log 文件中，每条消息都带有时间戳。</p>
+     * 将日志消息追加写入到工作空间的 memory/heartbeat.log 文件中，
+     * 每条消息都带有时间戳。
      * 
      * @param message 要记录的日志消息
      */

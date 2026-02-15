@@ -56,7 +56,7 @@ public class StatusCommand extends CliCommand {
             System.out.println("工作空间: " + workspace + " ✗");
         }
         
-        System.out.println("模型: " + config.getAgents().getDefaults().getModel());
+        System.out.println("模型: " + config.getAgent().getModel());
         
         // 检查 API 密钥
         System.out.println();

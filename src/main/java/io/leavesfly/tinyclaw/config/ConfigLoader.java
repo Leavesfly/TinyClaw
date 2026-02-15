@@ -97,25 +97,25 @@ public class ConfigLoader {
         // 应用环境变量覆盖
         String envValue;
         
-        // Agents 配置
-        envValue = getEnv("TINYCLAW_AGENTS_DEFAULTS_WORKSPACE");
+        // Agent 配置
+        envValue = getEnv("TINYCLAW_AGENT_WORKSPACE");
         if (envValue != null) {
-            config.getAgents().getDefaults().setWorkspace(envValue);
+            config.getAgent().setWorkspace(envValue);
         }
         
-        envValue = getEnv("TINYCLAW_AGENTS_DEFAULTS_MODEL");
+        envValue = getEnv("TINYCLAW_AGENT_MODEL");
         if (envValue != null) {
-            config.getAgents().getDefaults().setModel(envValue);
+            config.getAgent().setModel(envValue);
         }
         
-        envValue = getEnv("TINYCLAW_AGENTS_DEFAULTS_MAX_TOKENS");
+        envValue = getEnv("TINYCLAW_AGENT_MAX_TOKENS");
         if (envValue != null) {
-            config.getAgents().getDefaults().setMaxTokens(Integer.parseInt(envValue));
+            config.getAgent().setMaxTokens(Integer.parseInt(envValue));
         }
         
-        envValue = getEnv("TINYCLAW_AGENTS_DEFAULTS_TEMPERATURE");
+        envValue = getEnv("TINYCLAW_AGENT_TEMPERATURE");
         if (envValue != null) {
-            config.getAgents().getDefaults().setTemperature(Double.parseDouble(envValue));
+            config.getAgent().setTemperature(Double.parseDouble(envValue));
         }
         
         // Channels 配置

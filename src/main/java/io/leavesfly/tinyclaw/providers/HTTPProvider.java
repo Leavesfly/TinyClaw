@@ -229,7 +229,7 @@ public class HTTPProvider implements LLMProvider {
      * 2. 根据 provider 名称获取对应的 API Key 和 API Base
      */
     public static LLMProvider createProvider(Config config) {
-        String modelName = config.getAgents().getDefaults().getModel();
+        String modelName = config.getAgent().getModel();
         
         // 精确匹配：从 models.definitions 中查找
         var modelDef = config.getModels().getDefinitions().get(modelName);

@@ -6,7 +6,7 @@ import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.ChannelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.util.StringUtils;
-import io.leavesfly.tinyclaw.voice.GroqTranscriber;
+import io.leavesfly.tinyclaw.voice.Transcriber;
 
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
@@ -58,7 +58,7 @@ public class DiscordChannel extends BaseChannel {
     
     private final ChannelsConfig.DiscordConfig config;
     private JDA jda;
-    private GroqTranscriber transcriber;
+    private Transcriber transcriber;
     
     // 音频文件扩展名
     private static final Set<String> AUDIO_EXTENSIONS = Set.of(
@@ -86,9 +86,9 @@ public class DiscordChannel extends BaseChannel {
      * 
      * 启用后，收到的音频附件会自动转录为文本。
      * 
-     * @param transcriber Groq 语音转录器实例
+     * @param transcriber 语音转录器实例（AliyunTranscriber）
      */
-    public void setTranscriber(GroqTranscriber transcriber) {
+    public void setTranscriber(Transcriber transcriber) {
         this.transcriber = transcriber;
     }
     
@@ -215,7 +215,7 @@ public class DiscordChannel extends BaseChannel {
                     String transcribedText = null;
                     if (transcriber != null && transcriber.isAvailable()) {
                         try {
-                            GroqTranscriber.TranscriptionResponse response = transcriber.transcribe(localPath);
+                            Transcriber.TranscriptionResult response = transcriber.transcribe(localPath);
                             transcribedText = response.getText();
                             logger.info("音频转录成功", Map.of(
                                 "filename", attachment.getFileName(),

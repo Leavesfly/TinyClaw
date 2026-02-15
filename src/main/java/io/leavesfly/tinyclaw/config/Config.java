@@ -8,7 +8,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
  * 这是TinyClaw系统的根配置类，聚合了所有子系统的配置信息：
  * 
  * 配置组成部分：
- * - AgentsConfig：Agent相关配置（模型、上下文窗口、迭代次数等）
+ * - AgentConfig：Agent相关配置（模型、上下文窗口、迭代次数等）
  * - ChannelsConfig：消息通道配置（Telegram、Discord、微信等）
  * - ProvidersConfig：LLM提供商配置（API密钥、端点等）
  * - GatewayConfig：网关服务配置
@@ -52,7 +52,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 public class Config {
     
     private ModelsConfig models;
-    private AgentsConfig agents;
+    private AgentConfig agent;
     private ChannelsConfig channels;
     private ProvidersConfig providers;
     private GatewayConfig gateway;
@@ -62,7 +62,7 @@ public class Config {
     public Config() {
         // 设置 defaults
         this.models = new ModelsConfig();
-        this.agents = new AgentsConfig();
+        this.agent = new AgentConfig();
         this.channels = new ChannelsConfig();
         this.providers = new ProvidersConfig();
         this.gateway = new GatewayConfig();
@@ -79,12 +79,12 @@ public class Config {
         this.models = models;
     }
     
-    public AgentsConfig getAgents() {
-        return agents;
+    public AgentConfig getAgent() {
+        return agent;
     }
     
-    public void setAgents(AgentsConfig agents) {
-        this.agents = agents;
+    public void setAgent(AgentConfig agent) {
+        this.agent = agent;
     }
     
     public ChannelsConfig getChannels() {
@@ -129,7 +129,7 @@ public class Config {
     
     @JsonIgnore
     public String getWorkspacePath() {
-        return ConfigLoader.expandHome(agents.getDefaults().getWorkspace());
+        return ConfigLoader.expandHome(agent.getWorkspace());
     }
     
     /**
@@ -195,9 +195,9 @@ public class Config {
         }
         
         // 检查工作空间路径
-        if (agents == null || agents.getDefaults() == null || 
-            agents.getDefaults().getWorkspace() == null || 
-            agents.getDefaults().getWorkspace().isEmpty()) {
+        if (agent == null || 
+            agent.getWorkspace() == null || 
+            agent.getWorkspace().isEmpty()) {
             return java.util.Optional.of("工作空间路径未配置");
         }
         
@@ -210,12 +210,12 @@ public class Config {
     public static Config defaultConfig() {
         Config config = new Config();
         
-        // Agents defaults
-        config.getAgents().getDefaults().setWorkspace("~/.tinyclaw/workspace");
-        config.getAgents().getDefaults().setModel("qwen3-max");
-        config.getAgents().getDefaults().setMaxTokens(8192);
-        config.getAgents().getDefaults().setTemperature(0.7);
-        config.getAgents().getDefaults().setMaxToolIterations(20);
+        // Agent defaults
+        config.getAgent().setWorkspace("~/.tinyclaw/workspace");
+        config.getAgent().setModel("qwen3-max");
+        config.getAgent().setMaxTokens(8192);
+        config.getAgent().setTemperature(0.7);
+        config.getAgent().setMaxToolIterations(20);
         
         // Gateway defaults
         config.getGateway().setHost("0.0.0.0");
@@ -245,27 +245,27 @@ public class Config {
         }
         
         public Builder workspace(String workspace) {
-            config.getAgents().getDefaults().setWorkspace(workspace);
+            config.getAgent().setWorkspace(workspace);
             return this;
         }
         
         public Builder model(String model) {
-            config.getAgents().getDefaults().setModel(model);
+            config.getAgent().setModel(model);
             return this;
         }
         
         public Builder maxTokens(int maxTokens) {
-            config.getAgents().getDefaults().setMaxTokens(maxTokens);
+            config.getAgent().setMaxTokens(maxTokens);
             return this;
         }
         
         public Builder temperature(double temperature) {
-            config.getAgents().getDefaults().setTemperature(temperature);
+            config.getAgent().setTemperature(temperature);
             return this;
         }
         
         public Builder maxToolIterations(int maxIterations) {
-            config.getAgents().getDefaults().setMaxToolIterations(maxIterations);
+            config.getAgent().setMaxToolIterations(maxIterations);
             return this;
         }
         
