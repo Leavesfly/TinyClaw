@@ -128,7 +128,7 @@ public class ContextBuilder {
             parts.add(skillsSection);
         }
         
-        // 内存上下文
+        // 记忆上下文
         String memoryContext = memory.getMemoryContext();
         if (StringUtils.isNotBlank(memoryContext)) {
             parts.add("# Memory\n\n" + memoryContext);

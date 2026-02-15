@@ -24,7 +24,7 @@
 - **⏰ 定时任务引擎** — 支持 Cron 表达式和固定间隔，自动执行 Agent 任务
 - **🧠 记忆与上下文** — 内置长期记忆存储和会话管理，Agent 能记住重要信息
 - **💓 心跳服务** — 定期自主思考，让 Agent 保持"活跃"
-- **🎤 语音转写** — 集成 Groq Whisper，支持 Telegram/Discord 语音消息自动转文字
+- **🎤 语音转写** — 集成阿里云 DashScope Paraformer，支持 Telegram/Discord 语音消息自动转文字
 - **🔒 安全沙箱** — 工作空间限制 + 命令黑名单，生产级安全防护（SecurityGuard）
 - **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
 - **🖥️ Web 控制台** — 内置 Web UI，可视化管理 Agent 状态和会话
@@ -240,7 +240,7 @@ tinyclaw demo agent-basic                   # 一键运行 CLI 对话演示
 | [Anthropic](https://www.anthropic.com/) | `providers.anthropic` | Claude 系列模型 |
 | [智谱 GLM](https://open.bigmodel.cn/) | `providers.zhipu` | GLM-4 系列，国内推荐 |
 | [Google Gemini](https://ai.google.dev/) | `providers.gemini` | Gemini 系列模型 |
-| [Groq](https://groq.com/) | `providers.groq` | 超快推理 + 语音转写 |
+| [Groq](https://groq.com/) | `providers.groq` | 超快推理 |
 | [vLLM](https://docs.vllm.ai/) | `providers.vllm` | 本地部署模型 |
 | [阿里云 DashScope](https://dashscope.aliyun.com/) | `providers.dashscope` | Qwen 系列模型（通义千问） |
 

@@ -215,8 +215,8 @@ class SessionTest {
         session.addMessage("user", "old");
         
         List<Message> newMessages = List.of(
-                new Message("user", "new1"),
-                new Message("assistant", "new2")
+                Message.user("new1"),
+                Message.assistant("new2")
         );
         session.setMessages(new java.util.ArrayList<>(newMessages));
         
