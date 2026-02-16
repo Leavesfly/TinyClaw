@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "enabled": true,
+    "servers": [
+      {
+        "name": "filesystem",
+        "description": "文件系统操作服务,提供文件读写、目录遍历等功能",
+        "endpoint": "http://localhost:3000/sse",
+        "apiKey": "",
+        "enabled": true,
+        "timeout": 30000
+      },
+      {
+        "name": "database",
+        "description": "数据库查询服务,支持 SQL 查询和数据操作",
+        "endpoint": "https://mcp.example.com/database/sse",
+        "apiKey": "your-api-key-here",
+        "enabled": false,
+        "timeout": 60000
+      }
+    ]
+  }
+}

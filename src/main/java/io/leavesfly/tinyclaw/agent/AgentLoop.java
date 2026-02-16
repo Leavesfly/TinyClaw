@@ -5,6 +5,7 @@ import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.mcp.MCPManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -52,6 +53,7 @@ public class AgentLoop {
     private volatile LLMExecutor llmExecutor;
     private volatile SessionSummarizer summarizer;
     private volatile LLMProvider provider;
+    private volatile MCPManager mcpManager;
     
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
@@ -95,6 +97,9 @@ public class AgentLoop {
                     "workspace", workspace
             ));
         }
+        
+        // 初始化 MCP 服务器
+        initializeMCPServers();
     }
     
     /**
@@ -171,6 +176,9 @@ public class AgentLoop {
      */
     public void stop() {
         running = false;
+        
+        // 关闭 MCP 服务器连接
+        shutdownMCPServers();
     }
     
     /**
@@ -355,5 +363,43 @@ public class AgentLoop {
         info.put("skills", contextBuilder.getSkillsInfo());
         
         return info;
+    }
+    
+    /**
+     * 初始化 MCP 服务器
+     */
+    private void initializeMCPServers() {
+        if (config.getMcpServers() != null && config.getMcpServers().isEnabled()) {
+            try {
+                mcpManager = new MCPManager(config.getMcpServers(), tools);
+                mcpManager.initialize();
+                
+                int connectedCount = mcpManager.getConnectedCount();
+                if (connectedCount > 0) {
+                    logger.info("MCP servers initialized", Map.of(
+                            "connected", connectedCount
+                    ));
+                }
+            } catch (Exception e) {
+                logger.error("Failed to initialize MCP servers", Map.of(
+                        "error", e.getMessage()
+                ));
+            }
+        }
+    }
+    
+    /**
+     * 关闭 MCP 服务器连接
+     */
+    private void shutdownMCPServers() {
+        if (mcpManager != null) {
+            try {
+                mcpManager.shutdown();
+            } catch (Exception e) {
+                logger.error("Failed to shutdown MCP servers", Map.of(
+                        "error", e.getMessage()
+                ));
+            }
+        }
     }
 }

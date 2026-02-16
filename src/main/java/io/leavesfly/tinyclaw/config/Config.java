@@ -61,6 +61,7 @@ public class Config {
     private GatewayConfig gateway;              // 网关配置
     private ToolsConfig tools;                  // 工具配置
     private SocialNetworkConfig socialNetwork;  // 社交网络配置
+    private MCPServersConfig mcpServers;        // MCP 服务器配置
     
     /**
      * 构造默认配置。
@@ -75,6 +76,7 @@ public class Config {
         this.gateway = new GatewayConfig();
         this.tools = new ToolsConfig();
         this.socialNetwork = new SocialNetworkConfig();
+        this.mcpServers = new MCPServersConfig();
     }
     
     // Getters and Setters
@@ -132,6 +134,17 @@ public class Config {
     
     public void setSocialNetwork(SocialNetworkConfig socialNetwork) {
         this.socialNetwork = socialNetwork;
+    }
+    
+    public MCPServersConfig getMcpServers() {
+        if (mcpServers == null) {
+            mcpServers = new MCPServersConfig();
+        }
+        return mcpServers;
+    }
+    
+    public void setMcpServers(MCPServersConfig mcpServers) {
+        this.mcpServers = mcpServers;
     }
     
     /**

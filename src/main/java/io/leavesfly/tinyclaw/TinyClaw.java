@@ -46,6 +46,7 @@ public class TinyClaw {
         COMMAND_REGISTRY.put("status", StatusCommand::new);
         COMMAND_REGISTRY.put("cron", CronCommand::new);
         COMMAND_REGISTRY.put("skills", SkillsCommand::new);
+        COMMAND_REGISTRY.put("mcp", McpCommand::new);
         COMMAND_REGISTRY.put("demo", DemoCommand::new);
     }
     
