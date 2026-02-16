@@ -19,7 +19,7 @@
 
 ### ✨ 特性一览
 
-- **🤖 多模型支持** — 接入 OpenRouter、OpenAI、Anthropic、智谱 GLM、Gemini、Groq、vLLM 等主流 LLM 提供商
+- **🤖 多模型支持** — 接入 OpenRouter、OpenAI、Anthropic、智谱 GLM、Gemini、阿里云、vLLM 等主流 LLM 提供商
 - **💬 多通道消息** — 同时连接 Telegram、Discord、WhatsApp、飞书、钉钉、QQ、MaixCam 等平台
 - **🛠️ 丰富的内置工具** — 文件读写、Shell 执行、网络搜索、网页抓取、定时任务、子代理等
 - **🧩 技能插件系统** — 通过 Markdown 定义技能，支持从 GitHub 安装，轻松扩展 Agent 能力

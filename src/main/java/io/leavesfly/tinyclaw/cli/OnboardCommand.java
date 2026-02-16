@@ -18,12 +18,14 @@ import java.util.Scanner;
  * 核心功能：
  * - 创建默认配置文件（~/.tinyclaw/config.json）
  * - 创建工作空间目录结构（workspace、memory、skills、sessions、cron）
- * - 生成模板文件（AGENTS.md、SOUL.md、USER.md、IDENTITY.md、MEMORY.md）
+ * - 生成模板文件（AGENTS.md、SOUL.md、USER.md、IDENTITY.md、PROFILE.md、MEMORY.md、HEARTBEAT.md）
  * - 提供下一步操作指引
  * 
  * 工作空间结构：
  * - workspace/：主工作目录
  *   - memory/：长期记忆和每日笔记
+ *     - MEMORY.md：长期记忆文件
+ *     - HEARTBEAT.md：心跳上下文文件
  *   - skills/：技能目录
  *   - sessions/：会话历史
  *   - cron/：定时任务配置
@@ -31,6 +33,7 @@ import java.util.Scanner;
  *   - SOUL.md：Agent 个性定义
  *   - USER.md：用户信息模板
  *   - IDENTITY.md：Agent 身份信息
+ *   - PROFILE.md：配置信息
  * 
  * 使用场景：
  * - 首次安装 TinyClaw
@@ -52,7 +55,9 @@ public class OnboardCommand extends CliCommand {
     private static final String FILE_SOUL = "SOUL.md";         // Agent 灵魂文件
     private static final String FILE_USER = "USER.md";         // 用户信息文件
     private static final String FILE_IDENTITY = "IDENTITY.md"; // 身份信息文件
+    private static final String FILE_PROFILE = "PROFILE.md";   // 配置文件
     private static final String FILE_MEMORY = "MEMORY.md";     // 记忆文件
+    private static final String FILE_HEARTBEAT = "HEARTBEAT.md"; // 心跳上下文文件
     
     @Override
     public String name() {
@@ -187,6 +192,9 @@ public class OnboardCommand extends CliCommand {
         
         // 创建记忆文件
         createMemoryFile(workspace);
+        
+        // 创建心跳上下文文件
+        createHeartbeatFile(workspace);
     }
     
     /**
@@ -201,6 +209,7 @@ public class OnboardCommand extends CliCommand {
         templates.put(FILE_SOUL, buildSoulTemplate());
         templates.put(FILE_USER, buildUserTemplate());
         templates.put(FILE_IDENTITY, buildIdentityTemplate());
+        templates.put(FILE_PROFILE, buildProfileTemplate());
         
         return templates;
     }
@@ -291,6 +300,28 @@ public class OnboardCommand extends CliCommand {
     }
     
     /**
+     * 构建 PROFILE.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildProfileTemplate() {
+        return "# 配置文件\n\n" +
+                "此文件包含 Agent 的运行配置和状态信息。\n\n" +
+                "## 系统信息\n\n" +
+                "- 启动时间：（首次启动时记录）\n" +
+                "- 工作空间：~/.tinyclaw/workspace/\n" +
+                "- 配置文件：~/.tinyclaw/config.json\n\n" +
+                "## 运行统计\n\n" +
+                "- 总会话数：0\n" +
+                "- 总任务数：0\n" +
+                "- 最后活跃时间：（自动更新）\n\n" +
+                "## 状态\n\n" +
+                "- 健康状态：正常\n" +
+                "- 活跃通道：（记录已连接的通道）\n" +
+                "- 已加载技能：（记录已加载的技能列表）\n";
+    }
+    
+    /**
      * 创建模板文件。
      * 
      * @param workspace 工作空间路径
@@ -350,6 +381,48 @@ public class OnboardCommand extends CliCommand {
                 "（需要记住的事情）\n";
     }
     
+    /**
+     * 构建 HEARTBEAT.md 模板内容。
+     * 
+     * @return 模板内容
+     */
+    private String buildHeartbeatTemplate() {
+        return "# 心跳检查\n\n" +
+                "此文件定义心跳服务的检查内容。保持简洁以降低 token 消耗。\n\n" +
+                "## 日常检查\n\n" +
+                "- 确保今日日志 memory/YYYY-MM-DD.md 存在\n" +
+                "- 检查定时任务执行状态\n\n" +
+                "## 主动行为\n\n" +
+                "- 如果发现系统异常，主动报告\n" +
+                "- 如果有未完成的重要任务，继续推进\n\n" +
+                "## 注意事项\n\n" +
+                "- 心跳内容会在每个心跳周期被读取\n" +
+                "- 保持内容简洁，避免过多 token 消耗\n" +
+                "- 定期任务应使用 cron 而非心跳\n";
+    }
+    
+    /**
+     * 创建心跳上下文文件。
+     * 
+     * @param workspace 工作空间路径
+     */
+    private void createHeartbeatFile(String workspace) {
+        Path heartbeatFile = Paths.get(workspace, DIR_MEMORY, FILE_HEARTBEAT);
+        
+        if (Files.exists(heartbeatFile)) {
+            return;
+        }
+        
+        String heartbeatContent = buildHeartbeatTemplate();
+        
+        try {
+            Files.writeString(heartbeatFile, heartbeatContent);
+            System.out.println("  已创建 " + DIR_MEMORY + "/" + FILE_HEARTBEAT);
+        } catch (IOException e) {
+            System.err.println("  创建心跳文件失败: " + e.getMessage());
+        }
+    }
+    
     @Override
     public void printHelp() {
         System.out.println(LOGO + " tinyclaw onboard - 初始化配置");
@@ -359,6 +432,7 @@ public class OnboardCommand extends CliCommand {
         System.out.println("此命令将：");
         System.out.println("  - 在 ~/.tinyclaw/config.json 创建默认配置");
         System.out.println("  - 在 ~/.tinyclaw/workspace 创建工作空间目录");
-        System.out.println("  - 创建模板文件（AGENTS.md, SOUL.md, USER.md 等）");
+        System.out.println("  - 创建模板文件（AGENTS.md, SOUL.md, USER.md, IDENTITY.md, PROFILE.md 等）");
+        System.out.println("  - 在 memory/ 目录创建 MEMORY.md 和 HEARTBEAT.md");
     }
 }
