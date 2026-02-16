@@ -123,7 +123,8 @@ public class SkillsCommand extends CliCommand {
      * 
      * @return 配置对象，加载失败返回 null
      */
-    private Config loadConfig() {
+    @Override
+    protected Config loadConfig() {
         try {
             return ConfigLoader.load(getConfigPath());
         } catch (Exception e) {
