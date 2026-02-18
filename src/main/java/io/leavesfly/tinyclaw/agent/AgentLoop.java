@@ -16,150 +16,117 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Agent 循环 - 核心 Agent 执行引擎
- * 
- * AgentLoop 是 TinyClaw 的核心执行引擎，负责协调消息处理、会话管理和 LLM 交互。
- * 具体的执行逻辑委托给专门的组件：LLMExecutor（LLM 交互）和 SessionSummarizer（会话摘要）。
- * 
- * 职责：
- * - 消息路由：处理来自不同通道的入站消息并路由到正确的处理流程
- * - 上下文构建：构建包含历史记录、摘要和技能的完整对话上下文
- * - 会话管理：维护会话状态并协调消息保存
- * - 工具注册：管理可用工具并提供注册接口
- * 
- * 工作流程：
- * 1. 从消息总线接收入站消息
- * 2. 区分系统消息和用户消息
- * 3. 构建完整对话上下文（历史 + 摘要 + 系统提示）
- * 4. 委托给 LLMExecutor 执行 LLM 迭代
- * 5. 保存对话历史
- * 6. 触发 SessionSummarizer 进行摘要（如需要）
+ * TinyClaw 核心执行引擎，协调消息路由、上下文构建、会话管理与 LLM 交互。
+ *
+ * <p>将 LLM 调用委托给 {@link LLMExecutor}，会话摘要委托给 {@link SessionSummarizer}，
+ * 自身聚焦于消息分发与生命周期管理。</p>
  */
 public class AgentLoop {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("agent");
-    
+    private static final String PROVIDER_NOT_CONFIGURED_MSG =
+            "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
+    private static final String DEFAULT_EMPTY_RESPONSE = "已完成处理但没有回复内容。";
+    private static final int LOG_PREVIEW_LENGTH = 80;
+
+    /* ---------- 不可变依赖 ---------- */
     private final MessageBus bus;
     private final String workspace;
     private final SessionManager sessions;
     private final ContextBuilder contextBuilder;
     private final ToolRegistry tools;
     private final Config config;
-    
-    // 可动态更新的组件（使用 volatile 保证可见性）
+
+    /* ---------- 可热更新组件（volatile 保证线程可见性） ---------- */
     private volatile LLMExecutor llmExecutor;
     private volatile SessionSummarizer summarizer;
     private volatile LLMProvider provider;
     private volatile MCPManager mcpManager;
-    
+
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
-    
-    // 用于保护 provider 相关组件更新的锁
+
     private final Object providerLock = new Object();
-    
-    /**
-     * 构造 AgentLoop 实例
-     */
+
+    // ==================== 构造与初始化 ====================
+
     public AgentLoop(Config config, MessageBus bus, LLMProvider provider) {
         this.bus = bus;
         this.config = config;
         this.workspace = config.getWorkspacePath();
-        
-        ensureWorkspaceExists();
-        
+
+        ensureDirectoryExists(workspace);
+
         this.tools = new ToolRegistry();
         this.sessions = new SessionManager(Paths.get(workspace, "sessions").toString());
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
-        
-        String model = config.getAgent().getModel();
-        int contextWindow = config.getAgent().getMaxTokens();
-        int maxIterations = config.getAgent().getMaxToolIterations();
-        
-        // 如果 provider 不为空，初始化执行器
+
         if (provider != null) {
-            this.provider = provider;
-            this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
-            this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
-            this.providerConfigured = true;
-            
+            applyProvider(provider);
             logger.info("Agent initialized with provider", Map.of(
-                    "model", model,
+                    "model", config.getAgent().getModel(),
                     "workspace", workspace,
-                    "max_iterations", maxIterations
-            ));
+                    "max_iterations", config.getAgent().getMaxToolIterations()));
         } else {
             logger.info("Agent initialized without provider (configuration mode)", Map.of(
-                    "workspace", workspace
-            ));
+                    "workspace", workspace));
         }
-        
-        // 初始化 MCP 服务器
+
         initializeMCPServers();
     }
-    
-    /**
-     * 设置 LLM Provider（用于动态配置）
-     */
+
+    // ==================== Provider 管理 ====================
+
+    /** 动态设置或替换 LLM Provider，线程安全。 */
     public void setProvider(LLMProvider provider) {
         if (provider == null) {
             return;
         }
-        
         synchronized (providerLock) {
-            this.provider = provider;
-            
-            String model = config.getAgent().getModel();
-            int contextWindow = config.getAgent().getMaxTokens();
-            int maxIterations = config.getAgent().getMaxToolIterations();
-            
-            this.llmExecutor = new LLMExecutor(provider, tools, sessions, model, maxIterations);
-            this.summarizer = new SessionSummarizer(sessions, provider, model, contextWindow);
-            this.providerConfigured = true;
+            applyProvider(provider);
         }
-        
         logger.info("Provider configured dynamically", Map.of(
-                "model", config.getAgent().getModel()
-        ));
+                "model", config.getAgent().getModel()));
     }
-    
-    /**
-     * 检查 Provider 是否已配置
-     */
+
     public boolean isProviderConfigured() {
         return providerConfigured;
     }
-    
-    /**
-     * 获取当前 Provider
-     */
+
     public LLMProvider getProvider() {
         return provider;
     }
-    
-    private void ensureWorkspaceExists() {
-        try {
-            Files.createDirectories(Paths.get(workspace));
-        } catch (IOException e) {
-            logger.warn("Failed to create workspace directory: " + e.getMessage());
-        }
-    }
-    
+
     /**
-     * 运行 Agent 循环（阻塞式）
+     * 将 provider 及其派生组件一次性赋值，消除构造器与 setProvider 之间的重复逻辑。
+     * 调用方需自行保证线程安全（构造器天然安全，setProvider 通过 providerLock 保护）。
      */
+    private void applyProvider(LLMProvider newProvider) {
+        this.provider = newProvider;
+        String model = config.getAgent().getModel();
+        int maxIterations = config.getAgent().getMaxToolIterations();
+        int contextWindow = config.getAgent().getMaxTokens();
+        this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, maxIterations);
+        this.summarizer = new SessionSummarizer(sessions, newProvider, model, contextWindow);
+        this.providerConfigured = true;
+    }
+
+    // ==================== 生命周期 ====================
+
+    /** 阻塞式运行 Agent 主循环，持续消费消息总线直到 {@link #stop()} 被调用。 */
     public void run() {
         running = true;
         logger.info("Agent loop started");
-        
+
         while (running) {
             try {
-                InboundMessage msg = bus.consumeInbound();
-                processMessage(msg);
+                processMessage(bus.consumeInbound());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -167,239 +134,216 @@ public class AgentLoop {
                 logger.error("Error processing message", Map.of("error", e.getMessage()));
             }
         }
-        
+
         logger.info("Agent loop stopped");
     }
-    
-    /**
-     * 停止 Agent 循环
-     */
+
     public void stop() {
         running = false;
-        
-        // 关闭 MCP 服务器连接
         shutdownMCPServers();
     }
-    
-    /**
-     * 注册一个工具
-     */
+
+    // ==================== 工具注册 ====================
+
     public void registerTool(Tool tool) {
         tools.register(tool);
         contextBuilder.setTools(tools);
     }
-    
-    /**
-     * 直接处理消息（用于 CLI 模式）
-     */
+
+    // ==================== 公开入口（CLI / 外部调用） ====================
+
+    /** 同步处理单条消息，适用于 CLI 交互模式。 */
     public String processDirect(String content, String sessionKey) throws Exception {
-        InboundMessage msg = new InboundMessage("cli", "user", "direct", content);
-        msg.setSessionKey(sessionKey);
-        return processMessage(msg);
+        InboundMessage message = new InboundMessage("cli", "user", "direct", content);
+        message.setSessionKey(sessionKey);
+        return processMessage(message);
     }
-    
-    /**
-     * 直接处理消息（流式输出，用于 CLI 模式）
-     */
-    public String processDirectStream(String content, String sessionKey, 
+
+    /** 流式处理单条消息，通过回调逐块输出，适用于 CLI 流式模式。 */
+    public String processDirectStream(String content, String sessionKey,
                                       LLMProvider.StreamCallback callback) throws Exception {
-        // 检查 Provider 是否已配置
         if (!providerConfigured) {
-            String errorMsg = "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
-            if (callback != null) {
-                callback.onChunk(errorMsg);
-            }
-            return errorMsg;
+            notifyCallback(callback, PROVIDER_NOT_CONFIGURED_MSG);
+            return PROVIDER_NOT_CONFIGURED_MSG;
         }
-        
-        String preview = StringUtils.truncate(content, 80);
-        logger.info("Processing message (stream)", Map.of(
-                "channel", "cli",
-                "session_key", sessionKey,
-                "preview", preview
-        ));
-        
-        List<Message> messages = buildContext(sessionKey, 
-                new InboundMessage("cli", "user", "direct", content));
+
+        logIncoming("cli", sessionKey, content);
+
+        InboundMessage message = new InboundMessage("cli", "user", "direct", content);
+        List<Message> messages = buildContext(sessionKey, message);
         sessions.addMessage(sessionKey, "user", content);
-        
-        String response = llmExecutor.executeStream(messages, sessionKey, callback);
-        response = ensureResponse(response);
-        
-        sessions.addMessage(sessionKey, "assistant", response);
-        sessions.save(sessions.getOrCreate(sessionKey));
-        
-        summarizer.maybeSummarize(sessionKey);
-        
+
+        String response = ensureNonBlank(
+                llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
+
+        persistAndSummarize(sessionKey, response);
         return response;
     }
-    
-    /**
-     * 处理带通道信息的消息
-     */
-    public String processDirectWithChannel(String content, String sessionKey, 
+
+    /** 处理带通道信息的消息，适用于定时任务等场景。 */
+    public String processDirectWithChannel(String content, String sessionKey,
                                            String channel, String chatId) throws Exception {
-        InboundMessage msg = new InboundMessage(channel, "cron", chatId, content);
-        msg.setSessionKey(sessionKey);
-        return processMessage(msg);
+        InboundMessage message = new InboundMessage(channel, "cron", chatId, content);
+        message.setSessionKey(sessionKey);
+        return processMessage(message);
     }
-    
-    /**
-     * 处理入站消息
-     */
+
+    // ==================== 消息分发 ====================
+
     private String processMessage(InboundMessage msg) throws Exception {
-        logMessageInfo(msg);
-        
+        logIncoming(msg);
+
         if ("system".equals(msg.getChannel())) {
             return processSystemMessage(msg);
         }
-        
         return processUserMessage(msg);
     }
-    
-    private void logMessageInfo(InboundMessage msg) {
-        String preview = StringUtils.truncate(msg.getContent(), 80);
-        logger.info("Processing message", Map.of(
-                "channel", msg.getChannel(),
-                "chat_id", msg.getChatId(),
-                "sender_id", msg.getSenderId(),
-                "session_key", msg.getSessionKey(),
-                "preview", preview
-        ));
-    }
-    
+
+    // ==================== 用户消息处理 ====================
+
     private String processUserMessage(InboundMessage msg) throws Exception {
-        // 检查 Provider 是否已配置
         if (!providerConfigured) {
-            return "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
+            return PROVIDER_NOT_CONFIGURED_MSG;
         }
-        
+
         String sessionKey = msg.getSessionKey();
-        
         List<Message> messages = buildContext(sessionKey, msg);
         sessions.addMessage(sessionKey, "user", msg.getContent());
-        
-        String response = llmExecutor.execute(messages, sessionKey);
-        response = ensureResponse(response);
-        
-        sessions.addMessage(sessionKey, "assistant", response);
-        sessions.save(sessions.getOrCreate(sessionKey));
-        
-        summarizer.maybeSummarize(sessionKey);
-        
+
+        String response = ensureNonBlank(
+                llmExecutor.execute(messages, sessionKey), DEFAULT_EMPTY_RESPONSE);
+
+        persistAndSummarize(sessionKey, response);
         return response;
     }
-    
-    private List<Message> buildContext(String sessionKey, InboundMessage msg) {
-        List<Message> history = sessions.getHistory(sessionKey);
-        String summary = sessions.getSummary(sessionKey);
-        return contextBuilder.buildMessages(
-                history, summary, msg.getContent(), msg.getChannel(), msg.getChatId()
-        );
-    }
-    
-    private String ensureResponse(String response) {
-        if (StringUtils.isBlank(response)) {
-            return "已完成处理但没有回复内容。";
-        }
-        return response;
-    }
-    
-    /**
-     * 处理系统消息
-     */
+
+    // ==================== 系统消息处理 ====================
+
     private String processSystemMessage(InboundMessage msg) throws Exception {
         logger.info("Processing system message", Map.of(
                 "sender_id", msg.getSenderId(),
-                "chat_id", msg.getChatId()
-        ));
-        
+                "chat_id", msg.getChatId()));
+
         String[] origin = parseOrigin(msg.getChatId());
         String originChannel = origin[0];
         String originChatId = origin[1];
         String sessionKey = originChannel + ":" + originChatId;
         String userMessage = "[System: " + msg.getSenderId() + "] " + msg.getContent();
-        
-        List<Message> messages = buildContext(sessionKey, 
-                new InboundMessage(originChannel, msg.getSenderId(), originChatId, userMessage));
-        
+
+        InboundMessage syntheticMessage =
+                new InboundMessage(originChannel, msg.getSenderId(), originChatId, userMessage);
+        List<Message> messages = buildContext(sessionKey, syntheticMessage);
         sessions.addMessage(sessionKey, "user", userMessage);
-        
-        String response = llmExecutor.execute(messages, sessionKey);
-        response = ensureResponse(response, "Background task completed.");
-        
+
+        String response = ensureNonBlank(
+                llmExecutor.execute(messages, sessionKey), "Background task completed.");
+
         sessions.addMessage(sessionKey, "assistant", response);
         bus.publishOutbound(new OutboundMessage(originChannel, originChatId, response));
-        
         return response;
     }
-    
-    private String[] parseOrigin(String chatId) {
-        String[] parts = chatId.split(":", 2);
-        if (parts.length == 2) {
-            return new String[]{parts[0], parts[1]};
-        }
-        return new String[]{"cli", chatId};
+
+    // ==================== 上下文与会话辅助 ====================
+
+    private List<Message> buildContext(String sessionKey, InboundMessage msg) {
+        return contextBuilder.buildMessages(
+                sessions.getHistory(sessionKey),
+                sessions.getSummary(sessionKey),
+                msg.getContent(), msg.getChannel(), msg.getChatId());
     }
-    
-    private String ensureResponse(String response, String defaultMessage) {
-        if (StringUtils.isBlank(response)) {
-            return defaultMessage;
-        }
-        return response;
+
+    /** 保存助手回复并按需触发会话摘要。 */
+    private void persistAndSummarize(String sessionKey, String response) {
+        sessions.addMessage(sessionKey, "assistant", response);
+        sessions.save(sessions.getOrCreate(sessionKey));
+        summarizer.maybeSummarize(sessionKey);
     }
-    
-    /**
-     * 获取启动信息
-     */
+
+    // ==================== 启动信息 ====================
+
     public Map<String, Object> getStartupInfo() {
-        Map<String, Object> info = new HashMap<>();
-        
-        Map<String, Object> toolsInfo = new HashMap<>();
-        toolsInfo.put("count", tools.count());
-        toolsInfo.put("names", tools.list());
-        info.put("tools", toolsInfo);
-        
-        info.put("skills", contextBuilder.getSkillsInfo());
-        
-        return info;
+        return Map.of(
+                "tools", Map.of("count", tools.count(), "names", tools.list()),
+                "skills", contextBuilder.getSkillsInfo());
     }
-    
-    /**
-     * 初始化 MCP 服务器
-     */
+
+    // ==================== MCP 服务器管理 ====================
+
     private void initializeMCPServers() {
-        if (config.getMcpServers() != null && config.getMcpServers().isEnabled()) {
-            try {
-                mcpManager = new MCPManager(config.getMcpServers(), tools);
-                mcpManager.initialize();
-                
-                int connectedCount = mcpManager.getConnectedCount();
-                if (connectedCount > 0) {
-                    logger.info("MCP servers initialized", Map.of(
-                            "connected", connectedCount
-                    ));
-                }
-            } catch (Exception e) {
-                logger.error("Failed to initialize MCP servers", Map.of(
-                        "error", e.getMessage()
-                ));
+        if (config.getMcpServers() == null || !config.getMcpServers().isEnabled()) {
+            return;
+        }
+        try {
+            mcpManager = new MCPManager(config.getMcpServers(), tools);
+            mcpManager.initialize();
+            int connectedCount = mcpManager.getConnectedCount();
+            if (connectedCount > 0) {
+                logger.info("MCP servers initialized", Map.of("connected", connectedCount));
             }
+        } catch (Exception e) {
+            logger.error("Failed to initialize MCP servers", Map.of("error", e.getMessage()));
         }
     }
-    
-    /**
-     * 关闭 MCP 服务器连接
-     */
+
     private void shutdownMCPServers() {
-        if (mcpManager != null) {
-            try {
-                mcpManager.shutdown();
-            } catch (Exception e) {
-                logger.error("Failed to shutdown MCP servers", Map.of(
-                        "error", e.getMessage()
-                ));
-            }
+        if (mcpManager == null) {
+            return;
         }
+        try {
+            mcpManager.shutdown();
+        } catch (Exception e) {
+            logger.error("Failed to shutdown MCP servers", Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ==================== 通用工具方法 ====================
+
+    private static String ensureNonBlank(String value, String fallback) {
+        return StringUtils.isBlank(value) ? fallback : value;
+    }
+
+    private static String[] parseOrigin(String chatId) {
+        String[] parts = chatId.split(":", 2);
+        return parts.length == 2
+                ? parts
+                : new String[]{"cli", chatId};
+    }
+
+    private static void ensureDirectoryExists(String path) {
+        try {
+            Files.createDirectories(Paths.get(path));
+        } catch (IOException e) {
+            logger.warn("Failed to create directory: " + path + " - " + e.getMessage());
+        }
+    }
+
+    private static void notifyCallback(LLMProvider.StreamCallback callback, String message) {
+        if (callback != null) {
+            callback.onChunk(message);
+        }
+    }
+
+    private void logIncoming(InboundMessage msg) {
+        logIncoming(msg.getChannel(), msg.getSessionKey(), msg.getContent(),
+                msg.getChatId(), msg.getSenderId());
+    }
+
+    private void logIncoming(String channel, String sessionKey, String content) {
+        logIncoming(channel, sessionKey, content, null, null);
+    }
+
+    private void logIncoming(String channel, String sessionKey, String content,
+                             String chatId, String senderId) {
+        Map<String, Object> fields = new HashMap<>();
+        fields.put("channel", channel);
+        fields.put("session_key", sessionKey);
+        fields.put("preview", StringUtils.truncate(content, LOG_PREVIEW_LENGTH));
+        if (chatId != null) {
+            fields.put("chat_id", chatId);
+        }
+        if (senderId != null) {
+            fields.put("sender_id", senderId);
+        }
+        logger.info("Processing message", fields);
     }
 }
