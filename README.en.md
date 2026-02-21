@@ -414,23 +414,25 @@ The web console port can be customized in the config file:
 
 ### 🗂️ Workspace Layout
 
-After initialization, the workspace directory structure looks like this:
+After running `tinyclaw onboard`, the workspace directory is initialized as follows:
 
 ```
 ~/.tinyclaw/workspace/
-├── AGENTS.md          # Agent behavior instructions
-├── SOUL.md            # Agent personality
-├── USER.md            # User info and preferences
-├── IDENTITY.md        # Agent identity description
-├── memory/
-│   └── MEMORY.md      # Long-term memory storage
-├── skills/            # Skill plugin directory
-├── sessions/          # Session data
+├── AGENTS.md          # Agent behavior instructions (system prompts & working rules)
+├── SOUL.md            # Agent personality and values ("soul" definition)
+├── USER.md            # User profile and preferences (communication style, goals, etc.)
+├── IDENTITY.md        # Agent identity and capability description
+├── PROFILE.md         # Runtime configuration and status information (created by onboard)
+├── memory/            # Long-term memory and daily notes
+│   ├── MEMORY.md      # Long-term memory store (important cross-session facts)
+│   └── HEARTBEAT.md   # Heartbeat check definition (what the heartbeat service should verify)
+├── skills/            # Skill plugin directory (skills defined in Markdown)
+├── sessions/          # Conversation history and context snapshots
 └── cron/
-    └── jobs.json      # Cron job persistence
+    └── jobs.json      # Cron job persistence (generated after jobs are created)
 ```
 
-You can edit these Markdown files to customize the agent's behavior, personality and memory.
+You can edit these Markdown files to customize the agent's behavior, personality, memory and runtime profile.
 
 ---
 

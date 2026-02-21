@@ -416,23 +416,25 @@ Web 控制台端口可在配置文件中自定义：
 
 ### 🗂️ 工作空间结构
 
-初始化后，工作空间目录结构如下：
+初始化后，工作空间目录结构如下（由 `tinyclaw onboard` 自动创建）：
 
 ```
 ~/.tinyclaw/workspace/
-├── AGENTS.md          # Agent 行为指令
-├── SOUL.md            # Agent 个性定义
-├── USER.md            # 用户信息和偏好
-├── IDENTITY.md        # Agent 身份描述
-├── memory/
-│   └── MEMORY.md      # 长期记忆存储
-├── skills/            # 技能插件目录
-├── sessions/          # 会话数据
+├── AGENTS.md          # Agent 行为指令（系统提示与工作准则）
+├── SOUL.md            # Agent 个性与价值观（"灵魂设定"）
+├── USER.md            # 用户画像与偏好（沟通风格、目标等）
+├── IDENTITY.md        # Agent 身份与能力描述
+├── PROFILE.md         # 运行配置与状态信息（由 onboard 创建）
+├── memory/            # 长期记忆与日常笔记
+│   ├── MEMORY.md      # 长期记忆存储（跨会话的重要信息）
+│   └── HEARTBEAT.md   # 心跳检查配置（心跳服务要检查的内容）
+├── skills/            # 技能插件目录（Markdown 定义的技能）
+├── sessions/          # 会话历史与上下文快照
 └── cron/
-    └── jobs.json      # 定时任务持久化
+    └── jobs.json      # 定时任务持久化（创建任务后生成）
 ```
 
-你可以编辑这些 Markdown 文件来自定义 Agent 的行为、个性和记忆。
+你可以通过编辑这些 Markdown 文件来自定义 Agent 的行为、个性、记忆和运行状态。
 
 ---
 
