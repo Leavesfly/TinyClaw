@@ -212,13 +212,13 @@ public class HeartbeatService {
         
         // 构建并返回提示信息
         return String.format("""
-            # Heartbeat Check
+            # 心跳检查
             
-            Current time: %s
+            当前时间: %s
             
-            检查 if there are any tasks I should be aware of or actions I should take.
-            Review the memory file for any important updates or changes.
-            Be proactive in identifying potential issues or improvements.
+            检查是否有我需要关注的任务或需要采取的行动。
+            审查记忆文件中是否有重要的更新或变更。
+            主动识别潜在的问题或可改进之处。
             
             %s
             """, now, notes);
