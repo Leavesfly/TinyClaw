@@ -181,9 +181,9 @@ public class ContextBuilder {
      * @param skillsSummary 技能摘要内容
      */
     private void appendInstalledSkillsSummary(StringBuilder sb, String skillsSummary) {
-        sb.append("## Installed Skills\n\n");
-        sb.append("The following skills extend your capabilities. ");
-        sb.append("To use a skill, read its SKILL.md file using the read_file tool.\n\n");
+        sb.append("## 已安装技能\n\n");
+        sb.append("以下技能扩展了你的能力。");
+        sb.append("要使用某个技能，请使用 read_file 工具读取其 SKILL.md 文件。\n\n");
         sb.append(skillsSummary);
         sb.append("\n\n");
     }
@@ -194,9 +194,9 @@ public class ContextBuilder {
      * @param sb 字符串构建器
      */
     private void appendSkillSelfLearningGuide(StringBuilder sb) {
-        sb.append("## Skill Self-Learning\n\n");
-        sb.append("You have the ability to **autonomously learn and manage skills** using the `skills` tool. ");
-        sb.append("This means you are not limited to pre-installed skills — you can grow your capabilities over time.\n\n");
+        sb.append("## 技能自主学习\n\n");
+        sb.append("你有能力使用 `skills` 工具**自主学习和管理技能**。");
+        sb.append("这意味着你不局限于预安装的技能——你可以随着时间增长你的能力。\n\n");
         
         appendWhenToLearnSkills(sb);
         appendHowToManageSkills(sb);
@@ -210,11 +210,11 @@ public class ContextBuilder {
      * @param sb 字符串构建器
      */
     private void appendWhenToLearnSkills(StringBuilder sb) {
-        sb.append("### When to learn new skills\n\n");
-        sb.append("- When you encounter a task that no existing skill covers, consider **creating a new skill** to handle it.\n");
-        sb.append("- When a user mentions a community skill or a GitHub repository with useful skills, **install it** directly.\n");
-        sb.append("- When you find yourself repeatedly performing similar multi-step operations, **extract the pattern into a reusable skill**.\n");
-        sb.append("- When an existing skill could be improved based on new experience, **edit it** to make it better.\n\n");
+        sb.append("### 何时学习新技能\n\n");
+        sb.append("- 当你遇到现有技能无法覆盖的任务时，考虑**创建新技能**来处理它。\n");
+        sb.append("- 当用户提到社区技能或包含有用技能的 GitHub 仓库时，直接**安装它**。\n");
+        sb.append("- 当你发现自己重复执行类似的多步操作时，**将模式提取为可复用的技能**。\n");
+        sb.append("- 当现有技能可以根据新经验改进时，**编辑它**使其更好。\n\n");
     }
     
     /**
@@ -223,15 +223,15 @@ public class ContextBuilder {
      * @param sb 字符串构建器
      */
     private void appendHowToManageSkills(StringBuilder sb) {
-        sb.append("### How to manage skills\n\n");
-        sb.append("Use the `skills` tool with these actions:\n");
-        sb.append("- `skills(action='list')` — See all installed skills\n");
-        sb.append("- `skills(action='show', name='...')` — Read a skill's full content\n");
-        sb.append("- `skills(action='invoke', name='...')` — **Invoke a skill and get its base path** (use this for skills with scripts)\n");
-        sb.append("- `skills(action='install', repo='owner/repo')` — Install a skill from GitHub\n");
-        sb.append("- `skills(action='create', name='...', content='...', skill_description='...')` — Create a new skill from your experience\n");
-        sb.append("- `skills(action='edit', name='...', content='...')` — Improve an existing skill\n");
-        sb.append("- `skills(action='remove', name='...')` — Remove a skill you no longer need\n\n");
+        sb.append("### 如何管理技能\n\n");
+        sb.append("使用 `skills` 工具执行以下操作：\n");
+        sb.append("- `skills(action='list')` — 查看所有已安装技能\n");
+        sb.append("- `skills(action='show', name='...')` — 查看技能的完整内容\n");
+        sb.append("- `skills(action='invoke', name='...')` — **调用技能并获取其基础路径**（用于带脚本的技能）\n");
+        sb.append("- `skills(action='install', repo='owner/repo')` — 从 GitHub 安装技能\n");
+        sb.append("- `skills(action='create', name='...', content='...', skill_description='...')` — 根据经验创建新技能\n");
+        sb.append("- `skills(action='edit', name='...', content='...')` — 改进现有技能\n");
+        sb.append("- `skills(action='remove', name='...')` — 删除不再需要的技能\n\n");
     }
     
     /**
@@ -240,14 +240,14 @@ public class ContextBuilder {
      * @param sb 字符串构建器
      */
     private void appendInvokingSkillsWithScripts(StringBuilder sb) {
-        sb.append("### Invoking skills with scripts\n\n");
-        sb.append("When a skill contains executable scripts (like Python files), use `invoke` instead of `show`:\n");
-        sb.append("1. Call `skills(action='invoke', name='skill-name')` to get the skill's base path and instructions\n");
-        sb.append("2. The response includes a `<base-path>` that points to the skill's directory\n");
-        sb.append("3. Execute scripts using the base path, e.g.: `exec(command='python3 {base-path}/script.py arg1')\n\n");
-        sb.append("Example workflow for a skill with scripts:\n");
+        sb.append("### 调用带脚本的技能\n\n");
+        sb.append("当技能包含可执行脚本（如 Python 文件）时，使用 `invoke` 而非 `show`：\n");
+        sb.append("1. 调用 `skills(action='invoke', name='技能名')` 获取技能的基础路径和指令\n");
+        sb.append("2. 响应中包含指向技能目录的 `<base-path>`\n");
+        sb.append("3. 使用基础路径执行脚本，例如：`exec(command='python3 {base-path}/script.py 参数1')`\n\n");
+        sb.append("带脚本技能的示例工作流：\n");
         sb.append("```\n");
-        sb.append("1. skills(action='invoke', name='pptx')  → Get base path: /path/to/skills/pptx/\n");
+        sb.append("1. skills(action='invoke', name='pptx')  → 获取基础路径: /path/to/skills/pptx/\n");
         sb.append("2. exec(command='python3 /path/to/skills/pptx/create_pptx.py output.pptx')\n");
         sb.append("```\n\n");
     }
@@ -258,15 +258,15 @@ public class ContextBuilder {
      * @param sb 字符串构建器
      */
     private void appendCreatingLearnableSkills(StringBuilder sb) {
-        sb.append("### Creating learnable skills\n\n");
-        sb.append("When creating a skill, write it as a **Markdown instruction manual** with YAML frontmatter. A good skill should include:\n");
-        sb.append("1. Clear description of what the skill does\n");
-        sb.append("2. Step-by-step instructions for execution\n");
-        sb.append("3. (Optional) Where to find and install dependencies or related community skills\n");
-        sb.append("4. Examples of when and how to use the skill\n\n");
+        sb.append("### 创建可学习技能\n\n");
+        sb.append("创建技能时，将其编写为带有 YAML frontmatter 的 **Markdown 指令手册**。好的技能应包含：\n");
+        sb.append("1. 清晰描述技能的功能\n");
+        sb.append("2. 逐步执行的指令\n");
+        sb.append("3. （可选）在哪里找到和安装依赖或相关社区技能\n");
+        sb.append("4. 何时以及如何使用该技能的示例\n\n");
         
-        sb.append("Skills you create are saved to `").append(Paths.get(workspace).toAbsolutePath())
-                .append("/skills/` and will be automatically available in future conversations.\n");
+        sb.append("你创建的技能保存在 `").append(Paths.get(workspace).toAbsolutePath())
+                .append("/skills/`，将在未来的对话中自动可用。\n");
     }
     
     /**
