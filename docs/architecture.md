@@ -410,6 +410,26 @@ LLM 选择调用 social_network 工具
 工具返回结果 → 作为上下文再次交给 LLM 生成最终回复
 ```
 
+### 4.6 心跳机制时序
+
+```text
+HeartbeatService 守护线程
+  │
+  ├─ 每 intervalSeconds 秒唤醒
+  ▼
+buildPrompt 读取 workspace/memory/HEARTBEAT.md + 当前时间
+  │
+  ▼
+onHeartbeat 回调（GatewayBootstrap 注入）
+  │
+  └─ AgentLoop.processDirect(prompt, HEARTBEAT_SESSION_KEY)
+      │
+      ├─ SessionManager.getOrCreate(心跳会话)
+      ├─ ContextBuilder.buildMessages(...)
+      ├─ LLMExecutor.execute(含工具迭代)
+      └─ （可选）通过工具执行自检 / 整理 / 通知等操作
+```
+
 ---
 
 ## 五、工作空间与配置结构
