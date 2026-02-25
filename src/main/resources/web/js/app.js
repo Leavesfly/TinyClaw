@@ -210,8 +210,14 @@ class TinyClawConsole {
             const response = await fetch('/api/sessions');
             const sessions = await response.json();
             
-            // 只显示 web: 开头的会话
-            const webSessions = sessions.filter(s => s.key.startsWith('web:'));
+            // 只显示 web: 开头的会话，按时间戳降序排列（最新的在最上面）
+            const webSessions = sessions
+                .filter(s => s.key.startsWith('web:'))
+                .sort((a, b) => {
+                    const tsA = parseInt(a.key.substring(4)) || 0;
+                    const tsB = parseInt(b.key.substring(4)) || 0;
+                    return tsB - tsA;
+                });
             
             const historyDiv = document.getElementById('chatHistory');
             if (webSessions.length === 0) {
@@ -312,7 +318,9 @@ class TinyClawConsole {
         
         const contentDiv = assistantDiv.querySelector('.message-content');
         let fullResponse = '';
-        let isFirstDataLine = true;
+        // 跟踪同一个 SSE 消息内是否已有 data: 行
+        // SSE 协议：同一消息内多个 data: 行之间用 \n 分隔，消息之间用 \n\n（空行）分隔
+        let dataLineCountInCurrentMessage = 0;
 
         try {
             // 使用流式 API
@@ -336,28 +344,23 @@ class TinyClawConsole {
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6);
                         if (data === '[DONE]') {
-                            // 流结束
                             break;
                         } else if (data.startsWith('[ERROR]')) {
                             fullResponse += data.slice(8);
-                            isFirstDataLine = false;
                         } else {
-                            // SSE 协议中，多行内容被拆分为多个 data: 行
-                            // 非首行需要还原换行符
-                            if (!isFirstDataLine && data === '') {
-                                // 空的 data: 行表示原始内容中的换行
+                            // 同一 SSE 消息内的第 2+ 个 data: 行，需要还原换行符
+                            if (dataLineCountInCurrentMessage > 0) {
                                 fullResponse += '\n';
-                            } else {
-                                if (!isFirstDataLine) {
-                                    fullResponse += '\n';
-                                }
-                                fullResponse += data;
-                                isFirstDataLine = false;
                             }
+                            fullResponse += data;
                         }
+                        dataLineCountInCurrentMessage++;
                         // 流式过程中使用 escapeHtml 并将换行转为 <br> 显示
                         contentDiv.innerHTML = this.escapeHtml(fullResponse).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
                         messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } else if (line === '') {
+                        // 空行表示当前 SSE 消息结束，重置计数器
+                        dataLineCountInCurrentMessage = 0;
                     }
                 }
             }
