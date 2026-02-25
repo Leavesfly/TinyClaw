@@ -111,10 +111,10 @@ public class GatewayCommand extends CliCommand {
         MessageBus bus = new MessageBus();
         AgentLoop agentLoop = new AgentLoop(config, bus, provider);
         
-        // 打印 Agent 状态和注册工具
+        // 注册工具，再打印 Agent 状态
         if (providerConfigured) {
-            printAgentStatus(agentLoop);
             registerTools(agentLoop, config, bus, provider);
+            printAgentStatus(agentLoop);
         }
         
         return new AgentContext(agentLoop, bus, providerConfigured);

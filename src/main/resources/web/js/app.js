@@ -312,6 +312,7 @@ class TinyClawConsole {
         
         const contentDiv = assistantDiv.querySelector('.message-content');
         let fullResponse = '';
+        let isFirstDataLine = true;
 
         try {
             // 使用流式 API
@@ -339,11 +340,23 @@ class TinyClawConsole {
                             break;
                         } else if (data.startsWith('[ERROR]')) {
                             fullResponse += data.slice(8);
+                            isFirstDataLine = false;
                         } else {
-                            fullResponse += data;
+                            // SSE 协议中，多行内容被拆分为多个 data: 行
+                            // 非首行需要还原换行符
+                            if (!isFirstDataLine && data === '') {
+                                // 空的 data: 行表示原始内容中的换行
+                                fullResponse += '\n';
+                            } else {
+                                if (!isFirstDataLine) {
+                                    fullResponse += '\n';
+                                }
+                                fullResponse += data;
+                                isFirstDataLine = false;
+                            }
                         }
-                        // 更新显示内容
-                        contentDiv.innerHTML = this.escapeHtml(fullResponse) + '<span class="streaming-cursor"></span>';
+                        // 流式过程中使用 escapeHtml 并将换行转为 <br> 显示
+                        contentDiv.innerHTML = this.escapeHtml(fullResponse).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
                         messagesDiv.scrollTop = messagesDiv.scrollHeight;
                     }
                 }
