@@ -296,7 +296,7 @@ public class OnboardCommand extends CliCommand {
                 "- Shell 命令执行\n" +
                 "- 多通道消息传递（Telegram、Discord、WhatsApp）\n" +
                 "- 基于技能的可扩展性\n" +
-                "- 内存和上下文管理\n";
+                "- 记忆和上下文管理\n";
     }
     
     /**
