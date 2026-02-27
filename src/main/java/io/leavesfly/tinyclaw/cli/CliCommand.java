@@ -242,8 +242,8 @@ public abstract class CliCommand {
         }, bus);
         agentLoop.registerTool(cronTool);
         
-        // 子代理工具
-        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus);
+        // 子代理工具（传入 ToolRegistry 以支持工具调用和 Agent Loop）
+        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentLoop.getToolRegistry());
         agentLoop.registerTool(new SpawnTool(subagentManager));
         
         // 技能管理工具

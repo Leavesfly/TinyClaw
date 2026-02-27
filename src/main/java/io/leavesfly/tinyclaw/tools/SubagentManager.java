@@ -1,12 +1,14 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.agent.LLMExecutor;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
-import io.leavesfly.tinyclaw.providers.LLMResponse;
 import io.leavesfly.tinyclaw.providers.Message;
+import io.leavesfly.tinyclaw.session.SessionManager;
 
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,10 +31,15 @@ public class SubagentManager {
     // 清理间隔（10分钟）
     private static final long CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
     
+    private static final int DEFAULT_MAX_ITERATIONS = 10;
+    
     private final Map<String, SubagentTask> tasks = new ConcurrentHashMap<>();
     private final LLMProvider provider;
     private final MessageBus bus;
     private final String workspace;
+    private final ToolRegistry tools;
+    private final String model;
+    private final int maxIterations;
     private final AtomicInteger nextId = new AtomicInteger(1);
     private final ExecutorService executor;
     private volatile long lastCleanup = System.currentTimeMillis();
@@ -78,10 +85,14 @@ public class SubagentManager {
         public void setCreated(long created) { this.created = created; }
     }
     
-    public SubagentManager(LLMProvider provider, String workspace, MessageBus bus) {
+    public SubagentManager(LLMProvider provider, String workspace, MessageBus bus,
+                           ToolRegistry tools, String model, int maxIterations) {
         this.provider = provider;
         this.workspace = workspace;
         this.bus = bus;
+        this.tools = tools;
+        this.model = model;
+        this.maxIterations = maxIterations > 0 ? maxIterations : DEFAULT_MAX_ITERATIONS;
         // 使用线程池管理子代理任务
         this.executor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r);
@@ -89,6 +100,13 @@ public class SubagentManager {
             t.setName("subagent-pool-" + t.getId());
             return t;
         });
+    }
+    
+    /**
+     * 便捷构造器，使用默认配置
+     */
+    public SubagentManager(LLMProvider provider, String workspace, MessageBus bus, ToolRegistry tools) {
+        this(provider, workspace, bus, tools, provider.getDefaultModel(), DEFAULT_MAX_ITERATIONS);
     }
     
     /**
@@ -132,16 +150,29 @@ public class SubagentManager {
         
         // 为子代理构建消息
         List<Message> messages = new ArrayList<>();
-        messages.add(new Message("system", "你是一个子代理。独立完成给定的任务并报告结果。"));
+        messages.add(new Message("system", 
+                "你是一个子代理。独立完成给定的任务并报告结果。" +
+                "你可以使用提供的工具来完成任务。" +
+                "完成后，用简洁明了的方式汇报结果。"));
         messages.add(new Message("user", task.getTask()));
         
+        // 为子代理创建独立的会话管理器
+        String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
+        SessionManager subagentSessions = new SessionManager(subagentSessionPath);
+        String sessionKey = "subagent:" + task.getId();
+        
         try {
-            LLMResponse response = provider.chat(messages, null, provider.getDefaultModel(), Map.of(
-                    "max_tokens", 4096
-            ));
+            // 使用 LLMExecutor 实现完整的工具调用和循环能力
+            LLMExecutor executor = new LLMExecutor(provider, tools, subagentSessions, model, maxIterations);
+            String result = executor.execute(messages, sessionKey);
             
             task.setStatus("completed");
-            task.setResult(response.getContent());
+            task.setResult(result != null ? result : "任务已完成但无返回内容");
+            
+            logger.info("Subagent task completed", Map.of(
+                    "task_id", task.getId(),
+                    "result_length", task.getResult().length()
+            ));
         } catch (Exception e) {
             task.setStatus("failed");
             task.setResult("错误: " + e.getMessage());

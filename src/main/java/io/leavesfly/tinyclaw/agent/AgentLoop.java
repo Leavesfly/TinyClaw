@@ -149,6 +149,11 @@ public class AgentLoop {
         tools.register(tool);
         contextBuilder.setTools(tools);
     }
+    
+    /** 获取工具注册表，供外部组件（如 SubagentManager）使用 */
+    public ToolRegistry getToolRegistry() {
+        return tools;
+    }
 
     // ==================== 公开入口（CLI / 外部调用） ====================
 
