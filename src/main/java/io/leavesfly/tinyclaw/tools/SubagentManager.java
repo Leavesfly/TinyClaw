@@ -110,7 +110,77 @@ public class SubagentManager {
     }
     
     /**
-     * 生成一个新的子代理任务
+     * 同步生成子代理并等待执行完成，返回子代理的实际执行结果。
+     * 这是 "subagent as tool" 的核心方法：主 Agent 阻塞等待子 Agent 完成，
+     * 结果作为 tool_result 直接返回给主 Agent 的推理循环。
+     */
+    public String spawnAndWait(String task, String label) {
+        maybeCleanupOldTasks();
+
+        String taskId = "subagent-" + nextId.getAndIncrement();
+
+        SubagentTask subagentTask = new SubagentTask();
+        subagentTask.setId(taskId);
+        subagentTask.setTask(task);
+        subagentTask.setLabel(label != null ? label : "");
+        subagentTask.setOriginChannel("internal");
+        subagentTask.setOriginChatId("sync");
+        subagentTask.setStatus("running");
+        subagentTask.setCreated(System.currentTimeMillis());
+
+        tasks.put(taskId, subagentTask);
+
+        logger.info("Spawned sync subagent", Map.of(
+                "task_id", taskId,
+                "label", label != null ? label : "",
+                "task_preview", task.length() > 50 ? task.substring(0, 50) + "..." : task
+        ));
+
+        // 同步执行，阻塞当前线程直到子 Agent 完成
+        runTaskSync(subagentTask);
+
+        return subagentTask.getResult();
+    }
+
+    /**
+     * 同步执行子代理任务（不通过 MessageBus 回传，直接将结果写入 task 对象）。
+     */
+    private void runTaskSync(SubagentTask task) {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message("system",
+                "你是一个子代理。独立完成给定的任务并报告结果。" +
+                "你可以使用提供的工具来完成任务。" +
+                "完成后，用简洁明了的方式汇报结果。"));
+        messages.add(new Message("user", task.getTask()));
+
+        String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
+        SessionManager subagentSessions = new SessionManager(subagentSessionPath);
+        String sessionKey = "subagent:" + task.getId();
+
+        try {
+            LLMExecutor llmExecutor = new LLMExecutor(provider, tools, subagentSessions, model, maxIterations);
+            String result = llmExecutor.execute(messages, sessionKey);
+
+            task.setStatus("completed");
+            task.setResult(result != null ? result : "任务已完成但无返回内容");
+
+            logger.info("Sync subagent task completed", Map.of(
+                    "task_id", task.getId(),
+                    "result_length", task.getResult().length()
+            ));
+        } catch (Exception e) {
+            task.setStatus("failed");
+            task.setResult("子代理执行失败: " + e.getMessage());
+            logger.error("Sync subagent task failed", Map.of(
+                    "task_id", task.getId(),
+                    "error", e.getMessage()
+            ));
+        }
+    }
+
+    /**
+     * 异步生成一个新的子代理任务（fire-and-forget 模式）。
+     * 子代理在后台线程中运行，完成后通过 MessageBus 通知主 Agent。
      */
     public String spawn(String task, String label, String originChannel, String originChatId) {
         // 定期清理过期任务

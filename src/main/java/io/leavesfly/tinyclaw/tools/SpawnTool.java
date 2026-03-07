@@ -5,7 +5,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 子代理生成工具 - 生成子代理处理后台任务
+ * 子代理生成工具 - 支持同步（subagent as tool）和异步（fire-and-forget）两种模式。
+ * 
+ * 默认同步模式：子代理执行完毕后将实际结果作为 tool_result 返回给主 Agent，
+ * 主 Agent 可基于结果继续推理。
+ * 
+ * 异步模式（async=true）：子代理在后台运行，立即返回确认信息，
+ * 完成后通过 MessageBus 通知主 Agent。
  */
 public class SpawnTool implements Tool {
     
@@ -24,9 +30,9 @@ public class SpawnTool implements Tool {
     
     @Override
     public String description() {
-        return "生成一个子代理在后台处理任务。" +
-               "用于复杂或耗时的任务，可以独立运行。" +
-               "子代理将完成任务并在完成时报告。";
+        return "生成一个子代理处理任务。" +
+               "默认同步执行：子代理完成后直接返回结果，适合需要基于结果继续推理的场景。" +
+               "设置 async=true 可切换为异步模式：子代理在后台运行，完成后通知，适合耗时的后台任务。";
     }
     
     @Override
@@ -45,6 +51,11 @@ public class SpawnTool implements Tool {
         label.put("type", "string");
         label.put("description", "任务的可选简短标签（用于显示）");
         properties.put("label", label);
+        
+        Map<String, Object> async = new HashMap<>();
+        async.put("type", "boolean");
+        async.put("description", "是否异步执行。默认 false（同步，等待子代理完成并返回结果）。设为 true 则在后台运行，立即返回确认信息。");
+        properties.put("async", async);
         
         params.put("properties", properties);
         params.put("required", List.of("task"));
@@ -73,6 +84,14 @@ public class SpawnTool implements Tool {
             return "错误: 子代理管理器未配置";
         }
         
-        return manager.spawn(task, label, originChannel, originChatId);
+        boolean async = Boolean.TRUE.equals(args.get("async"));
+        
+        if (async) {
+            // 异步模式：后台运行，立即返回确认信息
+            return manager.spawn(task, label, originChannel, originChatId);
+        }
+        
+        // 同步模式（默认）：阻塞等待子代理完成，返回实际结果
+        return manager.spawnAndWait(task, label);
     }
 }
