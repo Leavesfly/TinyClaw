@@ -11,6 +11,7 @@ public class AgentConfig {
 
     private String workspace;
     private String model;
+    private String provider;
     private int maxTokens;
     private double temperature;
     private int maxToolIterations;
@@ -21,6 +22,7 @@ public class AgentConfig {
     public AgentConfig() {
         this.workspace = "~/.tinyclaw/workspace";
         this.model = "qwen3-max";
+        this.provider = "dashscope";
         this.maxTokens = 8192;
         this.temperature = 0.7;
         this.maxToolIterations = 20;
@@ -43,6 +45,14 @@ public class AgentConfig {
 
     public void setModel(String model) {
         this.model = model;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String provider) {
+        this.provider = provider;
     }
 
     public int getMaxTokens() {

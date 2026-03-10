@@ -591,7 +591,7 @@ class TinyClawConsole {
         // 更新分页信息
         document.getElementById('totalSessions').textContent = filteredSessions.length;
         document.getElementById('currentPage').textContent = totalPages > 0 ? currentPage : 0;
-        document.getElementById('paginationInfo').textContent = `${Math.min(start + 1, filteredSessions.length)} / ${filteredSessions.length}`;
+        document.getElementById('paginationInfo').textContent = `${totalPages > 0 ? currentPage : 0} / ${totalPages}`;
         
         // 更新翻页按钮状态
         document.getElementById('prevPage').disabled = currentPage <= 1;
@@ -829,8 +829,6 @@ class TinyClawConsole {
         // 绑定事件
         document.getElementById('saveFileBtn').onclick = () => this.saveCurrentFile();
         document.getElementById('refreshFilesBtn').onclick = () => this.loadWorkspaceFiles();
-        document.getElementById('uploadFileBtn').onclick = () => this.showUploadModal();
-        document.getElementById('downloadFileBtn').onclick = () => this.downloadCurrentFile();
     }
     
     formatFileSize(bytes) {

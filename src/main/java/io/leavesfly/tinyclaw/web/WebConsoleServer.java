@@ -1149,8 +1149,11 @@ public class WebConsoleServer {
             if ("/api/config/model".equals(path) && "GET".equals(method)) {
                 ObjectNode result = objectMapper.createObjectNode();
                 result.put("model", config.getAgent().getModel());
-                // 获取当前配置的 provider
-                String currentProvider = getCurrentProvider();
+                // 优先返回配置中保存的 provider，如果没有保存则推断
+                String savedProvider = config.getAgent().getProvider();
+                String currentProvider = (savedProvider != null && !savedProvider.isEmpty()) 
+                    ? savedProvider 
+                    : getCurrentProvider();
                 result.put("provider", currentProvider);
                 sendJson(exchange, 200, result);
             } else if ("/api/config/model".equals(path) && "PUT".equals(method)) {
@@ -1162,8 +1165,7 @@ public class WebConsoleServer {
                 }
                 if (json.has("provider")) {
                     String provider = json.path("provider").asText();
-                    // 将 provider 信息存储到配置中（可选：我们可以通过模型名称推断，或存储明确的 provider）
-                    // 这里我们暂时不存储 provider，而是通过 API key 来推断
+                    config.getAgent().setProvider(provider);
                 }
                 saveConfig();
                 sendJson(exchange, 200, successJson("Model updated"));

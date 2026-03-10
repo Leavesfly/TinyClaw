@@ -25,8 +25,6 @@
         <okhttp.version>4.12.0</okhttp.version>
         <logback.version>1.5.0</logback.version>
         <jline.version>3.25.0</jline.version>
-        <jda.version>5.0.0-beta.20</jda.version>
-        <telegram.version>6.8.0</telegram.version>
         <junit.version>5.10.0</junit.version>
     </properties>
 
@@ -84,33 +82,6 @@
             <version>${jline.version}</version>
         </dependency>
 
-        <!-- Telegram Bot -->
-        <dependency>
-            <groupId>org.telegram</groupId>
-            <artifactId>telegrambots</artifactId>
-            <version>6.8.0</version>
-        </dependency>
-
-        <!-- Discord Bot -->
-        <dependency>
-            <groupId>net.dv8tion</groupId>
-            <artifactId>JDA</artifactId>
-            <version>${jda.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>club.minnced</groupId>
-                    <artifactId>opus-java</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-
-        <!-- WebSocket -->
-        <dependency>
-            <groupId>org.java-websocket</groupId>
-            <artifactId>Java-WebSocket</artifactId>
-            <version>1.5.5</version>
-        </dependency>
-
         <!-- Cron Expression -->
         <dependency>
             <groupId>com.cronutils</groupId>
@@ -123,27 +94,6 @@
             <groupId>io.github.cdimascio</groupId>
             <artifactId>dotenv-java</artifactId>
             <version>3.0.0</version>
-        </dependency>
-
-        <!-- Feishu SDK -->
-        <dependency>
-            <groupId>com.larksuite.oapi</groupId>
-            <artifactId>oapi-sdk</artifactId>
-            <version>2.3.0</version>
-        </dependency>
-
-        <!-- DingTalk SDK -->
-        <dependency>
-            <groupId>com.aliyun</groupId>
-            <artifactId>dingtalk</artifactId>
-            <version>2.0.14</version>
-        </dependency>
-
-        <!-- QR Code for WhatsApp -->
-        <dependency>
-            <groupId>com.google.zxing</groupId>
-            <artifactId>core</artifactId>
-            <version>3.5.2</version>
         </dependency>
 
         <!-- Testing -->
