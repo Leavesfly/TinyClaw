@@ -32,6 +32,7 @@ public class SecurityGuard {
     private final String workspace;
     private final boolean restrictToWorkspace;
     private final List<Pattern> commandBlacklist;
+    private final List<Path> protectedPaths;
     
     /**
      * 构造函数 - 使用默认命令黑名单
@@ -43,11 +44,13 @@ public class SecurityGuard {
         this.workspace = normalizeWorkspacePath(workspace);
         this.restrictToWorkspace = restrictToWorkspace;
         this.commandBlacklist = buildDefaultCommandBlacklist();
+        this.protectedPaths = buildDefaultProtectedPaths();
         
         logger.info("SecurityGuard initialized", Map.of(
             "workspace", this.workspace,
             "restrictToWorkspace", restrictToWorkspace,
-            "blacklistRules", commandBlacklist.size()
+            "blacklistRules", commandBlacklist.size(),
+            "protectedPaths", protectedPaths.size()
         ));
     }
     
@@ -62,11 +65,13 @@ public class SecurityGuard {
         this.workspace = normalizeWorkspacePath(workspace);
         this.restrictToWorkspace = restrictToWorkspace;
         this.commandBlacklist = buildCommandBlacklist(customBlacklist);
+        this.protectedPaths = buildDefaultProtectedPaths();
         
         logger.info("SecurityGuard initialized with custom blacklist", Map.of(
             "workspace", this.workspace,
             "restrictToWorkspace", restrictToWorkspace,
-            "blacklistRules", commandBlacklist.size()
+            "blacklistRules", commandBlacklist.size(),
+            "protectedPaths", protectedPaths.size()
         ));
     }
     
@@ -77,10 +82,6 @@ public class SecurityGuard {
      * @return 如果被阻止则返回错误消息，允许则返回 null
      */
     public String checkFilePath(String filePath) {
-        if (!restrictToWorkspace) {
-            return null; // 无限制
-        }
-        
         if (filePath == null || filePath.isEmpty()) {
             return "File path is required";
         }
@@ -88,6 +89,17 @@ public class SecurityGuard {
         try {
             // 解析为绝对路径
             Path absPath = Paths.get(filePath).toAbsolutePath().normalize();
+            
+            // 始终检查受保护文件（无论是否启用 workspace 限制）
+            String protectedError = checkProtectedPath(absPath, filePath);
+            if (protectedError != null) {
+                return protectedError;
+            }
+            
+            if (!restrictToWorkspace) {
+                return null; // 无 workspace 限制，且不是受保护文件，放行
+            }
+            
             Path workspacePath = Paths.get(workspace).toAbsolutePath().normalize();
             
             // 检查路径是否在工作空间内
@@ -172,6 +184,43 @@ public class SecurityGuard {
     }
     
     /**
+     * 检查路径是否命中受保护文件列表
+     * 
+     * @param absPath 已规范化的绝对路径
+     * @param originalPath 原始路径（用于日志）
+     * @return 如果命中受保护文件则返回错误消息，否则返回 null
+     */
+    private String checkProtectedPath(Path absPath, String originalPath) {
+        for (Path protectedPath : protectedPaths) {
+            if (absPath.equals(protectedPath)) {
+                logger.warn("File path blocked (protected sensitive file)", Map.of(
+                    "path", originalPath,
+                    "resolved", absPath.toString(),
+                    "protectedPath", protectedPath.toString()
+                ));
+                return String.format(
+                    "Access denied: '%s' is a protected sensitive file and cannot be read or modified",
+                    originalPath
+                );
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * 构建默认受保护文件路径列表
+     * 
+     * 这些文件包含敏感信息（如 API Key），即使在 workspace 内也禁止模型访问。
+     */
+    private List<Path> buildDefaultProtectedPaths() {
+        String home = System.getProperty("user.home");
+        List<Path> paths = new ArrayList<>();
+        paths.add(Paths.get(home, ".tinyclaw", "config.json").toAbsolutePath().normalize());
+        paths.add(Paths.get(home, ".tinyclaw", ".env").toAbsolutePath().normalize());
+        return paths;
+    }
+    
+    /**
      * 规范化工作空间路径
      */
     private String normalizeWorkspacePath(String path) {
@@ -230,7 +279,11 @@ public class SecurityGuard {
             "\\bexport\\s+LD_PRELOAD\\b",
             
             // 内核模块操作
-            "\\b(insmod|rmmod|modprobe)\\b"
+            "\\b(insmod|rmmod|modprobe)\\b",
+            
+            // 受保护的敏感配置文件（防止通过 shell 命令访问）
+            "\\.tinyclaw[/\\\\]config\\.json",
+            "\\.tinyclaw[/\\\\]\\.env"
         );
         
         return buildCommandBlacklist(defaultPatterns);
