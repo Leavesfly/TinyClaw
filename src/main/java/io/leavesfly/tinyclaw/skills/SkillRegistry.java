@@ -64,7 +64,8 @@ public class SkillRegistry {
     /**
      * 获取内置的默认技能市场源列表
      * 
-     * 这些是经过审核的可信技能仓库，用户可以安全地从中搜索和安装技能。
+     * 这些是经过审核的、在 GitHub 上真实存在的可信技能仓库，
+     * 用户可以安全地从中搜索和安装技能。
      * 
      * @return 默认技能市场源列表
      */
@@ -78,21 +79,27 @@ public class SkillRegistry {
         ));
 
         registries.add(new SkillRegistry(
-                "TinyClaw Community",
-                "tinyclaw-community/awesome-skills",
-                "社区精选技能，经过审核的高质量技能"
+                "VoltAgent Skills",
+                "VoltAgent/awesome-agent-skills",
+                "500+ agent skills，兼容 Claude Code / Codex / Gemini CLI 等多平台"
         ));
 
         registries.add(new SkillRegistry(
-                "Claude Code Skills",
-                "jasonkneen/claude-code-skills",
-                "Claude Code 社区技能集合，兼容 SKILL.md 格式"
+                "Composio Skills",
+                "ComposioHQ/awesome-claude-skills",
+                "Composio 社区精选 Claude 技能集合，覆盖生产力工具"
         ));
 
         registries.add(new SkillRegistry(
-                "Anthropic Skills",
-                "anthropics/claude-code-skills",
-                "Anthropic 官方 Claude Code 技能集合"
+                "Travis Skills",
+                "travisvn/awesome-claude-skills",
+                "社区精选 Claude Skills 资源列表，包含丰富的技能和教程"
+        ));
+
+        registries.add(new SkillRegistry(
+                "Jeffallan Skills",
+                "Jeffallan/claude-skills",
+                "66+ 专业全栈开发技能，覆盖完整交付流程"
         ));
 
         return registries;

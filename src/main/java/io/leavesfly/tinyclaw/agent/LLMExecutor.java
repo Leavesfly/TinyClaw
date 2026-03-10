@@ -22,6 +22,8 @@ import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
 public class LLMExecutor {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("agent.llm");
+    private static final int MAX_EMPTY_RESPONSE_RETRIES = 2;
+    private static final String EMPTY_RESPONSE_FALLBACK = "抱歉，我暂时无法处理这个请求。请稍后重试，或尝试换一种方式描述你的需求。";
     
     private final LLMProvider provider;       // LLM 服务提供者
     private final ToolRegistry tools;         // 工具注册表
@@ -55,6 +57,7 @@ public class LLMExecutor {
     public String execute(List<Message> messages, String sessionKey) throws Exception {
         int iteration = 0;
         String finalContent = null;
+        int emptyRetries = 0;
         
         while (iteration < maxIterations) {
             iteration++;
@@ -65,12 +68,36 @@ public class LLMExecutor {
             // 没有工具调用，返回最终响应
             if (!response.hasToolCalls()) {
                 finalContent = response.getContent();
+                
+                // 空响应保护：如果内容为空且未超过重试次数，则重试
+                if (isEmptyContent(finalContent) && emptyRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+                    emptyRetries++;
+                    logger.warn("LLM returned empty response, retrying", Map.of(
+                            "iteration", iteration,
+                            "retry", emptyRetries,
+                            "max_retries", MAX_EMPTY_RESPONSE_RETRIES
+                    ));
+                    continue;
+                }
+                
+                // 重试耗尽仍为空，使用兜底提示
+                if (isEmptyContent(finalContent)) {
+                    logger.warn("LLM returned empty response after retries, using fallback", Map.of(
+                            "iteration", iteration,
+                            "retries_exhausted", emptyRetries
+                    ));
+                    finalContent = EMPTY_RESPONSE_FALLBACK;
+                }
+                
                 logger.info("LLM response without tool calls", Map.of(
                         "iteration", iteration,
-                        "content_chars", finalContent != null ? finalContent.length() : 0
+                        "content_chars", finalContent.length()
                 ));
                 break;
             }
+            
+            // 有工具调用，重置空响应重试计数
+            emptyRetries = 0;
             
             // 有工具调用，执行工具并继续迭代
             logToolCalls(response.getToolCalls(), iteration);
@@ -97,6 +124,7 @@ public class LLMExecutor {
                                LLMProvider.StreamCallback callback) throws Exception {
         int iteration = 0;
         String finalContent = null;
+        int emptyRetries = 0;
         
         while (iteration < maxIterations) {
             iteration++;
@@ -107,12 +135,39 @@ public class LLMExecutor {
             // 没有工具调用，返回最终响应
             if (!response.hasToolCalls()) {
                 finalContent = response.getContent();
+                
+                // 空响应保护：如果内容为空且未超过重试次数，则重试
+                if (isEmptyContent(finalContent) && emptyRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+                    emptyRetries++;
+                    logger.warn("LLM stream returned empty response, retrying", Map.of(
+                            "iteration", iteration,
+                            "retry", emptyRetries,
+                            "max_retries", MAX_EMPTY_RESPONSE_RETRIES
+                    ));
+                    continue;
+                }
+                
+                // 重试耗尽仍为空，使用兜底提示并通过回调通知用户
+                if (isEmptyContent(finalContent)) {
+                    logger.warn("LLM stream returned empty response after retries, using fallback", Map.of(
+                            "iteration", iteration,
+                            "retries_exhausted", emptyRetries
+                    ));
+                    finalContent = EMPTY_RESPONSE_FALLBACK;
+                    if (callback != null) {
+                        callback.onChunk(finalContent);
+                    }
+                }
+                
                 logger.info("LLM stream response without tool calls", Map.of(
                         "iteration", iteration,
-                        "content_chars", finalContent != null ? finalContent.length() : 0
+                        "content_chars", finalContent.length()
                 ));
                 break;
             }
+            
+            // 有工具调用，重置空响应重试计数
+            emptyRetries = 0;
             
             // 有工具调用，执行工具并继续迭代
             logToolCalls(response.getToolCalls(), iteration);
@@ -251,5 +306,15 @@ public class LLMExecutor {
         } catch (Exception e) {
             return "Error: " + e.getMessage();
         }
+    }
+    
+    /**
+     * 判断 LLM 响应内容是否为空。
+     * 
+     * @param content 响应内容
+     * @return 内容为 null 或空白字符串时返回 true
+     */
+    private boolean isEmptyContent(String content) {
+        return content == null || content.trim().isEmpty();
     }
 }

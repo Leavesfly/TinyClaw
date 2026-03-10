@@ -56,6 +56,7 @@ public class SkillsSearcher {
     private final String githubToken;
     private final boolean allowGlobalSearch;
     private final List<SkillRegistry> registries;
+    private volatile boolean lastSearchRateLimited = false;
 
     /**
      * 创建技能搜索器（使用默认配置）
@@ -145,11 +146,20 @@ public class SkillsSearcher {
 
         int limit = maxResults > 0 && maxResults <= 10 ? maxResults : DEFAULT_MAX_RESULTS;
         List<SkillSearchResult> results = new ArrayList<>();
+        boolean rateLimited = false;
 
         // 阶段 1：从可信技能市场搜索
         for (SkillRegistry registry : registries) {
             if (!registry.isEnabled() || results.size() >= limit) {
                 break;
+            }
+
+            // 如果已经检测到限流，跳过后续 registry 源，避免浪费请求
+            if (rateLimited) {
+                logger.info("Skipping registry due to rate limit", Map.of(
+                        "registry", registry.getName()
+                ));
+                continue;
             }
 
             try {
@@ -165,6 +175,12 @@ public class SkillsSearcher {
                         "query", query,
                         "results", registryResults.size()
                 ));
+            } catch (GitHubRateLimitException e) {
+                rateLimited = true;
+                logger.warn("GitHub API rate limit hit, skipping remaining registries", Map.of(
+                        "registry", registry.getName(),
+                        "error", e.getMessage()
+                ));
             } catch (Exception e) {
                 logger.warn("Registry search failed", Map.of(
                         "registry", registry.getName(),
@@ -173,13 +189,12 @@ public class SkillsSearcher {
             }
         }
 
-        // 阶段 2：如果启用了全网搜索且结果不足，降级到 GitHub 全网搜索
-        if (allowGlobalSearch && results.size() < limit) {
+        // 阶段 2：如果启用了全网搜索且结果不足且未限流，降级到 GitHub 全网搜索
+        if (allowGlobalSearch && results.size() < limit && !rateLimited) {
             try {
                 List<SkillSearchResult> globalResults = searchGitHubGlobal(query, limit - results.size());
                 for (SkillSearchResult globalResult : globalResults) {
                     if (results.stream().noneMatch(r -> r.getFullName().equals(globalResult.getFullName()))) {
-                        // 标记为来自全网搜索（未经审核）
                         globalResult.setTrusted(false);
                         results.add(globalResult);
                     }
@@ -188,6 +203,9 @@ public class SkillsSearcher {
                         "query", query,
                         "additional_results", globalResults.size()
                 ));
+            } catch (GitHubRateLimitException e) {
+                rateLimited = true;
+                logger.warn("GitHub API rate limit hit during global search", Map.of("error", e.getMessage()));
             } catch (Exception e) {
                 logger.warn("Global GitHub search failed", Map.of("error", e.getMessage()));
             }
@@ -196,6 +214,13 @@ public class SkillsSearcher {
         // 限制最终结果数量
         if (results.size() > limit) {
             results = new ArrayList<>(results.subList(0, limit));
+        }
+
+        // 如果因限流导致无结果，设置标记以便 formatResults 给出准确提示
+        if (results.isEmpty() && rateLimited) {
+            this.lastSearchRateLimited = true;
+        } else {
+            this.lastSearchRateLimited = false;
         }
 
         return results;
@@ -226,12 +251,21 @@ public class SkillsSearcher {
     }
 
     /**
+     * GitHub API 速率限制异常
+     */
+    private static class GitHubRateLimitException extends Exception {
+        public GitHubRateLimitException(String message) {
+            super(message);
+        }
+    }
+
+    /**
      * 从 registry.json 索引文件搜索
      * 
      * 加载可信仓库根目录下的 registry.json 文件，解析其中的技能列表，
      * 并按关键词匹配返回结果。
      */
-    private List<SkillSearchResult> searchFromRegistryIndex(SkillRegistry registry, String query, int limit) {
+    private List<SkillSearchResult> searchFromRegistryIndex(SkillRegistry registry, String query, int limit) throws GitHubRateLimitException {
         List<SkillSearchResult> results = new ArrayList<>();
 
         try {
@@ -272,6 +306,8 @@ public class SkillsSearcher {
                     }
                 }
             }
+        } catch (GitHubRateLimitException e) {
+            throw e;
         } catch (Exception e) {
             // registry.json 不存在或解析失败，忽略
             logger.debug("No registry.json found for " + registry.getRepo() + ": " + e.getMessage());
@@ -285,9 +321,11 @@ public class SkillsSearcher {
      * 
      * 当仓库没有 registry.json 时，直接通过 GitHub Contents API
      * 列出仓库根目录下的子目录，检查每个子目录是否包含 SKILL.md。
-     * 然后按关键词匹配目录名和 README 内容。
+     * 匹配策略：
+     * 1. 先按目录名匹配关键词（快速匹配）
+     * 2. 目录名不匹配时，尝试读取 SKILL.md 内容做关键词匹配（深度匹配）
      */
-    private List<SkillSearchResult> searchFromRepoDirectory(SkillRegistry registry, String query, int limit) {
+    private List<SkillSearchResult> searchFromRepoDirectory(SkillRegistry registry, String query, int limit) throws GitHubRateLimitException {
         List<SkillSearchResult> results = new ArrayList<>();
 
         try {
@@ -315,7 +353,7 @@ public class SkillsSearcher {
                     continue;
                 }
 
-                // 检查目录名是否匹配关键词
+                // 阶段1：检查目录名是否匹配任一关键词（快速匹配）
                 boolean nameMatches = false;
                 for (String keyword : keywords) {
                     if (dirName.toLowerCase().contains(keyword)) {
@@ -325,26 +363,108 @@ public class SkillsSearcher {
                 }
 
                 if (nameMatches) {
-                    // 验证该子目录是否包含 SKILL.md
+                    // 目录名匹配，验证是否包含 SKILL.md
                     if (verifySkillFile(registry.getRepo(), dirName)) {
-                        SkillSearchResult result = new SkillSearchResult();
-                        result.setFullName(registry.getRepo());
-                        result.setDescription(registry.getDescription() + " - " + dirName);
-                        result.setSkillSubdir(dirName);
-                        result.setSkillName(dirName);
-                        result.setHasSkillFile(true);
-                        result.setTrusted(true);
-                        result.setRegistrySource(registry.getName());
-                        result.setUrl("https://github.com/" + registry.getRepo() + "/tree/main/" + dirName);
+                        SkillSearchResult result = buildDirectoryResult(registry, dirName, null);
+                        results.add(result);
+                    }
+                } else {
+                    // 阶段2：目录名不匹配，尝试读取 SKILL.md 内容做深度匹配
+                    String skillContent = fetchSkillFileContent(registry.getRepo(), dirName);
+                    if (skillContent != null && matchesKeywords(skillContent, keywords)) {
+                        SkillSearchResult result = buildDirectoryResult(registry, dirName, skillContent);
                         results.add(result);
                     }
                 }
             }
+        } catch (GitHubRateLimitException e) {
+            throw e;
         } catch (Exception e) {
             logger.debug("Directory scan failed for " + registry.getRepo() + ": " + e.getMessage());
         }
 
         return results;
+    }
+
+    /**
+     * 构建目录扫描的搜索结果
+     */
+    private SkillSearchResult buildDirectoryResult(SkillRegistry registry, String dirName, String skillContent) {
+        SkillSearchResult result = new SkillSearchResult();
+        result.setFullName(registry.getRepo());
+        result.setSkillSubdir(dirName);
+        result.setSkillName(dirName);
+        result.setHasSkillFile(true);
+        result.setTrusted(true);
+        result.setRegistrySource(registry.getName());
+        result.setUrl("https://github.com/" + registry.getRepo() + "/tree/main/" + dirName);
+
+        // 尝试从 SKILL.md 内容中提取描述（取第一行非空非标题行）
+        if (skillContent != null) {
+            String description = extractDescriptionFromSkillContent(skillContent);
+            result.setDescription(description != null ? description : dirName);
+        } else {
+            result.setDescription(registry.getDescription() + " - " + dirName);
+        }
+
+        return result;
+    }
+
+    /**
+     * 获取 SKILL.md 文件内容
+     * 
+     * @param repoFullName 仓库全名
+     * @param subdir 子目录
+     * @return SKILL.md 的文本内容，不存在则返回 null
+     */
+    private String fetchSkillFileContent(String repoFullName, String subdir) {
+        String path = (subdir != null && !subdir.isEmpty()) ? subdir + "/SKILL.md" : "SKILL.md";
+        String url = String.format(GITHUB_CONTENTS_API, repoFullName, path);
+
+        try {
+            String responseBody = executeGitHubRequest(url);
+            JsonNode fileNode = objectMapper.readTree(responseBody);
+            String content = fileNode.path("content").asText("");
+            if (content.isEmpty()) {
+                return null;
+            }
+            String cleanContent = content.replaceAll("\\s", "");
+            return new String(Base64.getDecoder().decode(cleanContent), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 检查文本内容是否匹配任一关键词
+     */
+    private boolean matchesKeywords(String content, String[] keywords) {
+        String lowerContent = content.toLowerCase();
+        for (String keyword : keywords) {
+            if (lowerContent.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 从 SKILL.md 内容中提取描述信息
+     * 
+     * 取第一行非空、非 Markdown 标题的文本作为描述。
+     */
+    private String extractDescriptionFromSkillContent(String content) {
+        if (content == null || content.isEmpty()) {
+            return null;
+        }
+        String[] lines = content.split("\n");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !trimmed.startsWith("#") && !trimmed.startsWith("---")) {
+                return trimmed.length() > 120 ? trimmed.substring(0, 120) + "..." : trimmed;
+            }
+        }
+        return null;
     }
 
     /**
@@ -503,7 +623,18 @@ public class SkillsSearcher {
 
         try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
             if (response.code() == 403) {
-                throw new Exception("GitHub API 速率限制已达上限。请稍后重试，或配置 GitHub Token 以提高限额。");
+                String remaining = response.header("X-RateLimit-Remaining", "");
+                if ("0".equals(remaining) || (response.body() != null
+                        && response.peekBody(512).string().contains("rate limit"))) {
+                    throw new GitHubRateLimitException(
+                            "GitHub API 速率限制已达上限（未认证请求限制 60 次/小时）。"
+                            + "请在 ~/.tinyclaw/config.json 的 tools.skills.githubToken 中配置 GitHub Token 以提高至 5000 次/小时，"
+                            + "或等待限额重置后重试。");
+                }
+                throw new Exception("GitHub API 请求被拒绝: HTTP 403");
+            }
+            if (response.code() == 404) {
+                throw new Exception("GitHub 资源不存在: " + url);
             }
             if (!response.isSuccessful()) {
                 throw new Exception("GitHub API 请求失败: HTTP " + response.code());
@@ -548,13 +679,31 @@ public class SkillsSearcher {
      * @param query 原始搜索关键词
      * @return 格式化的结果字符串
      */
-    public static String formatResults(List<SkillSearchResult> results, String query) {
+    public String formatResults(List<SkillSearchResult> results, String query) {
         if (results.isEmpty()) {
-            return "未找到与 '" + query + "' 相关的技能。\n\n"
-                    + "建议：\n"
-                    + "- 尝试使用不同的关键词搜索\n"
-                    + "- 使用 `skills(action='create', ...)` 自己创建一个技能\n"
-                    + "- 手动安装已知仓库：`skills(action='install', repo='owner/repo')`";
+            StringBuilder emptyMsg = new StringBuilder();
+            emptyMsg.append("未找到与 '").append(query).append("' 相关的技能。\n\n");
+
+            if (this.lastSearchRateLimited) {
+                emptyMsg.append("⚠️ 原因：GitHub API 速率限制已耗尽\n");
+                emptyMsg.append("未认证请求限制为 60 次/小时，当前配额已用完。\n\n");
+                emptyMsg.append("解决方案：\n");
+                emptyMsg.append("- 配置 GitHub Token 以提高至 5000 次/小时（在 ~/.tinyclaw/config.json 的 tools.skills.githubToken 中设置）\n");
+                emptyMsg.append("- 等待约 1 小时后限额自动重置\n");
+                emptyMsg.append("- 手动安装已知仓库：`skills(action='install', repo='owner/repo')`\n");
+                emptyMsg.append("- 自己创建一个技能：`skills(action='create', ...)`");
+            } else {
+                emptyMsg.append("可能的原因：\n");
+                emptyMsg.append("- 关键词与技能目录名或 SKILL.md 内容不匹配，请尝试换用英文或更通用的关键词\n");
+                emptyMsg.append("- 可信市场源仓库可能暂时不可访问\n\n");
+                emptyMsg.append("建议：\n");
+                emptyMsg.append("- 尝试使用不同的关键词搜索，如：`skills(action='search', query='code review')`\n");
+                emptyMsg.append("- 配置 GitHub Token 以提高 API 速率限制（在 ~/.tinyclaw/config.json 的 tools.skills.githubToken 中设置）\n");
+                emptyMsg.append("- 启用全网搜索以扩大搜索范围（在 ~/.tinyclaw/config.json 的 tools.skills.allowGlobalSearch 设为 true）\n");
+                emptyMsg.append("- 手动安装已知仓库：`skills(action='install', repo='owner/repo')`\n");
+                emptyMsg.append("- 自己创建一个技能：`skills(action='create', ...)`");
+            }
+            return emptyMsg.toString();
         }
 
         StringBuilder sb = new StringBuilder();

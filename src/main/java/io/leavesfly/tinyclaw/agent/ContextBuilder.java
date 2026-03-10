@@ -275,9 +275,10 @@ public class ContextBuilder {
         sb.append("### 自动搜索安装技能\n\n");
         sb.append("搜索功能默认从**可信技能市场**中搜索，确保安全性。内置市场源包括：\n");
         sb.append("- TinyClaw Official（官方技能集合）\n");
-        sb.append("- TinyClaw Community（社区精选技能）\n");
-        sb.append("- Claude Code Skills（Claude Code 社区技能）\n");
-        sb.append("- Anthropic Skills（Anthropic 官方技能）\n\n");
+        sb.append("- VoltAgent Skills（500+ 多平台 agent 技能）\n");
+        sb.append("- Composio Skills（Composio 社区精选技能）\n");
+        sb.append("- Travis Skills（社区精选 Claude Skills 资源）\n");
+        sb.append("- Jeffallan Skills（66+ 专业全栈开发技能）\n\n");
         sb.append("当你遇到无法处理的任务时，推荐使用以下流程：\n");
         sb.append("1. 先用 `skills(action='search', query='描述需要的功能')` 从可信市场搜索技能\n");
         sb.append("2. 如果找到合适的，用 `skills(action='search_install', query='...')` 一键安装\n");

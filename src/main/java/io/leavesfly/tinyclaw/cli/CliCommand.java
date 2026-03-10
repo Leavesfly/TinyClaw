@@ -248,7 +248,8 @@ public abstract class CliCommand {
         agentLoop.registerTool(new SpawnTool(subagentManager));
         
         // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
-        agentLoop.registerTool(new SkillsTool(workspace, agentLoop.getSkillsLoader()));
+        agentLoop.registerTool(new SkillsTool(workspace, agentLoop.getSkillsLoader(),
+                config.getTools() != null ? config.getTools().getSkills() : null));
         
         // 社交网络工具
         if (config.getSocialNetwork() != null && config.getSocialNetwork().isEnabled()) {

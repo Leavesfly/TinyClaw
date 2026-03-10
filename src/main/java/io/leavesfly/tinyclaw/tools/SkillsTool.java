@@ -372,7 +372,7 @@ public class SkillsTool implements Tool {
         }
         response.append("\n\n");
 
-        response.append(SkillsSearcher.formatResults(results, query));
+        response.append(skillsSearcher.formatResults(results, query));
         return response.toString();
     }
 
@@ -453,7 +453,7 @@ public class SkillsTool implements Tool {
             // 如果仍然没有找到包含 SKILL.md 的仓库，返回搜索结果让用户选择
             if (selectedResult == null) {
                 return "搜索到 " + results.size() + " 个相关仓库，但未能自动确认哪个包含有效的 SKILL.md 文件。\n\n"
-                        + SkillsSearcher.formatResults(results, query) + "\n\n"
+                        + skillsSearcher.formatResults(results, query) + "\n\n"
                         + "请从上述结果中选择一个仓库，使用以下命令安装：\n"
                         + "`skills(action='install', repo='owner/repo')`";
             }
