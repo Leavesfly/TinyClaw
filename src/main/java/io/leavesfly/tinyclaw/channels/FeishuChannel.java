@@ -204,15 +204,6 @@ public class FeishuChannel extends BaseChannel {
                 senderId = "unknown";
             }
             
-            // 权限检查
-            if (!isAllowed(senderId)) {
-                logger.warn("消息被拒绝（不在允许列表）", Map.of(
-                    "sender_id", senderId,
-                    "chat_id", chatId
-                ));
-                return;
-            }
-            
             // 提取消息内容
             String content = extractMessageContent(message);
             if (content.isEmpty()) {
@@ -240,15 +231,8 @@ public class FeishuChannel extends BaseChannel {
                 "preview", StringUtils.truncate(content, 80)
             ));
             
-            // 发布到消息总线
-            InboundMessage inboundMsg = new InboundMessage(
-                "feishu",
-                senderId,
-                chatId,
-                content
-            );
-            inboundMsg.setMetadata(metadata);
-            bus.publishInbound(inboundMsg);
+            // 通过父类统一处理权限校验和消息发布
+            handleMessage(senderId, chatId, content, null, metadata);
             
         } catch (Exception e) {
             logger.error("处理飞书消息时出错", Map.of("error", e.getMessage()));

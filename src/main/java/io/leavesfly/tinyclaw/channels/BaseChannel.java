@@ -10,7 +10,7 @@ import java.util.Map;
 /**
  * 带有通用功能的基础通道实现
  *
- * <p>学习提示：实际的 Telegram/Discord/飞书 等通道都会继承 BaseChannel，
+ * <p>实际的 Telegram/Discord/飞书 等通道都会继承 BaseChannel，
  * 这里封装了日志、白名单校验和将外部消息转换为 InboundMessage 的公共逻辑，
  * 想理解“外部消息是怎样进入 MessageBus 的”，可以从各个具体通道的 handleMessage 调用链看起。</p>
  */
@@ -49,12 +49,17 @@ public abstract class BaseChannel implements Channel {
     
     /**
      * 处理传入的消息
+     *
+     * <p>统一完成权限校验、InboundMessage 构建和消息发布。
+     * 子类在完成各自平台特定的消息解析后，应调用此方法而非直接操作 bus。</p>
+     *
+     * @return 已发布的 InboundMessage；如果因权限被拒绝则返回 null
      */
-    protected void handleMessage(String senderId, String chatId, String content, 
-                                  List<String> media, Map<String, String> metadata) {
+    protected InboundMessage handleMessage(String senderId, String chatId, String content, 
+                                           List<String> media, Map<String, String> metadata) {
         if (!isAllowed(senderId)) {
             logger.debug("Message from unauthorized sender ignored", Map.of("sender_id", senderId));
-            return;
+            return null;
         }
         
         // 构建会话键：channel:chatId
@@ -63,9 +68,12 @@ public abstract class BaseChannel implements Channel {
         InboundMessage msg = new InboundMessage(name, senderId, chatId, content);
         msg.setMedia(media);
         msg.setSessionKey(sessionKey);
-        msg.setMetadata(metadata);
+        if (metadata != null) {
+            msg.setMetadata(metadata);
+        }
         
         bus.publishInbound(msg);
+        return msg;
     }
     
     protected void setRunning(boolean running) {

@@ -46,6 +46,7 @@ public class AgentLoop {
     /* ---------- 可热更新组件（volatile 保证线程可见性） ---------- */
     private volatile LLMExecutor llmExecutor;
     private volatile SessionSummarizer summarizer;
+    private volatile MemoryEvolver memoryEvolver;
     private volatile LLMProvider provider;
     private volatile MCPManager mcpManager;
 
@@ -114,7 +115,16 @@ public class AgentLoop {
         int maxIterations = config.getAgent().getMaxToolIterations();
         int contextWindow = config.getAgent().getMaxTokens();
         this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, maxIterations);
-        this.summarizer = new SessionSummarizer(sessions, newProvider, model, contextWindow);
+
+        // 创建记忆进化引擎
+        MemoryStore memoryStore = contextBuilder.getMemoryStore();
+        this.memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
+
+        // 将上下文窗口传递给 ContextBuilder，用于计算记忆 token 预算
+        contextBuilder.setContextWindow(contextWindow);
+
+        this.summarizer = new SessionSummarizer(sessions, newProvider, model, contextWindow,
+                memoryStore, memoryEvolver);
         this.providerConfigured = true;
     }
 
@@ -159,6 +169,16 @@ public class AgentLoop {
     /** 获取技能加载器实例，供外部组件（如 SkillsTool）共享以保持技能列表一致性 */
     public SkillsLoader getSkillsLoader() {
         return contextBuilder.getSkillsLoader();
+    }
+
+    /** 获取记忆存储实例，供外部组件（如工具层）调用 writeLongTerm / readToday 等能力 */
+    public MemoryStore getMemoryStore() {
+        return contextBuilder.getMemoryStore();
+    }
+
+    /** 获取记忆进化引擎，供外部组件（如心跳服务）触发记忆进化 */
+    public MemoryEvolver getMemoryEvolver() {
+        return memoryEvolver;
     }
 
     // ==================== 公开入口（CLI / 外部调用） ====================

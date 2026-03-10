@@ -196,15 +196,6 @@ public class TelegramChannel extends BaseChannel {
             senderId = user.getId() + "|" + user.getUserName();
         }
         
-        // 权限检查
-        if (!isAllowed(senderId)) {
-            logger.warn("消息被拒绝（不在允许列表）", Map.of(
-                "sender_id", senderId,
-                "chat_id", message.getChatId()
-            ));
-            return;
-        }
-        
         long chatId = message.getChatId();
         StringBuilder content = new StringBuilder();
         List<String> mediaPaths = new ArrayList<>();
@@ -299,9 +290,6 @@ public class TelegramChannel extends BaseChannel {
             "preview", StringUtils.truncate(contentStr, 50)
         ));
         
-        // 发送"正在输入"状态
-        // Note: 在完整实现中可添加 ChatAction，这里简化处理
-        
         // 构建元数据
         Map<String, String> metadata = new HashMap<>();
         metadata.put("message_id", String.valueOf(message.getMessageId()));
@@ -310,16 +298,8 @@ public class TelegramChannel extends BaseChannel {
         metadata.put("first_name", user.getFirstName());
         metadata.put("is_group", String.valueOf(!message.getChat().isUserChat()));
         
-        // 发布到消息总线
-        InboundMessage inboundMsg = new InboundMessage(
-            "telegram",
-            senderId,
-            String.valueOf(chatId),
-            contentStr
-        );
-        inboundMsg.setMedia(mediaPaths);
-        inboundMsg.setMetadata(metadata);
-        bus.publishInbound(inboundMsg);
+        // 通过父类统一处理权限校验和消息发布
+        handleMessage(senderId, String.valueOf(chatId), contentStr, mediaPaths, metadata);
     }
     
     /**

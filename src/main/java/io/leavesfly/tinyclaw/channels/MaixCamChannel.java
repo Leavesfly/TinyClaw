@@ -263,15 +263,8 @@ public class MaixCamChannel extends BaseChannel {
             "score", score
         ));
         
-        // 发布到消息总线
-        InboundMessage inboundMsg = new InboundMessage(
-            "maixcam",
-            senderId,
-            chatId,
-            content
-        );
-        inboundMsg.setMetadata(metadata);
-        bus.publishInbound(inboundMsg);
+        // 通过父类统一处理权限校验和消息发布
+        handleMessage(senderId, chatId, content, null, metadata);
     }
     
     /**

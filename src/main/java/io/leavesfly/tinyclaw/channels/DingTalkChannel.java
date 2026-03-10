@@ -160,15 +160,6 @@ public class DingTalkChannel extends BaseChannel {
                 sessionWebhooks.put(chatId, sessionWebhook);
             }
             
-            // 权限检查
-            if (!isAllowed(senderId)) {
-                logger.warn("消息被拒绝（不在允许列表）", Map.of(
-                    "sender_id", senderId,
-                    "chat_id", chatId
-                ));
-                return "{\"msgtype\":\"text\",\"text\":{\"content\":\"权限不足\"}}";
-            }
-            
             logger.info("收到钉钉消息", Map.of(
                 "sender_nick", senderNick,
                 "sender_id", senderId,
@@ -186,15 +177,11 @@ public class DingTalkChannel extends BaseChannel {
                 metadata.put("session_webhook", sessionWebhook);
             }
             
-            // 发布到消息总线
-            InboundMessage inboundMsg = new InboundMessage(
-                "dingtalk",
-                senderId,
-                chatId,
-                content
-            );
-            inboundMsg.setMetadata(metadata);
-            bus.publishInbound(inboundMsg);
+            // 通过父类统一处理权限校验和消息发布
+            InboundMessage inboundMsg = handleMessage(senderId, chatId, content, null, metadata);
+            if (inboundMsg == null) {
+                return "{\"msgtype\":\"text\",\"text\":{\"content\":\"权限不足\"}}";
+            }
             
             // 返回空响应，消息将通过消息总线异步回复
             return "{\"msgtype\":\"text\",\"text\":{\"content\":\"\"}}";

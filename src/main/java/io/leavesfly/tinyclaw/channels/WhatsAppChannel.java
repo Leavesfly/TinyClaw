@@ -157,12 +157,6 @@ public class WhatsAppChannel extends BaseChannel {
                 return;
             }
             
-            // 权限检查
-            if (!isAllowed(senderId)) {
-                logger.warn("消息被拒绝（不在允许列表）", Map.of("sender_id", senderId));
-                return;
-            }
-            
             String chatId = msg.path("chat").asText(senderId);
             String content = msg.path("content").asText("");
             
@@ -190,16 +184,8 @@ public class WhatsAppChannel extends BaseChannel {
                 "preview", StringUtils.truncate(content, 50)
             ));
             
-            // 发布到消息总线
-            InboundMessage inboundMsg = new InboundMessage(
-                "whatsapp",
-                senderId,
-                chatId,
-                content
-            );
-            inboundMsg.setMedia(mediaPaths);
-            inboundMsg.setMetadata(metadata);
-            bus.publishInbound(inboundMsg);
+            // 通过父类统一处理权限校验和消息发布
+            handleMessage(senderId, chatId, content, mediaPaths, metadata);
             
         } catch (Exception e) {
             logger.error("处理 WhatsApp 消息时出错", Map.of("error", e.getMessage()));

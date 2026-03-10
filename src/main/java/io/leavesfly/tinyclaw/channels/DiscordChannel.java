@@ -184,15 +184,6 @@ public class DiscordChannel extends BaseChannel {
             senderName += "#" + author.getDiscriminator();
         }
         
-        // 权限检查
-        if (!isAllowed(senderId)) {
-            logger.warn("消息被拒绝（不在允许列表）", Map.of(
-                "sender_id", senderId,
-                "channel_id", event.getChannel().getId()
-            ));
-            return;
-        }
-        
         StringBuilder content = new StringBuilder();
         List<String> mediaPaths = new ArrayList<>();
         
@@ -273,16 +264,8 @@ public class DiscordChannel extends BaseChannel {
         metadata.put("channel_id", event.getChannel().getId());
         metadata.put("is_dm", String.valueOf(event.getChannel() instanceof PrivateChannel));
         
-        // 发布到消息总线
-        InboundMessage inboundMsg = new InboundMessage(
-            "discord",
-            senderId,
-            event.getChannel().getId(),
-            contentStr
-        );
-        inboundMsg.setMedia(mediaPaths);
-        inboundMsg.setMetadata(metadata);
-        bus.publishInbound(inboundMsg);
+        // 通过父类统一处理权限校验和消息发布
+        handleMessage(senderId, event.getChannel().getId(), contentStr, mediaPaths, metadata);
     }
     
     /**

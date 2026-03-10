@@ -311,6 +311,9 @@ public class GatewayBootstrap {
                 workspace,
                 prompt -> {
                     try {
+                        // 在心跳周期中触发记忆进化（提炼、整合、衰减归档）
+                        triggerMemoryEvolution();
+
                         return agentLoop.processDirect(prompt, HEARTBEAT_SESSION_KEY);
                     } catch (Exception e) {
                         logger.error("Heartbeat processing error", Map.of("error", e.getMessage()));
@@ -320,6 +323,31 @@ public class GatewayBootstrap {
                 HEARTBEAT_INTERVAL_SECONDS,
                 heartbeatEnabled
         );
+    }
+
+    /**
+     * 触发记忆进化周期。
+     *
+     * 在心跳回调中异步执行，不阻塞心跳主流程。
+     * 进化过程包括：从每日笔记提炼 → 整合去重 → 衰减归档。
+     */
+    private void triggerMemoryEvolution() {
+        if (!agentLoop.isProviderConfigured()) {
+            return;
+        }
+
+        Thread evolutionThread = new Thread(() -> {
+            try {
+                var evolver = agentLoop.getMemoryEvolver();
+                if (evolver != null) {
+                    evolver.evolve();
+                }
+            } catch (Exception e) {
+                logger.error("Memory evolution failed", Map.of("error", e.getMessage()));
+            }
+        }, "memory-evolution");
+        evolutionThread.setDaemon(true);
+        evolutionThread.start();
     }
 
     /**

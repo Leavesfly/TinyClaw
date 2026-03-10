@@ -97,21 +97,43 @@ public class ContextBuilder {
         this.tools = tools;
     }
     
+    /** 上下文窗口大小，用于计算记忆 token 预算 */
+    private int contextWindow = AgentConstants.DEFAULT_MAX_TOKENS;
+    
     /**
-     * 构建系统提示词。
+     * 设置上下文窗口大小，用于动态计算记忆 token 预算。
+     *
+     * @param contextWindow 上下文窗口 token 数
+     */
+    public void setContextWindow(int contextWindow) {
+        this.contextWindow = contextWindow;
+    }
+    
+    /**
+     * 构建系统提示词（无当前消息上下文版本）。
+     * 
+     * 使用默认记忆预算，不做相关性过滤。适用于不需要消息感知的场景。
+     * 
+     * @return 完整的系统提示词字符串
+     */
+    public String buildSystemPrompt() {
+        return buildSystemPrompt(null);
+    }
+    
+    /**
+     * 构建系统提示词，支持基于当前消息的记忆相关性检索。
      * 
      * 这是上下文构建的核心方法，按照特定顺序组装各个部分：
      * 1. 身份信息：Agent 的基本身份和当前环境信息
      * 2. 引导文件：用户自定义的行为配置
      * 3. 工具部分：可用工具的简要说明
      * 4. 技能摘要：已安装技能的概述
-     * 5. 记忆上下文：长期记忆和重要信息
+     * 5. 记忆上下文：根据当前消息和 token 预算智能选取
      * 
-     * 各部分之间使用 "---" 分隔，便于 LLM 理解结构。
-     * 
+     * @param currentMessage 当前用户消息，用于记忆相关性匹配（可为 null）
      * @return 完整的系统提示词字符串
      */
-    public String buildSystemPrompt() {
+    public String buildSystemPrompt(String currentMessage) {
         List<String> parts = new ArrayList<>();
         
         // 1. 核心身份部分
@@ -126,13 +148,28 @@ public class ContextBuilder {
         // 4. 技能摘要部分
         addSectionIfNotBlank(parts, buildSkillsSection());
         
-        // 5. 记忆上下文
-        String memoryContext = memory.getMemoryContext();
+        // 5. 记忆上下文（带 token 预算控制和相关性检索）
+        int memoryBudget = calculateMemoryTokenBudget();
+        String memoryContext = memory.getMemoryContext(currentMessage, memoryBudget);
         if (StringUtils.isNotBlank(memoryContext)) {
             parts.add("# Memory\n\n" + memoryContext);
         }
         
         return String.join(SECTION_SEPARATOR, parts);
+    }
+    
+    /**
+     * 根据上下文窗口大小计算记忆 token 预算。
+     * 
+     * 预算 = 上下文窗口 × MEMORY_TOKEN_BUDGET_PERCENTAGE%，
+     * 并限制在 [MEMORY_MIN_TOKEN_BUDGET, MEMORY_MAX_TOKEN_BUDGET] 范围内。
+     * 
+     * @return 记忆 token 预算
+     */
+    private int calculateMemoryTokenBudget() {
+        int budget = contextWindow * AgentConstants.MEMORY_TOKEN_BUDGET_PERCENTAGE / 100;
+        return Math.max(AgentConstants.MEMORY_MIN_TOKEN_BUDGET,
+                Math.min(AgentConstants.MEMORY_MAX_TOKEN_BUDGET, budget));
     }
     
     /**
@@ -390,8 +427,8 @@ public class ContextBuilder {
                                         String channel, String chatId) {
         List<Message> messages = new ArrayList<>();
         
-        // 构建系统提示词
-        String systemPrompt = buildSystemPromptWithSession(channel, chatId, summary);
+        // 构建系统提示词（传入当前消息用于记忆相关性检索）
+        String systemPrompt = buildSystemPromptWithSession(currentMessage, channel, chatId, summary);
         
         logger.debug("System prompt built", Map.of(
                 "total_chars", systemPrompt.length(),
@@ -415,13 +452,14 @@ public class ContextBuilder {
     /**
      * 构建包含会话信息的系统提示词。
      * 
+     * @param currentMessage 当前用户消息（用于记忆相关性检索）
      * @param channel 通道名称
      * @param chatId 聊天 ID
      * @param summary 对话摘要
      * @return 完整的系统提示词
      */
-    private String buildSystemPromptWithSession(String channel, String chatId, String summary) {
-        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt());
+    private String buildSystemPromptWithSession(String currentMessage, String channel, String chatId, String summary) {
+        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt(currentMessage));
         
         // 添加当前会话信息
         if (StringUtils.isNotBlank(channel) && StringUtils.isNotBlank(chatId)) {
@@ -447,6 +485,15 @@ public class ContextBuilder {
      */
     public SkillsLoader getSkillsLoader() {
         return skillsLoader;
+    }
+
+    /**
+     * 获取记忆存储实例，供外部组件（如 SessionSummarizer、工具层）访问记忆读写能力。
+     *
+     * @return 记忆存储实例
+     */
+    public MemoryStore getMemoryStore() {
+        return memory;
     }
     
     /**

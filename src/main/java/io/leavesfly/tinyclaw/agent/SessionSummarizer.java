@@ -70,6 +70,8 @@ public class SessionSummarizer {
     private final String model;                 // 使用的模型
     private final int contextWindow;            // 上下文窗口大小
     private final Set<String> summarizing;      // 正在摘要的会话集合（防重复）
+    private final MemoryStore memoryStore;      // 记忆存储，用于写入每日笔记
+    private final MemoryEvolver memoryEvolver;  // 记忆进化引擎，用于从摘要中提炼记忆
     
     /**
      * 构造会话摘要器。
@@ -78,13 +80,18 @@ public class SessionSummarizer {
      * @param provider LLM 提供商
      * @param model 使用的模型
      * @param contextWindow 上下文窗口大小
+     * @param memoryStore 记忆存储（用于摘要完成后写入每日笔记）
+     * @param memoryEvolver 记忆进化引擎（用于从摘要中提炼结构化记忆）
      */
     public SessionSummarizer(SessionManager sessions, LLMProvider provider, 
-                            String model, int contextWindow) {
+                            String model, int contextWindow, MemoryStore memoryStore,
+                            MemoryEvolver memoryEvolver) {
         this.sessions = sessions;
         this.provider = provider;
         this.model = model;
         this.contextWindow = contextWindow;
+        this.memoryStore = memoryStore;
+        this.memoryEvolver = memoryEvolver;
         this.summarizing = ConcurrentHashMap.newKeySet();
     }
     
@@ -361,7 +368,16 @@ public class SessionSummarizer {
         sessions.truncateHistory(sessionKey, RECENT_MESSAGES_TO_KEEP);
         Session session = sessions.getOrCreate(sessionKey);
         sessions.save(session);
-        
+
+        // 将摘要写入每日笔记，形成可追溯的对话记录
+        String dailyNote = String.format("[%s] %s", sessionKey, summary);
+        memoryStore.appendToday(dailyNote);
+
+        // 从摘要中快速提炼结构化记忆（轻量级，不调用 LLM）
+        if (memoryEvolver != null) {
+            memoryEvolver.quickExtractFromSummary(sessionKey, summary);
+        }
+
         logger.info("Session summarized", Map.of(
                 "session_key", sessionKey,
                 "original_messages", originalSize,
