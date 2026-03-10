@@ -110,12 +110,10 @@
   </dependencies>
   <properties>
     <maven.compiler.source>17</maven.compiler.source>
-    <jda.version>5.0.0-beta.20</jda.version>
     <jackson.version>2.17.0</jackson.version>
     <jline.version>3.25.0</jline.version>
     <maven.compiler.target>17</maven.compiler.target>
     <okhttp.version>4.12.0</okhttp.version>
-    <telegram.version>6.8.0</telegram.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.10.0</junit.version>
     <logback.version>1.5.0</logback.version>
