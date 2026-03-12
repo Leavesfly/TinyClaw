@@ -203,6 +203,7 @@ public class AgentLoop {
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
         List<Message> messages = buildContext(sessionKey, message);
         sessions.addMessage(sessionKey, "user", content);
+        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
                 llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
@@ -285,6 +286,7 @@ public class AgentLoop {
         String sessionKey = msg.getSessionKey();
         List<Message> messages = buildContext(sessionKey, msg);
         sessions.addMessage(sessionKey, "user", msg.getContent());
+        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
                 llmExecutor.execute(messages, sessionKey), DEFAULT_EMPTY_RESPONSE);
@@ -323,11 +325,12 @@ public class AgentLoop {
                 new InboundMessage(originChannel, msg.getSenderId(), originChatId, userMessage);
         List<Message> messages = buildContext(sessionKey, syntheticMessage);
         sessions.addMessage(sessionKey, "user", userMessage);
+        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
                 llmExecutor.execute(messages, sessionKey), "Background task completed.");
 
-        sessions.addMessage(sessionKey, "assistant", response);
+        persistAndSummarize(sessionKey, response); // 保存 assistant 回复并触发摘要
         bus.publishOutbound(new OutboundMessage(originChannel, originChatId, response));
         return response;
     }

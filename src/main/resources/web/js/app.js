@@ -806,6 +806,7 @@ class TinyClawConsole {
     // ==================== Cron Jobs ====================
 
     async loadCronJobs() {
+        document.getElementById('addCronBtn').onclick = () => this.showAddCronModal();
         try {
             const response = await this.authFetch('/api/cron');
             const jobs = await response.json();
@@ -833,7 +834,6 @@ class TinyClawConsole {
             console.error('Failed to load cron jobs:', error);
         }
 
-        document.getElementById('addCronBtn').onclick = () => this.showAddCronModal();
     }
 
     showAddCronModal() {
