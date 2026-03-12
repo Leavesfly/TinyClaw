@@ -216,7 +216,8 @@ class TinyClawConsole {
 
         sendBtn.addEventListener('click', () => this.sendMessage());
         input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // Ctrl+Enter (Windows/Linux) 或 Cmd+Enter (Mac) 发送消息
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 this.sendMessage();
             }
