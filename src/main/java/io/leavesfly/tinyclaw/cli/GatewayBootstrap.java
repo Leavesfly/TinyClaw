@@ -108,11 +108,12 @@ public class GatewayBootstrap {
         sessionManager = new SessionManager(Paths.get(workspace, "sessions").toString());
         skillsLoader = new SkillsLoader(workspace, null, null);
 
-        // 6. 初始化 Webhook Server
+        // 6. 初始化 Webhook Server（传入通道配置用于签名校验）
         webhookServer = new WebhookServer(
                 config.getGateway().getHost(),
                 config.getGateway().getPort(),
-                channelManager
+                channelManager,
+                config.getChannels()
         );
 
         // 7. 初始化 Web Console Server

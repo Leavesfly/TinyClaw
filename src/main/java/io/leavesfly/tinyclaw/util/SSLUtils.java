@@ -53,4 +53,45 @@ public class SSLUtils {
     public static HostnameVerifier getTrustAllHostnameVerifier() {
         return (hostname, session) -> true;
     }
+    
+    /**
+     * 获取使用系统默认证书链的 SSLSocketFactory。
+     * 
+     * 推荐在访问正规 CA 签发证书的 API（如钉钉、飞书官方 API）时使用，
+     * 避免信任所有证书带来的中间人攻击风险。
+     * 
+     * @return 系统默认的 SSLSocketFactory
+     */
+    public static SSLSocketFactory getDefaultSSLSocketFactory() {
+        try {
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, null, null);
+            return sslContext.getSocketFactory();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create default SSLSocketFactory", e);
+        }
+    }
+    
+    /**
+     * 获取系统默认的 X509TrustManager。
+     * 
+     * 使用系统内置的 CA 证书库进行证书验证。
+     * 
+     * @return 系统默认的 X509TrustManager
+     */
+    public static X509TrustManager getDefaultTrustManager() {
+        try {
+            javax.net.ssl.TrustManagerFactory tmf = javax.net.ssl.TrustManagerFactory
+                    .getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init((java.security.KeyStore) null);
+            for (javax.net.ssl.TrustManager tm : tmf.getTrustManagers()) {
+                if (tm instanceof X509TrustManager) {
+                    return (X509TrustManager) tm;
+                }
+            }
+            throw new RuntimeException("No X509TrustManager found in default TrustManagerFactory");
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get default X509TrustManager", e);
+        }
+    }
 }

@@ -6,6 +6,7 @@ class TinyClawConsole {
         this.chatSessionId = 'web:default';
         this.allSessions = [];
         this.currentSessionPage = 1;
+        this.authToken = localStorage.getItem('tinyclaw_token') || null;
         this.init();
     }
 
@@ -18,7 +19,115 @@ class TinyClawConsole {
         this.bindNavigation();
         this.bindChat();
         this.bindModal();
-        this.loadInitialPage();
+        this.bindLogin();
+        this.checkAuthAndInit();
+    }
+    
+    // ==================== Authentication ====================
+    
+    bindLogin() {
+        const loginBtn = document.getElementById('loginBtn');
+        const usernameInput = document.getElementById('loginUsername');
+        const passwordInput = document.getElementById('loginPassword');
+        
+        loginBtn.addEventListener('click', () => this.doLogin());
+        
+        passwordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.doLogin();
+        });
+        usernameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') passwordInput.focus();
+        });
+    }
+    
+    async checkAuthAndInit() {
+        try {
+            const response = await this.authFetch('/api/auth/check');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.authEnabled === false) {
+                    // 认证未启用，直接进入
+                    this.hideLoginOverlay();
+                    this.loadInitialPage();
+                    return;
+                }
+                // token 有效
+                this.hideLoginOverlay();
+                this.loadInitialPage();
+            } else {
+                // 需要登录
+                this.showLoginOverlay();
+            }
+        } catch (error) {
+            // 网络错误等，尝试直接加载
+            this.hideLoginOverlay();
+            this.loadInitialPage();
+        }
+    }
+    
+    async doLogin() {
+        const username = document.getElementById('loginUsername').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        const errorDiv = document.getElementById('loginError');
+        
+        if (!username || !password) {
+            errorDiv.textContent = 'Please enter username and password';
+            errorDiv.style.display = 'block';
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.success) {
+                this.authToken = data.token;
+                localStorage.setItem('tinyclaw_token', data.token);
+                errorDiv.style.display = 'none';
+                this.hideLoginOverlay();
+                this.loadInitialPage();
+            } else {
+                errorDiv.textContent = data.error || 'Invalid username or password';
+                errorDiv.style.display = 'block';
+                document.getElementById('loginPassword').value = '';
+                document.getElementById('loginPassword').focus();
+            }
+        } catch (error) {
+            errorDiv.textContent = 'Connection failed. Please try again.';
+            errorDiv.style.display = 'block';
+        }
+    }
+    
+    showLoginOverlay() {
+        document.getElementById('loginOverlay').classList.add('active');
+        setTimeout(() => document.getElementById('loginUsername').focus(), 100);
+    }
+    
+    hideLoginOverlay() {
+        document.getElementById('loginOverlay').classList.remove('active');
+    }
+    
+    /**
+     * 带认证的 fetch 封装。自动附加 Authorization 头，
+     * 收到 401 时弹出登录弹窗。
+     */
+    async authFetch(url, options = {}) {
+        if (this.authToken) {
+            options.headers = options.headers || {};
+            options.headers['Authorization'] = 'Basic ' + this.authToken;
+        }
+        const response = await fetch(url, options);
+        if (response.status === 401) {
+            this.authToken = null;
+            localStorage.removeItem('tinyclaw_token');
+            this.showLoginOverlay();
+        }
+        return response;
     }
 
     // ==================== Navigation ====================
@@ -181,7 +290,7 @@ class TinyClawConsole {
      */
     async loadChatHistory() {
         try {
-            const response = await fetch(`/api/sessions/${encodeURIComponent(this.chatSessionId)}`);
+            const response = await this.authFetch(`/api/sessions/${encodeURIComponent(this.chatSessionId)}`);
             if (!response.ok) return;
             
             const messages = await response.json();
@@ -207,7 +316,7 @@ class TinyClawConsole {
      */
     async loadChatSessions() {
         try {
-            const response = await fetch('/api/sessions');
+            const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
             // 只显示 web: 开头的会话，按时间戳降序排列（最新的在最上面）
@@ -279,7 +388,7 @@ class TinyClawConsole {
     async deleteChatSession(key) {
         if (!confirm('Delete this chat?')) return;
         try {
-            await fetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
+            await this.authFetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
             // 如果删除的是当前会话，切换到新会话
             if (key === this.chatSessionId) {
                 this.chatSessionId = 'web:default';
@@ -324,7 +433,7 @@ class TinyClawConsole {
 
         try {
             // 使用流式 API
-            const response = await fetch('/api/chat/stream', {
+            const response = await this.authFetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message, sessionId: this.chatSessionId })
@@ -400,7 +509,7 @@ class TinyClawConsole {
 
     async loadChannels() {
         try {
-            const response = await fetch('/api/channels');
+            const response = await this.authFetch('/api/channels');
             const channels = await response.json();
             
             const grid = document.getElementById('channelsGrid');
@@ -428,7 +537,7 @@ class TinyClawConsole {
 
     async editChannel(name) {
         try {
-            const response = await fetch(`/api/channels/${name}`);
+            const response = await this.authFetch(`/api/channels/${name}`);
             const channel = await response.json();
 
             this.showModal(`Edit ${this.capitalize(name)}`, `
@@ -444,7 +553,7 @@ class TinyClawConsole {
                 const data = { enabled: document.getElementById('modalEnabled').value === 'true' };
                 this.collectChannelData(name, data);
                 
-                await fetch(`/api/channels/${name}`, {
+                await this.authFetch(`/api/channels/${name}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
@@ -506,7 +615,7 @@ class TinyClawConsole {
 
     async loadSessions() {
         try {
-            const response = await fetch('/api/sessions');
+            const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
             this.allSessions = sessions.map((s, index) => ({
@@ -660,7 +769,7 @@ class TinyClawConsole {
     
     async viewSessionDetail(key) {
         try {
-            const response = await fetch(`/api/sessions/${encodeURIComponent(key)}`);
+            const response = await this.authFetch(`/api/sessions/${encodeURIComponent(key)}`);
             const messages = await response.json();
             
             let content = `<div style="max-height: 400px; overflow-y: auto;">`;
@@ -686,7 +795,7 @@ class TinyClawConsole {
     async deleteSession(key) {
         if (!confirm('Delete this session?')) return;
         try {
-            await fetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
+            await this.authFetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
             this.loadSessions();
         } catch (error) {
             console.error('Failed to delete session:', error);
@@ -697,7 +806,7 @@ class TinyClawConsole {
 
     async loadCronJobs() {
         try {
-            const response = await fetch('/api/cron');
+            const response = await this.authFetch('/api/cron');
             const jobs = await response.json();
             
             const list = document.getElementById('cronList');
@@ -761,7 +870,7 @@ class TinyClawConsole {
             } else {
                 data.cron = document.getElementById('cronExpr').value;
             }
-            await fetch('/api/cron', {
+            await this.authFetch('/api/cron', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
@@ -776,7 +885,7 @@ class TinyClawConsole {
     }
 
     async toggleCronJob(id, enabled) {
-        await fetch(`/api/cron/${id}/enable`, {
+        await this.authFetch(`/api/cron/${id}/enable`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled })
@@ -786,7 +895,7 @@ class TinyClawConsole {
 
     async deleteCronJob(id) {
         if (!confirm('Delete this job?')) return;
-        await fetch(`/api/cron/${id}`, { method: 'DELETE' });
+        await this.authFetch(`/api/cron/${id}`, { method: 'DELETE' });
         this.loadCronJobs();
     }
 
@@ -795,11 +904,11 @@ class TinyClawConsole {
     async loadWorkspaceFiles() {
         try {
             // 获取 workspace 路径
-            const configResponse = await fetch('/api/config/agent');
+            const configResponse = await this.authFetch('/api/config/agent');
             const config = await configResponse.json();
             // workspace 路径可能在配置中，这里暂时显示默认路径
             
-            const response = await fetch('/api/workspace/files');
+            const response = await this.authFetch('/api/workspace/files');
             const files = await response.json();
             
             const list = document.getElementById('workspaceFiles');
@@ -856,7 +965,7 @@ class TinyClawConsole {
         });
 
         try {
-            const response = await fetch(`/api/workspace/files/${encodeURIComponent(name)}`);
+            const response = await this.authFetch(`/api/workspace/files/${encodeURIComponent(name)}`);
             const data = await response.json();
             
             // 显示编辑器，隐藏占位符
@@ -876,7 +985,7 @@ class TinyClawConsole {
         
         const content = document.getElementById('editorContent').value;
         try {
-            await fetch(`/api/workspace/files/${encodeURIComponent(this.currentEditingFile)}`, {
+            await this.authFetch(`/api/workspace/files/${encodeURIComponent(this.currentEditingFile)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content })
@@ -917,7 +1026,7 @@ class TinyClawConsole {
             }
             
             try {
-                await fetch(`/api/workspace/files/${encodeURIComponent(name)}`, {
+                await this.authFetch(`/api/workspace/files/${encodeURIComponent(name)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content })
@@ -949,7 +1058,7 @@ class TinyClawConsole {
 
     async loadSkills() {
         try {
-            const response = await fetch('/api/skills');
+            const response = await this.authFetch('/api/skills');
             const skills = await response.json();
             
             const grid = document.getElementById('skillsGrid');
@@ -979,7 +1088,7 @@ class TinyClawConsole {
 
     async viewSkill(name) {
         try {
-            const response = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+            const response = await this.authFetch(`/api/skills/${encodeURIComponent(name)}`);
             const skill = await response.json();
             
             this.showModal(`Skill: ${name}`, `
@@ -996,12 +1105,12 @@ class TinyClawConsole {
     async loadProviders() {
         try {
             // 加载 providers
-            const providersResponse = await fetch('/api/providers');
+            const providersResponse = await this.authFetch('/api/providers');
             const providers = await providersResponse.json();
             this.providers = providers;
             
             // 加载 models
-            const modelsResponse = await fetch('/api/models');
+            const modelsResponse = await this.authFetch('/api/models');
             const models = await modelsResponse.json();
             this.models = models;
             
@@ -1116,7 +1225,7 @@ class TinyClawConsole {
             if (apiKey) data.apiKey = apiKey;
             data.apiBase = apiBase || '';
             
-            await fetch(`/api/providers/${name}`, {
+            await this.authFetch(`/api/providers/${name}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
@@ -1128,7 +1237,7 @@ class TinyClawConsole {
 
     async loadCurrentModel() {
         try {
-            const response = await fetch('/api/config/model');
+            const response = await this.authFetch('/api/config/model');
             const data = await response.json();
             const model = data.model || '';
             const provider = data.provider || '';
@@ -1200,7 +1309,7 @@ class TinyClawConsole {
             const provider = providerSelect.value;
             const model = modelSelect.value;
             
-            await fetch('/api/config/model', {
+            await this.authFetch('/api/config/model', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model, provider })
@@ -1227,7 +1336,7 @@ class TinyClawConsole {
 
     async loadAgentConfig() {
         try {
-            const response = await fetch('/api/config/agent');
+            const response = await this.authFetch('/api/config/agent');
             const config = await response.json();
             
             document.getElementById('cfgMaxTokens').value = config.maxTokens;
@@ -1248,7 +1357,7 @@ class TinyClawConsole {
                 restrictToWorkspace: document.getElementById('cfgRestrictToWorkspace').value === 'true'
             };
             
-            await fetch('/api/config/agent', {
+            await this.authFetch('/api/config/agent', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)

@@ -81,8 +81,7 @@ public class DingTalkChannel extends BaseChannel {
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
-            .sslSocketFactory(SSLUtils.getTrustAllSSLSocketFactory(), SSLUtils.getTrustAllManager())
-            .hostnameVerifier(SSLUtils.getTrustAllHostnameVerifier())
+            .sslSocketFactory(SSLUtils.getDefaultSSLSocketFactory(), SSLUtils.getDefaultTrustManager())
             .build();
     }
     

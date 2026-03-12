@@ -70,8 +70,7 @@ public class FeishuChannel extends BaseChannel {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .sslSocketFactory(SSLUtils.getTrustAllSSLSocketFactory(), SSLUtils.getTrustAllManager())
-            .hostnameVerifier(SSLUtils.getTrustAllHostnameVerifier())
+            .sslSocketFactory(SSLUtils.getDefaultSSLSocketFactory(), SSLUtils.getDefaultTrustManager())
             .build();
     }
     

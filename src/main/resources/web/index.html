@@ -344,6 +344,29 @@
         </main>
     </div>
     
+    <!-- Login Modal -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-modal">
+            <div class="login-header">
+                <span class="login-icon">🦞</span>
+                <h2>TinyClaw Console</h2>
+                <p>Please sign in to continue</p>
+            </div>
+            <div class="login-body">
+                <div class="login-error" id="loginError" style="display: none;"></div>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" class="form-control" id="loginUsername" placeholder="Enter username" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" class="form-control" id="loginPassword" placeholder="Enter password" autocomplete="current-password">
+                </div>
+                <button class="btn btn-primary btn-block" id="loginBtn">Sign In</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal -->
     <div class="modal" id="modal">
         <div class="modal-content">

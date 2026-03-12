@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Web 控制台服务器，提供基于 HTTP 的 Web 管理界面。
@@ -124,9 +125,17 @@ public class WebConsoleServer {
     private static final String HEADER_CACHE_CONTROL = "Cache-Control";     // Cache-Control 头
     private static final String HEADER_CONNECTION = "Connection";           // Connection 头
     private static final String HEADER_CORS = "Access-Control-Allow-Origin"; // CORS 头
-    private static final String HEADER_CORS_VALUE = "*";                    // CORS 允许所有源
+    private static final String HEADER_CORS_HEADERS = "Access-Control-Allow-Headers"; // CORS 允许头
+    private static final String HEADER_CORS_METHODS = "Access-Control-Allow-Methods"; // CORS 允许方法
+    private static final String HEADER_CORS_HEADERS_VALUE = "Content-Type, Authorization"; // 允许的请求头
+    private static final String HEADER_CORS_METHODS_VALUE = "GET, POST, PUT, DELETE, OPTIONS"; // 允许的方法
+    private static final String HEADER_WWW_AUTHENTICATE = "WWW-Authenticate";  // 认证挑战头
+    private static final String HEADER_AUTHORIZATION = "Authorization";        // 认证头
+    private static final String HTTP_METHOD_OPTIONS = "OPTIONS";               // HTTP OPTIONS 方法
     private static final String HEADER_NO_CACHE = "no-cache";               // 禁用缓存
     private static final String HEADER_KEEP_ALIVE = "keep-alive";           // 保持连接
+    
+    private static final int MAX_REQUEST_BODY_SIZE = 1024 * 1024;           // 请求体最大 1MB
     
     private static final String DEFAULT_SESSION_ID = "web:default";         // 默认会话 ID
     private static final String MEMORY_SUBDIR = "memory";                   // 内存子目录
@@ -168,6 +177,10 @@ public class WebConsoleServer {
     private final CronService cronService;      // 定时任务服务
     private final SkillsLoader skillsLoader;    // 技能加载器
     private HttpServer httpServer;              // HTTP 服务器实例
+    
+    // 速率限制：滑动窗口计数器
+    private final AtomicInteger requestCount = new AtomicInteger(0);
+    private volatile long rateLimitWindowStart = System.currentTimeMillis();
     
     /**
      * 构造 Web 控制台服务器。
@@ -214,6 +227,7 @@ public class WebConsoleServer {
      * 注册所有 API 端点。
      */
     private void registerApiEndpoints() {
+        httpServer.createContext("/api/auth", this::handleAuth);
         httpServer.createContext(API_CHAT, this::handleChat);
         httpServer.createContext(API_CHANNELS, this::handleChannels);
         httpServer.createContext(API_SESSIONS, this::handleSessions);
@@ -254,6 +268,232 @@ public class WebConsoleServer {
         }
     }
     
+    // ==================== 安全拦截方法 ====================
+    
+    /**
+     * 处理认证相关 API。
+     * 
+     * - POST /api/auth/login：登录，接收 username/password，返回 token
+     * - GET /api/auth/check：检查当前 token 是否有效
+     */
+    private void handleAuth(HttpExchange exchange) throws IOException {
+        try {
+            if (handleCorsPreFlight(exchange)) return;
+            
+            String path = exchange.getRequestURI().getPath();
+            String method = exchange.getRequestMethod();
+            
+            if ("/api/auth/check".equals(path) && "GET".equals(method)) {
+                // 检查是否启用了认证
+                GatewayConfig gatewayConfig = config.getGateway();
+                if (!gatewayConfig.isAuthEnabled()) {
+                    ObjectNode result = objectMapper.createObjectNode();
+                    result.put("authenticated", true);
+                    result.put("authEnabled", false);
+                    sendJson(exchange, 200, result);
+                    return;
+                }
+                
+                // 验证 token
+                if (checkAuth(exchange)) {
+                    ObjectNode result = objectMapper.createObjectNode();
+                    result.put("authenticated", true);
+                    result.put("authEnabled", true);
+                    sendJson(exchange, 200, result);
+                }
+                // checkAuth 失败时已发送 401 响应
+                
+            } else if ("/api/auth/login".equals(path) && "POST".equals(method)) {
+                GatewayConfig gatewayConfig = config.getGateway();
+                if (!gatewayConfig.isAuthEnabled()) {
+                    ObjectNode result = objectMapper.createObjectNode();
+                    result.put("success", true);
+                    result.put("message", "Authentication not enabled");
+                    sendJson(exchange, 200, result);
+                    return;
+                }
+                
+                String body = readRequestBodyLimited(exchange);
+                JsonNode json = objectMapper.readTree(body);
+                String username = json.path("username").asText("");
+                String password = json.path("password").asText("");
+                
+                if (gatewayConfig.getUsername().equals(username) 
+                        && gatewayConfig.getPassword().equals(password)) {
+                    String token = Base64.getEncoder().encodeToString(
+                            (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                    ObjectNode result = objectMapper.createObjectNode();
+                    result.put("success", true);
+                    result.put("token", token);
+                    sendJson(exchange, 200, result);
+                } else {
+                    logger.warn("Login failed", Map.of("username", username));
+                    sendJson(exchange, 401, errorJson("Invalid username or password"));
+                }
+                
+            } else {
+                sendJson(exchange, 404, errorJson("Not Found"));
+            }
+        } catch (Exception e) {
+            logger.error("Auth handler error", Map.of("error", e.getMessage()));
+            sendJson(exchange, 500, errorJson("Internal error"));
+        }
+    }
+    
+    /**
+     * 检查请求的 Basic Auth 认证。
+     * 
+     * 认证失败返回 401 JSON 响应（不触发浏览器原生弹窗）。
+     * 
+     * @param exchange HTTP 交换对象
+     * @return true 表示认证通过（或未启用认证），false 表示认证失败（已发送 401 响应）
+     */
+    private boolean checkAuth(HttpExchange exchange) throws IOException {
+        GatewayConfig gatewayConfig = config.getGateway();
+        if (!gatewayConfig.isAuthEnabled()) {
+            return true;
+        }
+        
+        String authHeader = exchange.getRequestHeaders().getFirst(HEADER_AUTHORIZATION);
+        if (authHeader == null || !authHeader.startsWith("Basic ")) {
+            sendAuthChallenge(exchange);
+            return false;
+        }
+        
+        String base64Credentials = authHeader.substring("Basic ".length());
+        String credentials;
+        try {
+            credentials = new String(Base64.getDecoder().decode(base64Credentials), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            sendAuthChallenge(exchange);
+            return false;
+        }
+        
+        int colonIndex = credentials.indexOf(':');
+        if (colonIndex < 0) {
+            sendAuthChallenge(exchange);
+            return false;
+        }
+        
+        String inputUsername = credentials.substring(0, colonIndex);
+        String inputPassword = credentials.substring(colonIndex + 1);
+        
+        if (gatewayConfig.getUsername().equals(inputUsername)
+                && gatewayConfig.getPassword().equals(inputPassword)) {
+            return true;
+        }
+        
+        logger.warn("Authentication failed", Map.of("username", inputUsername));
+        sendAuthChallenge(exchange);
+        return false;
+    }
+    
+    /**
+     * 发送 401 认证失败响应（不带 WWW-Authenticate 头，避免触发浏览器原生弹窗）。
+     */
+    private void sendAuthChallenge(HttpExchange exchange) throws IOException {
+        sendJson(exchange, 401, errorJson("Authentication required"));
+    }
+    
+    /**
+     * 检查请求速率限制。
+     * 
+     * 使用每分钟滑动窗口计数器。如果 rateLimitPerMinute <= 0 则不限制。
+     * 
+     * @param exchange HTTP 交换对象
+     * @return true 表示未超限，false 表示已超限（已发送 429 响应）
+     */
+    private boolean checkRateLimit(HttpExchange exchange) throws IOException {
+        GatewayConfig gatewayConfig = config.getGateway();
+        if (!gatewayConfig.isRateLimitEnabled()) {
+            return true;
+        }
+        
+        long now = System.currentTimeMillis();
+        long windowStart = rateLimitWindowStart;
+        
+        if (now - windowStart >= 60_000) {
+            rateLimitWindowStart = now;
+            requestCount.set(0);
+        }
+        
+        int currentCount = requestCount.incrementAndGet();
+        if (currentCount > gatewayConfig.getRateLimitPerMinute()) {
+            logger.warn("Rate limit exceeded", Map.of(
+                    "count", currentCount,
+                    "limit", gatewayConfig.getRateLimitPerMinute()));
+            sendJson(exchange, 429, errorJson("Rate limit exceeded. Try again later."));
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * 处理 CORS 预检请求（OPTIONS）。
+     * 
+     * @param exchange HTTP 交换对象
+     * @return true 表示是 OPTIONS 请求且已处理，false 表示不是 OPTIONS 请求
+     */
+    private boolean handleCorsPreFlight(HttpExchange exchange) throws IOException {
+        if (HTTP_METHOD_OPTIONS.equals(exchange.getRequestMethod())) {
+            String corsOrigin = config.getGateway().getCorsOrigin();
+            exchange.getResponseHeaders().set(HEADER_CORS, corsOrigin);
+            exchange.getResponseHeaders().set(HEADER_CORS_HEADERS, HEADER_CORS_HEADERS_VALUE);
+            exchange.getResponseHeaders().set(HEADER_CORS_METHODS, HEADER_CORS_METHODS_VALUE);
+            exchange.sendResponseHeaders(204, -1);
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * 统一的 API 请求前置检查：CORS 预检 → 认证 → 速率限制。
+     * 
+     * @param exchange HTTP 交换对象
+     * @return true 表示所有检查通过，false 表示已拦截（已发送响应）
+     */
+    private boolean preCheck(HttpExchange exchange) throws IOException {
+        if (handleCorsPreFlight(exchange)) {
+            return false;
+        }
+        if (!checkAuth(exchange)) {
+            return false;
+        }
+        if (!checkRateLimit(exchange)) {
+            return false;
+        }
+        return true;
+    }
+    
+    /**
+     * 读取请求体内容（带大小限制）。
+     * 
+     * 限制最大读取 1MB，超出返回 413 Payload Too Large。
+     * 
+     * @param exchange HTTP 交换对象
+     * @return 请求体字符串
+     * @throws IOException 如果读取失败或超出大小限制
+     */
+    private String readRequestBodyLimited(HttpExchange exchange) throws IOException {
+        try (InputStream is = exchange.getRequestBody()) {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int totalRead = 0;
+            int bytesRead;
+            while ((bytesRead = is.read(chunk)) != -1) {
+                totalRead += bytesRead;
+                if (totalRead > MAX_REQUEST_BODY_SIZE) {
+                    throw new IOException("Request body too large (max " + MAX_REQUEST_BODY_SIZE + " bytes)");
+                }
+                buffer.write(chunk, 0, bytesRead);
+            }
+            return buffer.toString(StandardCharsets.UTF_8);
+        }
+    }
+    
+    // ==================== API Handler 方法 ====================
+    
     /**
      * 处理聊天 API 请求。
      * 
@@ -265,6 +505,7 @@ public class WebConsoleServer {
      * @throws IOException 如果处理失败
      */
     private void handleChat(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -289,7 +530,7 @@ public class WebConsoleServer {
      * @throws IOException 如果处理失败
      */
     private void handleChatNormal(HttpExchange exchange) throws IOException {
-        String body = readRequestBody(exchange);
+        String body = readRequestBodyLimited(exchange);
         JsonNode json = objectMapper.readTree(body);
         String message = json.path("message").asText();
         String sessionId = json.path("sessionId").asText(DEFAULT_SESSION_ID);
@@ -318,7 +559,7 @@ public class WebConsoleServer {
      * @throws IOException 如果处理失败
      */
     private void handleChatStream(HttpExchange exchange) throws IOException {
-        String body = readRequestBody(exchange);
+        String body = readRequestBodyLimited(exchange);
         JsonNode json = objectMapper.readTree(body);
         String message = json.path("message").asText();
         String sessionId = json.path("sessionId").asText(DEFAULT_SESSION_ID);
@@ -348,7 +589,7 @@ public class WebConsoleServer {
         exchange.getResponseHeaders().set(HEADER_CONTENT_TYPE, CONTENT_TYPE_SSE);
         exchange.getResponseHeaders().set(HEADER_CACHE_CONTROL, HEADER_NO_CACHE);
         exchange.getResponseHeaders().set(HEADER_CONNECTION, HEADER_KEEP_ALIVE);
-        exchange.getResponseHeaders().set(HEADER_CORS, HEADER_CORS_VALUE);
+        exchange.getResponseHeaders().set(HEADER_CORS, config.getGateway().getCorsOrigin());
     }
     
     /**
@@ -440,6 +681,7 @@ public class WebConsoleServer {
      * @throws IOException 如果处理失败
      */
     private void handleChannels(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -506,7 +748,7 @@ public class WebConsoleServer {
      */
     private void handleUpdateChannel(HttpExchange exchange, String path) throws IOException {
         String channelName = path.substring(API_CHANNELS.length() + 1);
-        String body = readRequestBody(exchange);
+        String body = readRequestBodyLimited(exchange);
         JsonNode json = objectMapper.readTree(body);
         boolean success = updateChannelConfig(channelName, json);
         if (success) {
@@ -724,6 +966,7 @@ public class WebConsoleServer {
     // ==================== Sessions API ====================
     
     private void handleSessions(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -764,6 +1007,7 @@ public class WebConsoleServer {
     // ==================== Cron API ====================
     
     private void handleCron(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -789,7 +1033,7 @@ public class WebConsoleServer {
                 }
                 sendJson(exchange, 200, result);
             } else if ("/api/cron".equals(path) && "POST".equals(method)) {
-                String body = readRequestBody(exchange);
+                String body = readRequestBodyLimited(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 String name = json.path("name").asText();
                 String message = json.path("message").asText();
@@ -814,7 +1058,7 @@ public class WebConsoleServer {
                 }
             } else if (path.matches("/api/cron/[^/]+/enable") && "PUT".equals(method)) {
                 String id = path.substring("/api/cron/".length()).replace("/enable", "");
-                String body = readRequestBody(exchange);
+                String body = readRequestBodyLimited(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 boolean enabled = json.path("enabled").asBoolean(true);
                 CronJob job = cronService.enableJob(id, enabled);
@@ -844,6 +1088,7 @@ public class WebConsoleServer {
      * @throws IOException 如果处理失败
      */
     private void handleWorkspace(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         String workspace = config.getWorkspacePath();
@@ -952,7 +1197,7 @@ public class WebConsoleServer {
      */
     private void handleSaveWorkspaceFile(HttpExchange exchange, String path, String workspace) throws IOException {
         String fileName = URLDecoder.decode(path.substring(API_WORKSPACE_FILES.length() + 1), StandardCharsets.UTF_8);
-        String body = readRequestBody(exchange);
+        String body = readRequestBodyLimited(exchange);
         JsonNode json = objectMapper.readTree(body);
         String content = json.path("content").asText();
         Path filePath = Paths.get(workspace, fileName);
@@ -964,6 +1209,7 @@ public class WebConsoleServer {
     // ==================== Skills API ====================
     
     private void handleSkills(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -1003,6 +1249,7 @@ public class WebConsoleServer {
     // ==================== Providers API ====================
     
     private void handleProviders(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -1022,7 +1269,7 @@ public class WebConsoleServer {
                 sendJson(exchange, 200, providers);
             } else if (path.startsWith("/api/providers/") && "PUT".equals(method)) {
                 String name = path.substring("/api/providers/".length());
-                String body = readRequestBody(exchange);
+                String body = readRequestBodyLimited(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 boolean success = updateProviderConfig(name, json);
                 if (success) {
@@ -1101,6 +1348,7 @@ public class WebConsoleServer {
     // ==================== Models API ====================
     
     private void handleModels(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -1142,6 +1390,7 @@ public class WebConsoleServer {
     // ==================== Config API ====================
     
     private void handleConfig(HttpExchange exchange) throws IOException {
+        if (!preCheck(exchange)) return;
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         
@@ -1157,7 +1406,7 @@ public class WebConsoleServer {
                 result.put("provider", currentProvider);
                 sendJson(exchange, 200, result);
             } else if ("/api/config/model".equals(path) && "PUT".equals(method)) {
-                String body = readRequestBody(exchange);
+                String body = readRequestBodyLimited(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 if (json.has("model")) {
                     String model = json.path("model").asText();
@@ -1181,7 +1430,7 @@ public class WebConsoleServer {
                 result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
                 sendJson(exchange, 200, result);
             } else if ("/api/config/agent".equals(path) && "PUT".equals(method)) {
-                String body = readRequestBody(exchange);
+                String body = readRequestBodyLimited(exchange);
                 JsonNode json = objectMapper.readTree(body);
                 AgentConfig agentConfig = config.getAgent();
                 if (json.has("model")) agentConfig.setModel(json.get("model").asText());
@@ -1327,7 +1576,7 @@ public class WebConsoleServer {
         String json = objectMapper.writeValueAsString(data);
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON);
-        exchange.getResponseHeaders().set(HEADER_CORS, HEADER_CORS_VALUE);
+        exchange.getResponseHeaders().set(HEADER_CORS, config.getGateway().getCorsOrigin());
         exchange.sendResponseHeaders(statusCode, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);

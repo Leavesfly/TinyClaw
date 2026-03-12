@@ -2,13 +2,19 @@ package io.leavesfly.tinyclaw.channels;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.leavesfly.tinyclaw.config.ChannelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
@@ -29,10 +35,12 @@ public class WebhookServer {
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("webhook");
     private static final String CONTENT_TYPE_JSON = "application/json; charset=utf-8";
     private static final int THREAD_POOL_SIZE = 4;
+    private static final int MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 请求体最大 1MB
 
     private final String host;
     private final int port;
     private final ChannelManager channelManager;
+    private final ChannelsConfig channelsConfig;
     private HttpServer httpServer;
 
     /**
@@ -43,9 +51,22 @@ public class WebhookServer {
      * @param channelManager 通道管理器，用于获取各通道实例
      */
     public WebhookServer(String host, int port, ChannelManager channelManager) {
+        this(host, port, channelManager, null);
+    }
+    
+    /**
+     * 创建 Webhook Server（带通道配置，用于签名校验）
+     *
+     * @param host           监听地址
+     * @param port           监听端口
+     * @param channelManager 通道管理器
+     * @param channelsConfig 通道配置（用于获取签名密钥）
+     */
+    public WebhookServer(String host, int port, ChannelManager channelManager, ChannelsConfig channelsConfig) {
         this.host = host;
         this.port = port;
         this.channelManager = channelManager;
+        this.channelsConfig = channelsConfig;
     }
 
     /**
@@ -82,7 +103,21 @@ public class WebhookServer {
             return;
         }
 
-        String requestBody = readRequestBody(exchange);
+        // 钉钉签名校验：如果配置了 clientSecret，则验证请求签名
+        if (channelsConfig != null && channelsConfig.getDingtalk() != null) {
+            String clientSecret = channelsConfig.getDingtalk().getClientSecret();
+            if (clientSecret != null && !clientSecret.isEmpty()) {
+                String timestamp = exchange.getRequestHeaders().getFirst("timestamp");
+                String sign = exchange.getRequestHeaders().getFirst("sign");
+                if (!verifyDingTalkSignature(timestamp, sign, clientSecret)) {
+                    logger.warn("钉钉 Webhook 签名校验失败");
+                    sendResponse(exchange, 403, "{\"errcode\":403,\"errmsg\":\"签名校验失败\"}");
+                    return;
+                }
+            }
+        }
+
+        String requestBody = readRequestBodyLimited(exchange);
         logger.debug("收到钉钉 Webhook 回调", Map.of("body_length", requestBody.length()));
 
         String responseBody;
@@ -114,8 +149,23 @@ public class WebhookServer {
             return;
         }
 
-        String requestBody = readRequestBody(exchange);
+        String requestBody = readRequestBodyLimited(exchange);
         logger.debug("收到飞书 Webhook 回调", Map.of("body_length", requestBody.length()));
+
+        // 飞书签名校验：如果配置了 encryptKey，则验证请求签名
+        if (channelsConfig != null && channelsConfig.getFeishu() != null) {
+            String encryptKey = channelsConfig.getFeishu().getEncryptKey();
+            if (encryptKey != null && !encryptKey.isEmpty()) {
+                String timestamp = exchange.getRequestHeaders().getFirst("X-Lark-Request-Timestamp");
+                String nonce = exchange.getRequestHeaders().getFirst("X-Lark-Request-Nonce");
+                String signature = exchange.getRequestHeaders().getFirst("X-Lark-Signature");
+                if (!verifyFeishuSignature(timestamp, nonce, encryptKey, requestBody, signature)) {
+                    logger.warn("飞书 Webhook 签名校验失败");
+                    sendResponse(exchange, 403, "{\"code\":403,\"msg\":\"签名校验失败\"}");
+                    return;
+                }
+            }
+        }
 
         String responseBody;
         int statusCode = 200;
@@ -170,7 +220,7 @@ public class WebhookServer {
             return;
         }
 
-        String requestBody = readRequestBody(exchange);
+        String requestBody = readRequestBodyLimited(exchange);
         logger.debug("收到 QQ Webhook 回调", Map.of("body_length", requestBody.length()));
 
         String responseBody;
@@ -222,11 +272,22 @@ public class WebhookServer {
     }
 
     /**
-     * 读取请求体
+     * 读取请求体（带大小限制，最大 1MB）
      */
-    private String readRequestBody(HttpExchange exchange) throws IOException {
-        try (InputStream inputStream = exchange.getRequestBody()) {
-            return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+    private String readRequestBodyLimited(HttpExchange exchange) throws IOException {
+        try (InputStream is = exchange.getRequestBody()) {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int totalRead = 0;
+            int bytesRead;
+            while ((bytesRead = is.read(chunk)) != -1) {
+                totalRead += bytesRead;
+                if (totalRead > MAX_REQUEST_BODY_SIZE) {
+                    throw new IOException("Request body too large (max " + MAX_REQUEST_BODY_SIZE + " bytes)");
+                }
+                buffer.write(chunk, 0, bytesRead);
+            }
+            return buffer.toString(StandardCharsets.UTF_8);
         }
     }
 
@@ -239,6 +300,84 @@ public class WebhookServer {
         exchange.sendResponseHeaders(statusCode, responseBytes.length);
         try (OutputStream outputStream = exchange.getResponseBody()) {
             outputStream.write(responseBytes);
+        }
+    }
+    
+    // ==================== 签名校验方法 ====================
+    
+    /**
+     * 验证钉钉 Webhook 请求签名。
+     * 
+     * 算法：HMAC-SHA256(clientSecret, timestamp + "\n" + clientSecret)，然后 Base64 编码。
+     * 
+     * @param timestamp 请求头中的 timestamp
+     * @param sign      请求头中的 sign
+     * @param secret    钉钉 clientSecret
+     * @return true 表示签名有效
+     */
+    private boolean verifyDingTalkSignature(String timestamp, String sign, String secret) {
+        if (timestamp == null || sign == null) {
+            return false;
+        }
+        
+        try {
+            // 检查时间戳是否在 1 小时内
+            long ts = Long.parseLong(timestamp);
+            long diff = Math.abs(System.currentTimeMillis() - ts);
+            if (diff > 3600_000) {
+                logger.warn("钉钉签名时间戳过期", Map.of("diff_ms", diff));
+                return false;
+            }
+            
+            String stringToSign = timestamp + "\n" + secret;
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
+            String expectedSign = Base64.getEncoder().encodeToString(signData);
+            
+            return expectedSign.equals(sign);
+        } catch (Exception e) {
+            logger.error("钉钉签名校验异常", Map.of("error", e.getMessage()));
+            return false;
+        }
+    }
+    
+    /**
+     * 验证飞书 Webhook 请求签名。
+     * 
+     * 算法：SHA256(timestamp + nonce + encryptKey + body)
+     * 
+     * @param timestamp  请求头 X-Lark-Request-Timestamp
+     * @param nonce      请求头 X-Lark-Request-Nonce
+     * @param encryptKey 飞书 encryptKey
+     * @param body       请求体
+     * @param signature  请求头 X-Lark-Signature
+     * @return true 表示签名有效
+     */
+    private boolean verifyFeishuSignature(String timestamp, String nonce, String encryptKey, 
+                                          String body, String signature) {
+        if (timestamp == null || nonce == null || signature == null) {
+            return false;
+        }
+        
+        try {
+            String content = timestamp + nonce + encryptKey + body;
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
+            
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) {
+                    hexString.append('0');
+                }
+                hexString.append(hex);
+            }
+            
+            return hexString.toString().equals(signature);
+        } catch (Exception e) {
+            logger.error("飞书签名校验异常", Map.of("error", e.getMessage()));
+            return false;
         }
     }
 }
