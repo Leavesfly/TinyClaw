@@ -94,12 +94,61 @@ public class Session {
     }
     
     /**
-     * 截断历史记录，仅保留最后 N 条消息
+     * 截断历史记录，仅保留最后 N 条消息。
+     * 
+     * 截断时会确保不破坏 tool_calls / tool 消息的配对关系：
+     * - 如果截断点恰好落在 assistant(tool_calls) 之后、tool(result) 之前，
+     *   会向前调整截断点以包含完整的 assistant 消息。
+     * - 如果截断后开头是 tool 消息，会跳过这些孤立的 tool 消息。
      */
     public void truncateHistory(int keepLast) {
-        if (messages.size() > keepLast) {
-            messages = new ArrayList<>(messages.subList(messages.size() - keepLast, messages.size()));
-            this.updated = Instant.now();
+        if (messages.size() <= keepLast) {
+            return;
         }
+        
+        int startIndex = messages.size() - keepLast;
+        startIndex = adjustStartIndexForToolMessageIntegrity(startIndex);
+        
+        messages = new ArrayList<>(messages.subList(startIndex, messages.size()));
+        this.updated = Instant.now();
+    }
+    
+    /**
+     * 调整截断起始索引，确保不破坏 tool_calls / tool 消息的配对关系。
+     * 
+     * 策略：
+     * 1. 如果起始位置是 tool 消息，向前查找其对应的 assistant(tool_calls) 消息并包含它
+     * 2. 如果向前找不到对应的 assistant 消息，则向后跳过所有孤立的 tool 消息
+     */
+    private int adjustStartIndexForToolMessageIntegrity(int startIndex) {
+        if (startIndex <= 0 || startIndex >= messages.size()) {
+            return startIndex;
+        }
+        
+        Message startMessage = messages.get(startIndex);
+        if (!"tool".equals(startMessage.getRole())) {
+            return startIndex;
+        }
+        
+        // 向前查找最近的 assistant(tool_calls) 消息
+        for (int i = startIndex - 1; i >= 0; i--) {
+            Message candidate = messages.get(i);
+            if ("assistant".equals(candidate.getRole()) 
+                    && candidate.getToolCalls() != null 
+                    && !candidate.getToolCalls().isEmpty()) {
+                return i;
+            }
+            // 如果遇到非 tool 且非目标 assistant 的消息，停止向前查找
+            if (!"tool".equals(candidate.getRole())) {
+                break;
+            }
+        }
+        
+        // 向前找不到配对的 assistant，向后跳过所有孤立的 tool 消息
+        int adjusted = startIndex;
+        while (adjusted < messages.size() && "tool".equals(messages.get(adjusted).getRole())) {
+            adjusted++;
+        }
+        return adjusted;
     }
 }

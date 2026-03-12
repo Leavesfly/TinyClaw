@@ -439,9 +439,9 @@ public class ContextBuilder {
         // 添加系统消息
         messages.add(Message.system(systemPrompt));
         
-        // 添加历史记录
+        // 添加历史记录（清理可能存在的孤立 tool 消息，防止 LLM API 报错）
         if (history != null) {
-            messages.addAll(history);
+            messages.addAll(sanitizeHistory(history));
         }
         
         // 添加当前用户消息
@@ -474,6 +474,39 @@ public class ContextBuilder {
         }
         
         return systemPrompt.toString();
+    }
+    
+    /**
+     * 清理历史消息，确保 tool 消息前面有对应的 assistant(tool_calls) 消息。
+     * 
+     * LLM API 要求每条 role="tool" 的消息前面必须紧跟一条包含 tool_calls 的
+     * role="assistant" 消息。此方法会跳过历史开头处缺少配对 assistant 消息的
+     * 孤立 tool 消息，防止发送给 LLM 时报 400 错误。
+     * 
+     * @param history 原始历史消息列表
+     * @return 清理后的历史消息列表
+     */
+    private List<Message> sanitizeHistory(List<Message> history) {
+        if (history.isEmpty()) {
+            return history;
+        }
+        
+        // 找到第一条非孤立 tool 消息的位置
+        int startIndex = 0;
+        while (startIndex < history.size() && "tool".equals(history.get(startIndex).getRole())) {
+            startIndex++;
+        }
+        
+        if (startIndex == 0) {
+            return history;
+        }
+        
+        if (startIndex > 0) {
+            logger.warn("Skipped orphaned tool messages at history start", Map.of(
+                    "skipped_count", startIndex));
+        }
+        
+        return new ArrayList<>(history.subList(startIndex, history.size()));
     }
     
     /**
