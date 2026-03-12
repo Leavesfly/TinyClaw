@@ -224,10 +224,54 @@ public class AgentLoop {
     private String processMessage(InboundMessage msg) throws Exception {
         logIncoming(msg);
 
+        // 处理指令消息
+        if (msg.isCommand()) {
+            return processCommandMessage(msg);
+        }
+
         if ("system".equals(msg.getChannel())) {
             return processSystemMessage(msg);
         }
         return processUserMessage(msg);
+    }
+
+    // ==================== 指令消息处理 ====================
+
+    /**
+     * 处理指令消息（如 /new）。
+     * 指令消息不会发送给 LLM，而是由 Agent 直接执行对应操作。
+     */
+    private String processCommandMessage(InboundMessage msg) {
+        String command = msg.getCommand();
+
+        if (InboundMessage.COMMAND_NEW_SESSION.equals(command)) {
+            return handleNewSessionCommand(msg);
+        }
+
+        logger.warn("Unknown command received", Map.of("command", command));
+        String unknownResponse = "未知指令: /" + command;
+        publishReplyIfNeeded(msg, unknownResponse);
+        return unknownResponse;
+    }
+
+    /**
+     * 处理 /new 指令：开启全新会话。
+     * 旧会话保留不动，后续消息将使用新的 sessionKey（由 BaseChannel 生成）。
+     */
+    private String handleNewSessionCommand(InboundMessage msg) {
+        String newSessionKey = msg.getSessionKey();
+
+        // 预创建新会话，确保 SessionManager 中存在该 session
+        sessions.getOrCreate(newSessionKey);
+
+        logger.info("New session created by /new command", Map.of(
+                "new_session_key", newSessionKey,
+                "channel", msg.getChannel(),
+                "sender_id", msg.getSenderId()));
+
+        String response = "✨ 新会话已开启，让我们开始新的对话吧！";
+        publishReplyIfNeeded(msg, response);
+        return response;
     }
 
     // ==================== 用户消息处理 ====================

@@ -8,12 +8,16 @@ import java.util.Map;
  */
 public class InboundMessage {
     
+    /** 指令常量：开启新会话 */
+    public static final String COMMAND_NEW_SESSION = "new_session";
+    
     private String channel;
     private String senderId;
     private String chatId;
     private String content;
     private List<String> media;
     private String sessionKey;
+    private String command;
     private Map<String, String> metadata;
     
     public InboundMessage() {
@@ -74,6 +78,18 @@ public class InboundMessage {
     
     public void setSessionKey(String sessionKey) {
         this.sessionKey = sessionKey;
+    }
+    
+    public String getCommand() {
+        return command;
+    }
+    
+    public void setCommand(String command) {
+        this.command = command;
+    }
+    
+    public boolean isCommand() {
+        return command != null && !command.isEmpty();
     }
     
     public Map<String, String> getMetadata() {
