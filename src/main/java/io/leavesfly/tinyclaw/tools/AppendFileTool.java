@@ -105,7 +105,7 @@ public class AppendFileTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         // 参数验证
         String path = (String) args.get("path");
         String content = (String) args.get("content");
@@ -141,7 +141,7 @@ public class AppendFileTool implements Tool {
             try {
                 Files.createDirectories(parentDir);
             } catch (IOException e) {
-                throw new Exception("创建父目录失败: " + e.getMessage());
+                throw new ToolException("创建父目录失败: " + e.getMessage(), e);
             }
         }
         
@@ -154,7 +154,7 @@ public class AppendFileTool implements Tool {
                 StandardOpenOption.APPEND);
             return "成功追加内容到 " + path;
         } catch (IOException e) {
-            throw new Exception("追加内容到文件失败: " + e.getMessage());
+            throw new ToolException("追加内容到文件失败: " + e.getMessage(), e);
         }
     }
 }

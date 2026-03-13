@@ -108,7 +108,7 @@ public class EditFileTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         // 参数验证
         String path = (String) args.get("path");
         String oldText = (String) args.get("old_text");
@@ -152,7 +152,7 @@ public class EditFileTool implements Tool {
         try {
             content = Files.readString(resolvedPath);
         } catch (IOException e) {
-            throw new Exception("读取文件失败: " + e.getMessage());
+            throw new ToolException("读取文件失败: " + e.getMessage(), e);
         }
         
         // 检查 old_text 是否存在
@@ -174,7 +174,7 @@ public class EditFileTool implements Tool {
             Files.writeString(resolvedPath, newContent);
             return "成功编辑 " + path;
         } catch (IOException e) {
-            throw new Exception("写入文件失败: " + e.getMessage());
+            throw new ToolException("写入文件失败: " + e.getMessage(), e);
         }
     }
     

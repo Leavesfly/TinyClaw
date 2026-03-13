@@ -162,7 +162,7 @@ public class SkillsTool implements Tool {
     }
 
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String action = (String) args.get("action");
         if (action == null || action.isEmpty()) {
             throw new IllegalArgumentException("操作参数是必需的");
@@ -173,11 +173,41 @@ public class SkillsTool implements Tool {
             case "show" -> executeShow(args);
             case "invoke" -> executeInvoke(args);
             case "search" -> executeSearch(args);
-            case "search_install" -> executeSearchInstall(args);
-            case "install" -> executeInstall(args);
-            case "create" -> executeCreate(args);
-            case "edit" -> executeEdit(args);
-            case "remove" -> executeRemove(args);
+            case "search_install" -> {
+                try {
+                    yield executeSearchInstall(args);
+                } catch (Exception e) {
+                    throw new ToolException("搜索并安装技能失败", e);
+                }
+            }
+            case "install" -> {
+                try {
+                    yield executeInstall(args);
+                } catch (Exception e) {
+                    throw new ToolException("安装技能失败", e);
+                }
+            }
+            case "create" -> {
+                try {
+                    yield executeCreate(args);
+                } catch (Exception e) {
+                    throw new ToolException("创建技能失败", e);
+                }
+            }
+            case "edit" -> {
+                try {
+                    yield executeEdit(args);
+                } catch (Exception e) {
+                    throw new ToolException("编辑技能失败", e);
+                }
+            }
+            case "remove" -> {
+                try {
+                    yield executeRemove(args);
+                } catch (Exception e) {
+                    throw new ToolException("删除技能失败", e);
+                }
+            }
             default -> throw new IllegalArgumentException("未知操作: " + action
                     + "。有效操作：list、show、invoke、search、search_install、install、create、edit、remove");
         };

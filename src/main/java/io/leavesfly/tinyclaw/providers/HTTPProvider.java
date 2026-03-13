@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.providers;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -54,21 +55,32 @@ public class HTTPProvider implements LLMProvider {
                 .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .build();
     }
     
     @Override
     public LLMResponse chatStream(List<Message> messages, List<ToolDefinition> tools, String model, 
-                                  Map<String, Object> options, StreamCallback callback) throws Exception {
+                                  Map<String, Object> options, StreamCallback callback) {
         if (apiBase == null || apiBase.isEmpty()) {
             throw new IllegalStateException("API base not configured");
         }
         
         // 构建请求体并启用流式输出
-        ObjectNode requestBody = buildRequestBody(messages, tools, model, options);
+        ObjectNode requestBody;
+        try {
+            requestBody = buildRequestBody(messages, tools, model, options);
+        } catch (Exception e) {
+            throw new LLMException("构建请求体失败", e);
+        }
         requestBody.put("stream", true);
         
-        String requestJson = objectMapper.writeValueAsString(requestBody);
+        String requestJson;
+        try {
+            requestJson = objectMapper.writeValueAsString(requestBody);
+        } catch (JsonProcessingException e) {
+            throw new LLMException("序列化请求失败", e);
+        }
         logger.debug("LLM stream request", Map.of(
                 "model", model,
                 "messages_count", messages.size(),
@@ -80,6 +92,8 @@ public class HTTPProvider implements LLMProvider {
         try (Response response = httpClient.newCall(request).execute()) {
             validateResponse(response);
             return parseStreamResponse(response.body().source(), callback);
+        } catch (IOException e) {
+            throw new LLMException("执行请求失败", e);
         }
     }
     
@@ -427,14 +441,24 @@ public class HTTPProvider implements LLMProvider {
     }
     @Override
     public LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, 
-                           Map<String, Object> options) throws Exception {
+                           Map<String, Object> options) {
         if (apiBase == null || apiBase.isEmpty()) {
             throw new IllegalStateException("API base not configured");
         }
         
         // 构建请求体
-        ObjectNode requestBody = buildRequestBody(messages, tools, model, options);
-        String requestJson = objectMapper.writeValueAsString(requestBody);
+        ObjectNode requestBody;
+        try {
+            requestBody = buildRequestBody(messages, tools, model, options);
+        } catch (Exception e) {
+            throw new LLMException("构建请求体失败", e);
+        }
+        String requestJson;
+        try {
+            requestJson = objectMapper.writeValueAsString(requestBody);
+        } catch (JsonProcessingException e) {
+            throw new LLMException("序列化请求失败", e);
+        }
         
         logger.debug("LLM request", Map.of(
                 "model", model,
@@ -449,6 +473,8 @@ public class HTTPProvider implements LLMProvider {
             String responseBody = response.body() != null ? response.body().string() : "";
             validateResponse(response, responseBody);
             return parseResponse(responseBody);
+        } catch (IOException e) {
+            throw new LLMException("执行请求失败", e);
         }
     }
     

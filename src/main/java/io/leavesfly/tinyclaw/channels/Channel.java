@@ -16,7 +16,7 @@ public interface Channel {
     /**
      * 启动通道
      */
-    void start() throws Exception;
+    void start();
     
     /**
      * 停止通道
@@ -26,7 +26,7 @@ public interface Channel {
     /**
      * 通过此通道发送消息
      */
-    void send(OutboundMessage message) throws Exception;
+    void send(OutboundMessage message);
     
     /**
      * 检查通道是否正在运行

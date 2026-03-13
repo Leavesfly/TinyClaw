@@ -29,5 +29,5 @@ public interface Tool {
      * @param args 工具参数
      * @return 执行结果（字符串格式）
      */
-    String execute(Map<String, Object> args) throws Exception;
+    String execute(Map<String, Object> args) throws ToolException;
 }

@@ -1,17 +1,34 @@
 package io.leavesfly.tinyclaw.util;
 
+import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+
 import javax.net.ssl.*;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.Map;
 
 /**
  * SSL 工具类
  * 
- * 提供信任所有证书的 SSL 配置，用于解决企业内网环境下
- * PKIX 证书链验证失败的问题（如中间代理、自签名证书等）。
+ * 提供 SSL 配置工具方法，包括：
+ * - 系统默认证书验证（推荐生产环境使用）
+ * - 信任所有证书（仅限开发/内网环境，存在中间人攻击风险）
+ * 
+ * ⚠️ 安全警告：trust-all 模式会跳过所有证书验证，仅应在以下场景使用：
+ * - 企业内网环境（中间代理、自签名证书）
+ * - 本地开发调试
+ * 生产环境务必使用 getDefaultSSLSocketFactory() / getDefaultTrustManager()。
  */
 public class SSLUtils {
     
+    private static final TinyClawLogger logger = TinyClawLogger.getLogger("ssl");
+    
+    /**
+     * 信任所有证书的 TrustManager。
+     * 
+     * ⚠️ 安全风险：此 TrustManager 不验证任何证书，存在中间人攻击风险。
+     * 仅限开发环境或企业内网使用。
+     */
     private static final X509TrustManager TRUST_ALL_MANAGER = new X509TrustManager() {
         @Override
         public void checkClientTrusted(X509Certificate[] chain, String authType) {
@@ -28,16 +45,26 @@ public class SSLUtils {
     };
     
     /**
-     * 获取信任所有证书的 TrustManager
+     * 获取信任所有证书的 TrustManager。
+     * 
+     * ⚠️ 安全风险：仅限开发环境或企业内网使用。
+     * 生产环境请使用 {@link #getDefaultTrustManager()}。
      */
     public static X509TrustManager getTrustAllManager() {
+        logger.warn("Using trust-all TrustManager - certificates will NOT be verified. " +
+                "This is insecure and should only be used in dev/intranet environments.");
         return TRUST_ALL_MANAGER;
     }
     
     /**
-     * 获取信任所有证书的 SSLSocketFactory
+     * 获取信任所有证书的 SSLSocketFactory。
+     * 
+     * ⚠️ 安全风险：仅限开发环境或企业内网使用。
+     * 生产环境请使用 {@link #getDefaultSSLSocketFactory()}。
      */
     public static SSLSocketFactory getTrustAllSSLSocketFactory() {
+        logger.warn("Using trust-all SSLSocketFactory - certificates will NOT be verified. " +
+                "This is insecure and should only be used in dev/intranet environments.");
         try {
             SSLContext sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, new TrustManager[]{TRUST_ALL_MANAGER}, new SecureRandom());
@@ -48,9 +75,12 @@ public class SSLUtils {
     }
     
     /**
-     * 获取不验证主机名的 HostnameVerifier
+     * 获取不验证主机名的 HostnameVerifier。
+     * 
+     * ⚠️ 安全风险：仅限开发环境或企业内网使用。
      */
     public static HostnameVerifier getTrustAllHostnameVerifier() {
+        logger.warn("Using trust-all HostnameVerifier - hostname will NOT be verified.");
         return (hostname, session) -> true;
     }
     

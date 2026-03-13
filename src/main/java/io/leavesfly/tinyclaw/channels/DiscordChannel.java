@@ -1,7 +1,9 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
@@ -12,9 +14,12 @@ import io.leavesfly.tinyclaw.voice.Transcriber;
 import okhttp3.*;
 
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -101,7 +106,7 @@ public class DiscordChannel extends BaseChannel {
     }
 
     @Override
-    public void start() throws Exception {
+    public void start() throws ChannelException {
         logger.info("正在启动 Discord Bot...");
 
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -115,12 +120,17 @@ public class DiscordChannel extends BaseChannel {
         // 等待 READY 事件
         int attempts = 0;
         while (!ready.get() && attempts < 60) {
-            Thread.sleep(500);
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ChannelException("Discord Bot 启动被中断", e);
+            }
             attempts++;
         }
 
         if (!ready.get()) {
-            throw new Exception("Discord Bot 连接超时，未收到 READY 事件");
+            throw new ChannelException("Discord Bot 连接超时，未收到 READY 事件");
         }
 
         setRunning(true);
@@ -347,7 +357,13 @@ public class DiscordChannel extends BaseChannel {
     }
 
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) throws ChannelException {
+        if (!isRunning()) {
+            throw new IllegalStateException("Discord Bot 未运行");
+        }
+
+        // ... existing code ...
+
         if (!isRunning()) {
             throw new IllegalStateException("Discord Bot 未运行");
         }
@@ -361,17 +377,29 @@ public class DiscordChannel extends BaseChannel {
         body.put("content", message.getContent());
 
         String url = REST_BASE + "/channels/" + channelId + "/messages";
-        Request request = new Request.Builder()
-                .url(url)
-                .header("Authorization", "Bot " + config.getToken())
-                .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
-                .build();
+        Request request;
+        try {
+            request = new Request.Builder()
+                    .url(url)
+                    .header("Authorization", "Bot " + config.getToken())
+                    .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
+                    .build();
+        } catch (JsonProcessingException e) {
+            throw new ChannelException("序列化 Discord 消息失败", e);
+        }
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                String errorBody = response.body() != null ? response.body().string() : "";
-                throw new Exception("发送 Discord 消息失败: HTTP " + response.code() + " " + errorBody);
+                String errorBody;
+                try {
+                    errorBody = response.body() != null ? response.body().string() : "";
+                } catch (IOException e) {
+                    errorBody = "无法读取错误响应";
+                }
+                throw new ChannelException("发送 Discord 消息失败: HTTP " + response.code() + " " + errorBody);
             }
+        } catch (IOException e) {
+            throw new ChannelException("发送 Discord 消息时发生网络错误", e);
         }
     }
 

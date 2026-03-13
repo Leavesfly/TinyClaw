@@ -121,7 +121,7 @@ public class SocialNetworkTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String action = (String) args.get("action");
         if (action == null || action.isEmpty()) {
             throw new IllegalArgumentException("操作参数是必需的");
@@ -150,7 +150,7 @@ public class SocialNetworkTool implements Tool {
      * @return 发送结果
      * @throws Exception 发送失败时抛出异常
      */
-    private String sendMessage(Map<String, Object> args) throws Exception {
+    private String sendMessage(Map<String, Object> args) {
         String to = (String) args.get("to");
         String message = (String) args.get("message");
         
@@ -173,7 +173,7 @@ public class SocialNetworkTool implements Tool {
      * @return 广播结果
      * @throws Exception 广播失败时抛出异常
      */
-    private String broadcast(Map<String, Object> args) throws Exception {
+    private String broadcast(Map<String, Object> args) {
         String channel = (String) args.get("channel");
         String message = (String) args.get("message");
         
@@ -196,7 +196,7 @@ public class SocialNetworkTool implements Tool {
      * @return 查询结果
      * @throws Exception 查询失败时抛出异常
      */
-    private String queryAgents(Map<String, Object> args) throws Exception {
+    private String queryAgents(Map<String, Object> args) {
         String query = (String) args.get("query");
         
         Map<String, Object> payload = buildPayload();
@@ -213,7 +213,7 @@ public class SocialNetworkTool implements Tool {
      * @return 网络状态信息
      * @throws Exception 获取失败时抛出异常
      */
-    private String getNetworkStatus() throws Exception {
+    private String getNetworkStatus() {
         Map<String, Object> payload = buildPayload();
         return sendRequest("/status", payload);
     }
@@ -265,19 +265,21 @@ public class SocialNetworkTool implements Tool {
      * @return 响应内容
      * @throws Exception 请求失败时抛出异常
      */
-    private String sendRequest(String path, Map<String, Object> payload) throws Exception {
+    private String sendRequest(String path, Map<String, Object> payload) {
         String url = endpoint + path;
-        String jsonBody = objectMapper.writeValueAsString(payload);
-        
-        Request request = buildHttpRequest(url, jsonBody);
-        
-        logger.info("Sending request to social network", Map.of("url", url));
-        
-        try (Response response = httpClient.newCall(request).execute()) {
-            return handleResponse(response, url);
+        try {
+            String jsonBody = objectMapper.writeValueAsString(payload);
+            
+            Request request = buildHttpRequest(url, jsonBody);
+            
+            logger.info("Sending request to social network", Map.of("url", url));
+            
+            try (Response response = httpClient.newCall(request).execute()) {
+                return handleResponse(response, url);
+            }
         } catch (Exception e) {
             logger.error("Social network request exception", Map.of("url", url, "error", e.getMessage()));
-            throw new Exception("无法连接到社交网络: " + e.getMessage());
+            return "无法连接到社交网络: " + e.getMessage();
         }
     }
     

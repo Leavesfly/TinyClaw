@@ -156,7 +156,7 @@ public class CronTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String action = (String) args.get("action");
         if (action == null) {
             return "错误: 操作参数是必需的";

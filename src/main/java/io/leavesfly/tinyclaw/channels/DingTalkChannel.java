@@ -86,15 +86,15 @@ public class DingTalkChannel extends BaseChannel {
     }
     
     @Override
-    public void start() throws Exception {
+    public void start() {
         logger.info("正在启动钉钉通道...");
         
         if (config.getClientId() == null || config.getClientId().isEmpty()) {
-            throw new Exception("钉钉 Client ID 为空");
+            throw new ChannelException("钉钉 Client ID 为空");
         }
         
         if (config.getClientSecret() == null || config.getClientSecret().isEmpty()) {
-            throw new Exception("钉钉 Client Secret 为空");
+            throw new ChannelException("钉钉 Client Secret 为空");
         }
         
         setRunning(true);
@@ -138,7 +138,7 @@ public class DingTalkChannel extends BaseChannel {
     /**
      * 注册 Stream 连接并建立 WebSocket 连接
      */
-    private void connectStreamConnection() throws Exception {
+    private void connectStreamConnection() {
         StreamConnectionInfo connectionInfo = registerStreamConnection();
         
         String websocketUrl = connectionInfo.endpoint + "?ticket=" + connectionInfo.ticket;
@@ -187,7 +187,7 @@ public class DingTalkChannel extends BaseChannel {
     /**
      * 注册 Stream 连接，获取 WebSocket endpoint 和 ticket
      */
-    private StreamConnectionInfo registerStreamConnection() throws Exception {
+    private StreamConnectionInfo registerStreamConnection() {
         ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("clientId", config.getClientId());
         requestBody.put("clientSecret", config.getClientSecret());
@@ -203,37 +203,43 @@ public class DingTalkChannel extends BaseChannel {
         
         requestBody.put("ua", "tinyclaw-sdk-java/1.0.0");
         
-        String jsonBody = objectMapper.writeValueAsString(requestBody);
-        logger.info("Stream 注册请求体", Map.of("body", jsonBody));
-        
-        Request request = new Request.Builder()
-            .url(STREAM_CONNECTION_URL)
-            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
-            .build();
-        
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                String errorBody = response.body() != null ? response.body().string() : "";
-                logger.error("注册 Stream 连接失败", Map.of("code", String.valueOf(response.code()), "body", errorBody));
-                throw new Exception("注册 Stream 连接失败: HTTP " + response.code() + " " + errorBody);
+        try {
+            String jsonBody = objectMapper.writeValueAsString(requestBody);
+            logger.info("Stream 注册请求体", Map.of("body", jsonBody));
+            
+            Request request = new Request.Builder()
+                .url(STREAM_CONNECTION_URL)
+                .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
+                .build();
+            
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    String errorBody = response.body() != null ? response.body().string() : "";
+                    logger.error("注册 Stream 连接失败", Map.of("code", String.valueOf(response.code()), "body", errorBody));
+                    throw new ChannelException("注册 Stream 连接失败: HTTP " + response.code() + " " + errorBody);
+                }
+                
+                String responseBody = response.body() != null ? response.body().string() : "";
+                logger.info("Stream 注册响应", Map.of("body", responseBody));
+                JsonNode responseJson = objectMapper.readTree(responseBody);
+                
+                String endpoint = responseJson.path("endpoint").asText(null);
+                String ticket = responseJson.path("ticket").asText(null);
+                
+                if (endpoint == null || endpoint.isEmpty()) {
+                    throw new ChannelException("未获取到 endpoint");
+                }
+                if (ticket == null || ticket.isEmpty()) {
+                    throw new ChannelException("未获取到 ticket");
+                }
+                
+                logger.info("Stream 连接注册成功", Map.of("endpoint", endpoint));
+                return new StreamConnectionInfo(endpoint, ticket);
             }
-            
-            String responseBody = response.body() != null ? response.body().string() : "";
-            logger.info("Stream 注册响应", Map.of("body", responseBody));
-            JsonNode responseJson = objectMapper.readTree(responseBody);
-            
-            String endpoint = responseJson.path("endpoint").asText(null);
-            String ticket = responseJson.path("ticket").asText(null);
-            
-            if (endpoint == null || endpoint.isEmpty()) {
-                throw new Exception("未获取到 endpoint");
-            }
-            if (ticket == null || ticket.isEmpty()) {
-                throw new Exception("未获取到 ticket");
-            }
-            
-            logger.info("Stream 连接注册成功", Map.of("endpoint", endpoint));
-            return new StreamConnectionInfo(endpoint, ticket);
+        } catch (ChannelException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ChannelException("注册 Stream 连接时出错: " + e.getMessage(), e);
         }
     }
     
@@ -355,7 +361,7 @@ public class DingTalkChannel extends BaseChannel {
     }
     
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) {
         if (!isRunning()) {
             throw new IllegalStateException("钉钉通道未运行");
         }
@@ -370,7 +376,7 @@ public class DingTalkChannel extends BaseChannel {
         }
         
         if (webhook == null || webhook.isEmpty()) {
-            throw new Exception("未找到 chat " + chatId + " 的 session_webhook，无法发送消息");
+            throw new ChannelException("未找到 chat " + chatId + " 的 session_webhook，无法发送消息");
         }
         
         logger.info("发送钉钉消息", Map.of(
@@ -461,7 +467,7 @@ public class DingTalkChannel extends BaseChannel {
      * @param title 消息标题
      * @param content Markdown 内容
      */
-    private void sendMarkdownMessage(String webhook, String title, String content) throws Exception {
+    private void sendMarkdownMessage(String webhook, String title, String content) {
         ObjectNode markdown = objectMapper.createObjectNode();
         markdown.put("msgtype", "markdown");
         
@@ -469,28 +475,34 @@ public class DingTalkChannel extends BaseChannel {
         markdownContent.put("title", title);
         markdownContent.put("text", content);
         
-        String jsonBody = objectMapper.writeValueAsString(markdown);
-        
-        Request request = new Request.Builder()
-            .url(webhook)
-            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
-            .build();
-        
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new Exception("发送钉钉消息失败: HTTP " + response.code());
+        try {
+            String jsonBody = objectMapper.writeValueAsString(markdown);
+            
+            Request request = new Request.Builder()
+                .url(webhook)
+                .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
+                .build();
+            
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    throw new ChannelException("发送钉钉消息失败: HTTP " + response.code());
+                }
+                
+                String responseBody = response.body() != null ? response.body().string() : "";
+                JsonNode responseJson = objectMapper.readTree(responseBody);
+                
+                int errcode = responseJson.path("errcode").asInt(0);
+                if (errcode != 0) {
+                    String errmsg = responseJson.path("errmsg").asText("未知错误");
+                    throw new ChannelException("发送钉钉消息失败: " + errmsg);
+                }
+                
+                logger.debug("钉钉消息发送成功");
             }
-            
-            String responseBody = response.body() != null ? response.body().string() : "";
-            JsonNode responseJson = objectMapper.readTree(responseBody);
-            
-            int errcode = responseJson.path("errcode").asInt(0);
-            if (errcode != 0) {
-                String errmsg = responseJson.path("errmsg").asText("未知错误");
-                throw new Exception("发送钉钉消息失败: " + errmsg);
-            }
-            
-            logger.debug("钉钉消息发送成功");
+        } catch (ChannelException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ChannelException("发送钉钉消息时出错: " + e.getMessage(), e);
         }
     }
     
@@ -501,12 +513,16 @@ public class DingTalkChannel extends BaseChannel {
      * @param timestamp 时间戳
      * @return 签名字符串
      */
-    private String calculateSignature(String secret, long timestamp) throws Exception {
-        String stringToSign = timestamp + "\n" + secret;
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(signData);
+    private String calculateSignature(String secret, long timestamp) {
+        try {
+            String stringToSign = timestamp + "\n" + secret;
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(signData);
+        } catch (Exception e) {
+            throw new ChannelException("计算钉钉签名失败: " + e.getMessage(), e);
+        }
     }
     
     /**

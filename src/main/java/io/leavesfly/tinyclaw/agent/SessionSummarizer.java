@@ -138,11 +138,17 @@ public class SessionSummarizer {
         Thread thread = new Thread(() -> {
             try {
                 summarize(sessionKey);
+            } catch (Exception e) {
+                String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                logger.error("Async summarize failed", Map.of(
+                        "session_key", sessionKey,
+                        "error", errorMsg));
             } finally {
                 summarizing.remove(sessionKey);
             }
         });
         thread.setDaemon(true);
+        thread.setName("summarizer-" + sessionKey);
         thread.start();
     }
     
@@ -364,18 +370,37 @@ public class SessionSummarizer {
      */
     private void saveSummary(String sessionKey, String summary, 
                             int originalSize, int validSize) {
-        sessions.setSummary(sessionKey, summary);
-        sessions.truncateHistory(sessionKey, RECENT_MESSAGES_TO_KEEP);
-        Session session = sessions.getOrCreate(sessionKey);
-        sessions.save(session);
+        try {
+            sessions.setSummary(sessionKey, summary);
+            sessions.truncateHistory(sessionKey, RECENT_MESSAGES_TO_KEEP);
+            Session session = sessions.getOrCreate(sessionKey);
+            sessions.save(session);
+        } catch (Exception e) {
+            logger.error("Failed to persist summary", Map.of(
+                    "session_key", sessionKey,
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            return; // 持久化失败时不继续写入记忆，避免数据不一致
+        }
 
         // 将摘要写入每日笔记，形成可追溯的对话记录
-        String dailyNote = String.format("[%s] %s", sessionKey, summary);
-        memoryStore.appendToday(dailyNote);
+        try {
+            String dailyNote = String.format("[%s] %s", sessionKey, summary);
+            memoryStore.appendToday(dailyNote);
+        } catch (Exception e) {
+            logger.warn("Failed to write daily note for summary", Map.of(
+                    "session_key", sessionKey,
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        }
 
         // 从摘要中快速提炼结构化记忆（轻量级，不调用 LLM）
         if (memoryEvolver != null) {
-            memoryEvolver.quickExtractFromSummary(sessionKey, summary);
+            try {
+                memoryEvolver.quickExtractFromSummary(sessionKey, summary);
+            } catch (Exception e) {
+                logger.warn("Failed to extract memory from summary", Map.of(
+                        "session_key", sessionKey,
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            }
         }
 
         logger.info("Session summarized", Map.of(

@@ -30,7 +30,7 @@ public interface LLMProvider {
      * @param options  额外选项（temperature、max_tokens等）
      * @return LLM响应结果
      */
-    LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options) throws Exception;
+    LLMResponse chat(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options);
 
     /**
      * 发送流式对话完成请求
@@ -42,7 +42,7 @@ public interface LLMProvider {
      * @param callback 流式内容回调
      * @return 完整的LLM响应结果（用于获取工具调用等信息）
      */
-    LLMResponse chatStream(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options, StreamCallback callback) throws Exception;
+    LLMResponse chatStream(List<Message> messages, List<ToolDefinition> tools, String model, Map<String, Object> options, StreamCallback callback);
 
     /**
      * 获取该提供者的默认模型

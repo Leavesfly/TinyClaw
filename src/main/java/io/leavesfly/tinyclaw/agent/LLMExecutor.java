@@ -58,8 +58,22 @@ public class LLMExecutor {
         int iteration = 0;
         String finalContent = null;
         int emptyRetries = 0;
+        int totalAttempts = 0;
+        int maxTotalAttempts = maxIterations + MAX_EMPTY_RESPONSE_RETRIES;
         
         while (iteration < maxIterations) {
+            totalAttempts++;
+            if (totalAttempts > maxTotalAttempts) {
+                logger.error("LLM exceeded max total attempts (iterations + empty retries)", Map.of(
+                        "totalAttempts", totalAttempts,
+                        "maxTotalAttempts", maxTotalAttempts,
+                        "iterations", iteration,
+                        "emptyRetries", emptyRetries
+                ));
+                finalContent = EMPTY_RESPONSE_FALLBACK;
+                break;
+            }
+            
             iteration++;
             logger.debug("LLM iteration", Map.of("iteration", iteration, "max", maxIterations));
             
@@ -77,6 +91,8 @@ public class LLMExecutor {
                             "retry", emptyRetries,
                             "max_retries", MAX_EMPTY_RESPONSE_RETRIES
                     ));
+                    // 空响应重试不计入工具迭代次数，但受 totalAttempts 保护
+                    iteration--;
                     continue;
                 }
                 
@@ -107,6 +123,14 @@ public class LLMExecutor {
             sessions.save(sessions.getOrCreate(sessionKey));
         }
         
+        if (finalContent == null) {
+            logger.warn("LLM iteration limit reached without final response", Map.of(
+                    "maxIterations", maxIterations,
+                    "totalAttempts", totalAttempts
+            ));
+            finalContent = EMPTY_RESPONSE_FALLBACK;
+        }
+        
         return finalContent;
     }
     
@@ -127,8 +151,25 @@ public class LLMExecutor {
         int iteration = 0;
         String finalContent = null;
         int emptyRetries = 0;
+        int totalAttempts = 0;
+        int maxTotalAttempts = maxIterations + MAX_EMPTY_RESPONSE_RETRIES;
         
         while (iteration < maxIterations) {
+            totalAttempts++;
+            if (totalAttempts > maxTotalAttempts) {
+                logger.error("LLM stream exceeded max total attempts (iterations + empty retries)", Map.of(
+                        "totalAttempts", totalAttempts,
+                        "maxTotalAttempts", maxTotalAttempts,
+                        "iterations", iteration,
+                        "emptyRetries", emptyRetries
+                ));
+                finalContent = EMPTY_RESPONSE_FALLBACK;
+                if (callback != null) {
+                    callback.onChunk(finalContent);
+                }
+                break;
+            }
+            
             iteration++;
             logger.debug("LLM stream iteration", Map.of("iteration", iteration, "max", maxIterations));
             
@@ -146,6 +187,7 @@ public class LLMExecutor {
                             "retry", emptyRetries,
                             "max_retries", MAX_EMPTY_RESPONSE_RETRIES
                     ));
+                    iteration--;
                     continue;
                 }
                 
@@ -177,6 +219,17 @@ public class LLMExecutor {
             executeToolCalls(messages, response.getToolCalls(), sessionKey, iteration);
             // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
             sessions.save(sessions.getOrCreate(sessionKey));
+        }
+        
+        if (finalContent == null) {
+            logger.warn("LLM stream iteration limit reached without final response", Map.of(
+                    "maxIterations", maxIterations,
+                    "totalAttempts", totalAttempts
+            ));
+            finalContent = EMPTY_RESPONSE_FALLBACK;
+            if (callback != null) {
+                callback.onChunk(finalContent);
+            }
         }
         
         return finalContent;

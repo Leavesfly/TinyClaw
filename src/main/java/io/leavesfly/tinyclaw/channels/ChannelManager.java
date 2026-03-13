@@ -39,6 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChannelManager {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("channels");
+    private static final int MAX_SEND_RETRIES = 3;
+    private static final long RETRY_DELAY_MS = 1000L;
     
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
     private final MessageBus bus;
@@ -268,7 +270,7 @@ public class ChannelManager {
      * 在独立线程中运行的消息分发循环：
      * 1. 从消息总线订阅出站消息
      * 2. 根据消息的目标通道查找对应的通道实例
-     * 3. 将消息发送到目标通道
+     * 3. 将消息发送到目标通道（支持重试）
      * 4. 处理未知通道的情况
      * 
      * 此方法在守护线程中运行，当dispatchRunning标志被设置为false时退出。
@@ -290,7 +292,36 @@ public class ChannelManager {
                     continue;
                 }
                 
-                channel.send(msg);
+                // 消息发送重试逻辑
+                boolean sendSuccess = false;
+                Exception lastException = null;
+                
+                for (int retry = 0; retry <= MAX_SEND_RETRIES; retry++) {
+                    try {
+                        channel.send(msg);
+                        sendSuccess = true;
+                        break;
+                    } catch (Exception e) {
+                        lastException = e;
+                        if (retry < MAX_SEND_RETRIES) {
+                            try {
+                                Thread.sleep(RETRY_DELAY_MS);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (!sendSuccess) {
+                    logger.error("Failed to send message after retries", Map.of(
+                            "channel", msg.getChannel(),
+                            "chat_id", msg.getChatId(),
+                            "retries", String.valueOf(MAX_SEND_RETRIES),
+                            "error", lastException != null ? lastException.getMessage() : "unknown"
+                    ));
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;

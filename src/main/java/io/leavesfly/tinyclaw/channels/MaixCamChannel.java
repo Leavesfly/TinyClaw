@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -69,13 +70,17 @@ public class MaixCamChannel extends BaseChannel {
     }
     
     @Override
-    public void start() throws Exception {
+    public void start() {
         logger.info("正在启动 MaixCam 通道...");
         
         String host = config.getHost() != null ? config.getHost() : "0.0.0.0";
         int port = config.getPort() > 0 ? config.getPort() : 8080;
         
-        serverSocket = new ServerSocket(port);
+        try {
+            serverSocket = new ServerSocket(port);
+        } catch (IOException e) {
+            throw new ChannelException("启动 MaixCam 服务器失败", e);
+        }
         serverRunning = true;
         setRunning(true);
         
@@ -115,14 +120,14 @@ public class MaixCamChannel extends BaseChannel {
     }
     
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) {
         if (!isRunning()) {
             throw new IllegalStateException("MaixCam 通道未运行");
         }
         
         if (clients.isEmpty()) {
             logger.warn("没有已连接的 MaixCam 设备");
-            throw new Exception("没有已连接的 MaixCam 设备");
+            throw new ChannelException("没有已连接的 MaixCam 设备");
         }
         
         // 构建响应消息
@@ -132,7 +137,12 @@ public class MaixCamChannel extends BaseChannel {
         response.put("message", message.getContent());
         response.put("chat_id", message.getChatId());
         
-        String jsonMessage = objectMapper.writeValueAsString(response);
+        String jsonMessage;
+        try {
+            jsonMessage = objectMapper.writeValueAsString(response);
+        } catch (JsonProcessingException e) {
+            throw new ChannelException("序列化消息失败", e);
+        }
         
         // 发送给所有连接的设备
         Exception lastError = null;
@@ -149,7 +159,7 @@ public class MaixCamChannel extends BaseChannel {
         }
         
         if (lastError != null) {
-            throw lastError;
+            throw new ChannelException("发送消息到设备失败", lastError);
         }
     }
     

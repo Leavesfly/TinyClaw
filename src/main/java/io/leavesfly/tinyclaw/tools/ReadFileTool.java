@@ -31,6 +31,8 @@ import java.util.Map;
  */
 public class ReadFileTool implements Tool {
     
+    private static final long MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+    
     private final SecurityGuard securityGuard;
     
     public ReadFileTool() {
@@ -69,7 +71,7 @@ public class ReadFileTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String path = (String) args.get("path");
         if (path == null || path.isEmpty()) {
             throw new IllegalArgumentException("路径参数是必需的");
@@ -84,9 +86,14 @@ public class ReadFileTool implements Tool {
         }
         
         try {
+            // 检查文件大小
+            long fileSize = Files.size(Paths.get(path));
+            if (fileSize > MAX_FILE_SIZE_BYTES) {
+                return "文件过大（" + fileSize + " 字节），超过最大限制 " + MAX_FILE_SIZE_BYTES + " 字节";
+            }
             return Files.readString(Paths.get(path));
         } catch (IOException e) {
-            throw new Exception("读取文件失败: " + e.getMessage());
+            throw new ToolException("读取文件失败: " + e.getMessage(), e);
         }
     }
 }

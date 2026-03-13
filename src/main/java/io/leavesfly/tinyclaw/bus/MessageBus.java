@@ -6,6 +6,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -47,6 +49,9 @@ public class MessageBus {
     private final LinkedBlockingQueue<InboundMessage> inbound;
     private final LinkedBlockingQueue<OutboundMessage> outbound;
     private final Map<String, Function<InboundMessage, Void>> handlers;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicLong droppedInboundCount = new AtomicLong(0);
+    private final AtomicLong droppedOutboundCount = new AtomicLong(0);
     
     public MessageBus() {
         this.inbound = new LinkedBlockingQueue<>(INBOUND_QUEUE_SIZE);
@@ -68,8 +73,21 @@ public class MessageBus {
      * @param message 要发布的入站消息
      */
     public void publishInbound(InboundMessage message) {
+        if (closed.get()) {
+            logger.warn("MessageBus is closed, rejecting inbound message", Map.of(
+                "channel", message.getChannel(),
+                "chat_id", message.getChatId()
+            ));
+            return;
+        }
         if (!inbound.offer(message)) {
-            logger.warn("Inbound queue full, dropping message: " + message);
+            long dropped = droppedInboundCount.incrementAndGet();
+            logger.error("Inbound queue full, dropping message", Map.of(
+                "channel", message.getChannel(),
+                "chat_id", message.getChatId(),
+                "queue_size", inbound.size(),
+                "total_dropped", dropped
+            ));
             return;
         }
         logger.debug("Published inbound message", Map.of(
@@ -89,7 +107,13 @@ public class MessageBus {
      * @throws InterruptedException 如果线程在等待期间被中断
      */
     public InboundMessage consumeInbound() throws InterruptedException {
-        return inbound.take();
+        while (!closed.get()) {
+            InboundMessage message = inbound.poll(1, TimeUnit.SECONDS);
+            if (message != null) {
+                return message;
+            }
+        }
+        return null;
     }
     
     /**
@@ -116,8 +140,21 @@ public class MessageBus {
      * @param message 要发布的出站消息
      */
     public void publishOutbound(OutboundMessage message) {
+        if (closed.get()) {
+            logger.warn("MessageBus is closed, rejecting outbound message", Map.of(
+                "channel", message.getChannel(),
+                "chat_id", message.getChatId()
+            ));
+            return;
+        }
         if (!outbound.offer(message)) {
-            logger.warn("Outbound queue full, dropping message: " + message);
+            long dropped = droppedOutboundCount.incrementAndGet();
+            logger.error("Outbound queue full, dropping message", Map.of(
+                "channel", message.getChannel(),
+                "chat_id", message.getChatId(),
+                "queue_size", outbound.size(),
+                "total_dropped", dropped
+            ));
             return;
         }
         logger.debug("Published outbound message", Map.of(
@@ -137,7 +174,13 @@ public class MessageBus {
      * @throws InterruptedException 如果线程在等待期间被中断
      */
     public OutboundMessage subscribeOutbound() throws InterruptedException {
-        return outbound.take();
+        while (!closed.get()) {
+            OutboundMessage message = outbound.poll(1, TimeUnit.SECONDS);
+            if (message != null) {
+                return message;
+            }
+        }
+        return null;
     }
     
     /**
@@ -230,16 +273,46 @@ public class MessageBus {
      * 关闭消息总线（不再接受新消息）
      * 
      * 执行消息总线的优雅关闭流程：
-     * 1. 清空所有待处理消息
-     * 2. 记录关闭日志
-     * 
-     * 注意：在生产环境中，可能需要实现更复杂的关闭信号机制
-     * 来通知所有消费者优雅退出。
+     * 1. 设置关闭标志，阻止新消息入队
+     * 2. 通知所有阻塞的消费者退出（通过 closed 标志 + poll 超时机制）
+     * 3. 清空所有待处理消息
+     * 4. 记录关闭日志和丢弃统计
      */
     public void close() {
-        // 对于阻塞队列，我们只清除它们
-        // 在生产系统中，我们可能想要发出关闭信号
+        closed.set(true);
+        long totalDroppedInbound = droppedInboundCount.get();
+        long totalDroppedOutbound = droppedOutboundCount.get();
         clear();
-        logger.info("Message bus closed");
+        logger.info("Message bus closed", Map.of(
+            "total_dropped_inbound", totalDroppedInbound,
+            "total_dropped_outbound", totalDroppedOutbound
+        ));
+    }
+    
+    /**
+     * 检查消息总线是否已关闭
+     * 
+     * @return 如果已关闭返回 true
+     */
+    public boolean isClosed() {
+        return closed.get();
+    }
+    
+    /**
+     * 获取累计丢弃的入站消息数量
+     * 
+     * @return 丢弃的入站消息总数
+     */
+    public long getDroppedInboundCount() {
+        return droppedInboundCount.get();
+    }
+    
+    /**
+     * 获取累计丢弃的出站消息数量
+     * 
+     * @return 丢弃的出站消息总数
+     */
+    public long getDroppedOutboundCount() {
+        return droppedOutboundCount.get();
     }
 }

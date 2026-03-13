@@ -78,6 +78,9 @@ public class SecurityGuard {
     /**
      * 检查文件路径是否允许访问
      * 
+     * 使用 toRealPath() 解析符号链接，防止通过符号链接绕过工作空间沙箱。
+     * 对于尚不存在的路径，回退到对父目录进行 toRealPath() 检查。
+     * 
      * @param filePath 待检查的文件路径
      * @return 如果被阻止则返回错误消息，允许则返回 null
      */
@@ -87,11 +90,10 @@ public class SecurityGuard {
         }
         
         try {
-            // 解析为绝对路径
-            Path absPath = Paths.get(filePath).toAbsolutePath().normalize();
+            Path resolvedPath = resolveRealPath(Paths.get(filePath));
             
             // 始终检查受保护文件（无论是否启用 workspace 限制）
-            String protectedError = checkProtectedPath(absPath, filePath);
+            String protectedError = checkProtectedPath(resolvedPath, filePath);
             if (protectedError != null) {
                 return protectedError;
             }
@@ -100,13 +102,13 @@ public class SecurityGuard {
                 return null; // 无 workspace 限制，且不是受保护文件，放行
             }
             
-            Path workspacePath = Paths.get(workspace).toAbsolutePath().normalize();
+            Path workspacePath = resolveRealPath(Paths.get(workspace));
             
             // 检查路径是否在工作空间内
-            if (!absPath.startsWith(workspacePath)) {
+            if (!resolvedPath.startsWith(workspacePath)) {
                 logger.warn("File path blocked (outside workspace)", Map.of(
                     "path", filePath,
-                    "resolved", absPath.toString(),
+                    "resolved", resolvedPath.toString(),
                     "workspace", workspace
                 ));
                 return String.format(
@@ -121,6 +123,48 @@ public class SecurityGuard {
             logger.error("Error checking file path", Map.of("path", filePath, "error", e.getMessage()));
             return "Invalid file path: " + e.getMessage();
         }
+    }
+    
+    /**
+     * 解析路径的真实绝对路径，解析所有符号链接。
+     * 
+     * 如果路径存在，使用 toRealPath() 解析符号链接。
+     * 如果路径不存在（如即将创建的文件），递归向上查找存在的父目录并解析，
+     * 然后拼接剩余的路径部分，防止通过在已有目录上创建符号链接来绕过沙箱。
+     * 
+     * @param path 待解析的路径
+     * @return 解析后的真实绝对路径
+     * @throws IOException 如果路径解析失败
+     */
+    private Path resolveRealPath(Path path) throws IOException {
+        Path absolutePath = path.toAbsolutePath();
+        
+        // 路径存在时直接解析符号链接
+        if (absolutePath.toFile().exists()) {
+            return absolutePath.toRealPath();
+        }
+        
+        // 路径不存在时，向上查找存在的祖先目录并解析
+        Path current = absolutePath;
+        List<String> pendingParts = new ArrayList<>();
+        
+        while (current != null && !current.toFile().exists()) {
+            pendingParts.add(0, current.getFileName().toString());
+            current = current.getParent();
+        }
+        
+        if (current == null) {
+            // 没有任何祖先目录存在，回退到 normalize
+            return absolutePath.normalize();
+        }
+        
+        // 解析存在的祖先目录的真实路径，然后拼接剩余部分
+        Path realAncestor = current.toRealPath();
+        Path result = realAncestor;
+        for (String part : pendingParts) {
+            result = result.resolve(part);
+        }
+        return result.normalize();
     }
     
     /**
@@ -186,16 +230,16 @@ public class SecurityGuard {
     /**
      * 检查路径是否命中受保护文件列表
      * 
-     * @param absPath 已规范化的绝对路径
+     * @param resolvedPath 已解析符号链接的绝对路径
      * @param originalPath 原始路径（用于日志）
      * @return 如果命中受保护文件则返回错误消息，否则返回 null
      */
-    private String checkProtectedPath(Path absPath, String originalPath) {
+    private String checkProtectedPath(Path resolvedPath, String originalPath) {
         for (Path protectedPath : protectedPaths) {
-            if (absPath.equals(protectedPath)) {
+            if (resolvedPath.equals(protectedPath)) {
                 logger.warn("File path blocked (protected sensitive file)", Map.of(
                     "path", originalPath,
-                    "resolved", absPath.toString(),
+                    "resolved", resolvedPath.toString(),
                     "protectedPath", protectedPath.toString()
                 ));
                 return String.format(
@@ -211,12 +255,21 @@ public class SecurityGuard {
      * 构建默认受保护文件路径列表
      * 
      * 这些文件包含敏感信息（如 API Key），即使在 workspace 内也禁止模型访问。
+     * 使用 resolveRealPath 解析符号链接，防止通过符号链接访问受保护文件。
      */
     private List<Path> buildDefaultProtectedPaths() {
         String home = System.getProperty("user.home");
         List<Path> paths = new ArrayList<>();
-        paths.add(Paths.get(home, ".tinyclaw", "config.json").toAbsolutePath().normalize());
-        paths.add(Paths.get(home, ".tinyclaw", ".env").toAbsolutePath().normalize());
+        try {
+            paths.add(resolveRealPath(Paths.get(home, ".tinyclaw", "config.json")));
+            paths.add(resolveRealPath(Paths.get(home, ".tinyclaw", ".env")));
+        } catch (IOException e) {
+            // 回退到 normalize，确保至少有基本保护
+            logger.warn("Failed to resolve real paths for protected files, falling back to normalize", 
+                Map.of("error", e.getMessage()));
+            paths.add(Paths.get(home, ".tinyclaw", "config.json").toAbsolutePath().normalize());
+            paths.add(Paths.get(home, ".tinyclaw", ".env").toAbsolutePath().normalize());
+        }
         return paths;
     }
     

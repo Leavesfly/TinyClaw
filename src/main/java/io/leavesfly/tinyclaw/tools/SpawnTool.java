@@ -72,7 +72,7 @@ public class SpawnTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String task = (String) args.get("task");
         if (task == null || task.isEmpty()) {
             return "错误: 任务参数是必需的";

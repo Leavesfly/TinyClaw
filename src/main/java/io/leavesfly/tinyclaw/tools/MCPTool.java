@@ -93,7 +93,7 @@ public class MCPTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         // 检查连接状态
         if (!client.isConnected()) {
             return "错误: MCP 服务器 '" + serverName + "' 未连接";

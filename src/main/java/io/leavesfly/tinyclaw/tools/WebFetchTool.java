@@ -77,7 +77,7 @@ public class WebFetchTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String urlStr = (String) args.get("url");
         if (urlStr == null || urlStr.isEmpty()) {
             throw new IllegalArgumentException("url 参数是必需的");
@@ -114,13 +114,19 @@ public class WebFetchTool implements Tool {
                 .header("User-Agent", USER_AGENT)
                 .build();
         
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                return "错误: HTTP " + response.code();
-            }
+        try {
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    return "错误: HTTP " + response.code();
+                }
             
             String contentType = response.header("Content-Type", "");
-            String body = response.body() != null ? response.body().string() : "";
+            String body;
+            try {
+                body = response.body() != null ? response.body().string() : "";
+            } catch (java.io.IOException e) {
+                throw new ToolException("读取响应体失败", e);
+            }
             
             String text;
             String extractor;
@@ -160,7 +166,14 @@ public class WebFetchTool implements Tool {
             result.put("length", text.length());
             result.put("text", text);
             
-            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(result);
+            try {
+                return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(result);
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw new ToolException("序列化结果失败", e);
+            }
+            }
+        } catch (java.io.IOException e) {
+            throw new ToolException("获取网页内容失败: " + e.getMessage(), e);
         }
     }
     

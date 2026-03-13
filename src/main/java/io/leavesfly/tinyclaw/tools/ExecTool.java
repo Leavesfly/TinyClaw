@@ -83,7 +83,7 @@ public class ExecTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String command = (String) args.get("command");
         if (command == null || command.isEmpty()) {
             throw new IllegalArgumentException("命令参数是必需的");
@@ -101,7 +101,11 @@ public class ExecTool implements Tool {
         logger.info("Executing command", Map.of("command", command, "cwd", cwd));
         
         // 执行命令并获取结果
-        return executeCommand(command, cwd);
+        try {
+            return executeCommand(command, cwd);
+        } catch (Exception e) {
+            throw new ToolException("执行命令失败: " + e.getMessage(), e);
+        }
     }
     
     /**
@@ -166,6 +170,11 @@ public class ExecTool implements Tool {
         // 处理超时
         if (!finished) {
             process.destroyForcibly();
+            try {
+                process.waitFor(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
             return "错误: 命令超时，超过 " + timeoutSeconds + " 秒";
         }
         
@@ -246,7 +255,10 @@ public class ExecTool implements Tool {
                     }
                 }
             } catch (Exception e) {
-                // 忽略读取异常
+                logger.debug("Output reader thread exception", Map.of(
+                    "thread", threadName,
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+                ));
             }
         }, threadName);
     }

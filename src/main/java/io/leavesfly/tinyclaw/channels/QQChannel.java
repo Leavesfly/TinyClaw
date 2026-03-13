@@ -1,16 +1,16 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import okhttp3.*;
-
-import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.ChannelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import okhttp3.*;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -72,16 +72,20 @@ public class QQChannel extends BaseChannel {
     }
     
     @Override
-    public void start() throws Exception {
+    public void start() throws ChannelException {
         logger.info("正在启动 QQ 通道...");
         
         if (config.getAppId() == null || config.getAppId().isEmpty() ||
             config.getAppSecret() == null || config.getAppSecret().isEmpty()) {
-            throw new Exception("QQ App ID 或 App Secret 为空");
+            throw new ChannelException("QQ App ID 或 App Secret 为空");
         }
         
         // 获取访问令牌
-        refreshAccessToken();
+        try {
+            refreshAccessToken();
+        } catch (Exception e) {
+            throw new ChannelException("获取访问令牌失败", e);
+        }
         
         setRunning(true);
         logger.info("QQ 通道已启动（API 模式）");
@@ -98,21 +102,30 @@ public class QQChannel extends BaseChannel {
     }
     
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) {
         if (!isRunning()) {
             throw new IllegalStateException("QQ 通道未运行");
         }
         
         // 确保令牌有效
         if (accessToken == null || System.currentTimeMillis() >= tokenExpireTime) {
-            refreshAccessToken();
+            try {
+                refreshAccessToken();
+            } catch (Exception e) {
+                throw new ChannelException("刷新访问令牌失败", e);
+            }
         }
         
         // 构建消息体
         ObjectNode body = objectMapper.createObjectNode();
         body.put("content", message.getContent());
         
-        String jsonBody = objectMapper.writeValueAsString(body);
+        String jsonBody;
+        try {
+            jsonBody = objectMapper.writeValueAsString(body);
+        } catch (JsonProcessingException e) {
+            throw new ChannelException("序列化消息失败", e);
+        }
         
         // 发送私聊消息
         String url = API_BASE_URL + "/v2/users/" + message.getChatId() + "/messages";
@@ -126,11 +139,18 @@ public class QQChannel extends BaseChannel {
         
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                String errorBody = response.body() != null ? response.body().string() : "";
-                throw new Exception("发送 QQ 消息失败: HTTP " + response.code() + " " + errorBody);
+                String errorBody;
+                try {
+                    errorBody = response.body() != null ? response.body().string() : "";
+                } catch (IOException e) {
+                    errorBody = "无法读取错误响应";
+                }
+                throw new ChannelException("发送 QQ 消息失败: HTTP " + response.code() + " " + errorBody);
             }
             
             logger.debug("QQ 消息发送成功", Map.of("chat_id", message.getChatId()));
+        } catch (IOException e) {
+            throw new ChannelException("发送 QQ 消息时发生网络错误", e);
         }
     }
     

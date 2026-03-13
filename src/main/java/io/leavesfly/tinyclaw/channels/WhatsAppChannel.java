@@ -59,11 +59,11 @@ public class WhatsAppChannel extends BaseChannel {
     }
 
     @Override
-    public void start() throws Exception {
+    public void start() throws ChannelException {
         logger.info("正在启动 WhatsApp 通道...", Map.of("bridge_url", config.getBridgeUrl()));
 
         if (config.getBridgeUrl() == null || config.getBridgeUrl().isEmpty()) {
-            throw new Exception("WhatsApp Bridge URL 为空");
+            throw new ChannelException("WhatsApp Bridge URL 为空");
         }
 
         CountDownLatch connectLatch = new CountDownLatch(1);
@@ -97,9 +97,14 @@ public class WhatsAppChannel extends BaseChannel {
             }
         });
 
-        boolean ok = connectLatch.await(15, TimeUnit.SECONDS);
-        if (!ok || !connected.get()) {
-            throw new Exception("连接 WhatsApp Bridge 超时");
+        try {
+            boolean ok = connectLatch.await(15, TimeUnit.SECONDS);
+            if (!ok || !connected.get()) {
+                throw new ChannelException("连接 WhatsApp Bridge 超时");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ChannelException("连接 WhatsApp Bridge 被中断", e);
         }
 
         setRunning(true);
@@ -118,7 +123,7 @@ public class WhatsAppChannel extends BaseChannel {
     }
 
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) throws ChannelException {
         if (!isRunning() || !connected.get()) {
             throw new IllegalStateException("WhatsApp 通道未运行");
         }
@@ -128,8 +133,12 @@ public class WhatsAppChannel extends BaseChannel {
         payload.put("to", message.getChatId());
         payload.put("content", message.getContent());
 
-        webSocket.send(objectMapper.writeValueAsString(payload));
-        logger.debug("WhatsApp 消息已发送", Map.of("chat_id", message.getChatId()));
+        try {
+            webSocket.send(objectMapper.writeValueAsString(payload));
+            logger.debug("WhatsApp 消息已发送", Map.of("chat_id", message.getChatId()));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new ChannelException("序列化 WhatsApp 消息失败", e);
+        }
     }
 
     /**

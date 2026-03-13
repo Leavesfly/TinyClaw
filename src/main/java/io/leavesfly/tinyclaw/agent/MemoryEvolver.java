@@ -7,6 +7,8 @@ import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -57,11 +59,11 @@ public class MemoryEvolver {
     private final LLMProvider provider;
     private final String model;
 
-    /** 上次执行 LLM 密集进化的时间戳（提炼+整合） */
-    private volatile long lastFullEvolutionTimeMs = 0;
+    /** 上次执行 LLM 密集进化的时间戳（提炼+整合），使用 AtomicLong 保证原子性 */
+    private final AtomicLong lastFullEvolutionTimeMs = new AtomicLong(0);
 
-    /** 上次进化时的记忆条目数量，用于增量检测 */
-    private volatile int entryCountAtLastEvolution = 0;
+    /** 上次进化时的记忆条目数量，用于增量检测，使用 AtomicInteger 保证原子性 */
+    private final AtomicInteger entryCountAtLastEvolution = new AtomicInteger(0);
 
     /**
      * 构造记忆进化引擎。
@@ -86,9 +88,10 @@ public class MemoryEvolver {
      */
     public void evolve() {
         long now = System.currentTimeMillis();
-        boolean cooldownExpired = (now - lastFullEvolutionTimeMs) >= EVOLUTION_COOLDOWN_MS;
+        long lastEvolutionTime = lastFullEvolutionTimeMs.get();
+        boolean cooldownExpired = (now - lastEvolutionTime) >= EVOLUTION_COOLDOWN_MS;
         int currentEntryCount = memoryStore.getEntries().size();
-        boolean hasNewEntries = currentEntryCount > entryCountAtLastEvolution;
+        boolean hasNewEntries = currentEntryCount > entryCountAtLastEvolution.get();
 
         boolean shouldRunFullEvolution = cooldownExpired && hasNewEntries;
 
@@ -98,7 +101,7 @@ public class MemoryEvolver {
             logger.debug("Skipping LLM-intensive phases",
                     Map.of("cooldown_expired", cooldownExpired,
                             "has_new_entries", hasNewEntries,
-                            "hours_since_last", (now - lastFullEvolutionTimeMs) / 3600000.0));
+                            "hours_since_last", (now - lastEvolutionTime) / 3600000.0));
         }
 
         // 阶段一、二：提炼 + 整合（仅在冷却到期且有新增记忆时执行）
@@ -115,9 +118,9 @@ public class MemoryEvolver {
                 logger.error("Consolidation phase failed", Map.of("error", e.getMessage()));
             }
 
-            // 更新冷却状态
-            lastFullEvolutionTimeMs = System.currentTimeMillis();
-            entryCountAtLastEvolution = memoryStore.getEntries().size();
+            // 原子更新冷却状态
+            lastFullEvolutionTimeMs.set(System.currentTimeMillis());
+            entryCountAtLastEvolution.set(memoryStore.getEntries().size());
         }
 
         // 阶段三：衰减归档（纯计算，每次心跳都执行）
@@ -346,34 +349,35 @@ public class MemoryEvolver {
         // 按综合得分排序（升序，最低分在前）
         currentEntries.sort(Comparator.comparingDouble(MemoryEntry::computeScore));
 
-        List<MemoryEntry> toArchive = new ArrayList<>();
+        // 使用 Set 跟踪待归档条目，避免 O(n²) 的 contains 检查
+        Set<MemoryEntry> toArchiveSet = new LinkedHashSet<>();
 
         // 条件 1：得分低于阈值的记忆
         for (MemoryEntry entry : currentEntries) {
             if (entry.computeScore() < ARCHIVE_SCORE_THRESHOLD) {
-                toArchive.add(entry);
+                toArchiveSet.add(entry);
             }
         }
 
         // 条件 2：超过最大活跃数量限制
-        int remainingAfterScoreArchive = currentEntries.size() - toArchive.size();
+        int remainingAfterScoreArchive = currentEntries.size() - toArchiveSet.size();
         if (remainingAfterScoreArchive > MAX_ACTIVE_ENTRIES) {
             int excessCount = remainingAfterScoreArchive - MAX_ACTIVE_ENTRIES;
             for (MemoryEntry entry : currentEntries) {
                 if (excessCount <= 0) {
                     break;
                 }
-                if (!toArchive.contains(entry)) {
-                    toArchive.add(entry);
+                if (!toArchiveSet.contains(entry)) {
+                    toArchiveSet.add(entry);
                     excessCount--;
                 }
             }
         }
 
-        if (!toArchive.isEmpty()) {
-            memoryStore.archiveEntries(toArchive);
+        if (!toArchiveSet.isEmpty()) {
+            memoryStore.archiveEntries(new ArrayList<>(toArchiveSet));
             logger.info("Archived low-score memories", Map.of(
-                    "archived_count", toArchive.size(),
+                    "archived_count", toArchiveSet.size(),
                     "remaining_count", memoryStore.getEntries().size()));
         }
     }

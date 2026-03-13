@@ -70,7 +70,7 @@ public class WebSearchTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         if (apiKey == null || apiKey.isEmpty()) {
             return "错误: BRAVE_API_KEY 未配置";
         }
@@ -132,6 +132,8 @@ public class WebSearchTool implements Tool {
             }
             
             return result.toString();
+        } catch (Exception e) {
+            return "搜索失败: " + e.getMessage();
         }
     }
 }

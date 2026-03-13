@@ -137,12 +137,19 @@ public class AgentLoop {
 
         while (running) {
             try {
-                processMessage(bus.consumeInbound());
+                InboundMessage message = bus.consumeInbound();
+                if (message == null) {
+                    continue; // MessageBus 已关闭，poll 返回 null
+                }
+                processMessage(message);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                logger.error("Error processing message", Map.of("error", e.getMessage()));
+                String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                logger.error("Error processing message", Map.of(
+                        "error", errorMsg,
+                        "exception_type", e.getClass().getSimpleName()));
             }
         }
 

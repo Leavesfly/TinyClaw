@@ -407,7 +407,9 @@ public class ContextBuilder {
                 return Files.readString(Paths.get(filePath));
             }
         } catch (IOException e) {
-            // 忽略读取个别文件时的错误
+            logger.debug("Failed to load bootstrap file", Map.of(
+                    "filename", filename,
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
         return "";
     }
@@ -440,8 +442,8 @@ public class ContextBuilder {
         messages.add(Message.system(systemPrompt));
         
         // 添加历史记录（清理可能存在的孤立 tool 消息，防止 LLM API 报错）
-        if (history != null) {
-            messages.addAll(sanitizeHistory(history));
+        if (history != null && !history.isEmpty()) {
+            messages.addAll(sanitizeHistory(new ArrayList<>(history)));
         }
         
         // 添加当前用户消息

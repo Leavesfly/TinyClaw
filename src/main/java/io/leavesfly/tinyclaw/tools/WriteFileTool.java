@@ -34,6 +34,8 @@ import java.util.Map;
  */
 public class WriteFileTool implements Tool {
     
+    private static final long MAX_CONTENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+    
     private final SecurityGuard securityGuard;
     
     public WriteFileTool() {
@@ -78,7 +80,7 @@ public class WriteFileTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String path = (String) args.get("path");
         String content = (String) args.get("content");
         
@@ -97,6 +99,12 @@ public class WriteFileTool implements Tool {
             }
         }
         
+        // 检查内容大小
+        long contentBytes = content.getBytes().length;
+        if (contentBytes > MAX_CONTENT_SIZE_BYTES) {
+            return "写入内容过大（" + contentBytes + " 字节），超过最大限制 " + MAX_CONTENT_SIZE_BYTES + " 字节";
+        }
+        
         try {
             Path filePath = Paths.get(path);
             Path parentDir = filePath.getParent();
@@ -106,7 +114,7 @@ public class WriteFileTool implements Tool {
             Files.writeString(filePath, content);
             return "文件写入成功";
         } catch (IOException e) {
-            throw new Exception("写入文件失败: " + e.getMessage());
+            return "写入文件失败: " + e.getMessage();
         }
     }
 }

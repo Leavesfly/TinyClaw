@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -12,6 +13,7 @@ import io.leavesfly.tinyclaw.voice.Transcriber;
 import okhttp3.*;
 
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
@@ -86,7 +88,7 @@ public class TelegramChannel extends BaseChannel {
     }
 
     @Override
-    public void start() throws Exception {
+    public void start() throws ChannelException {
         logger.info("正在启动 Telegram Bot（长轮询模式）...");
 
         // 验证 Token
@@ -94,17 +96,24 @@ public class TelegramChannel extends BaseChannel {
         Request request = new Request.Builder().url(meUrl).build();
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) {
-                throw new Exception("验证 Telegram Token 失败: HTTP " + response.code());
+                throw new ChannelException("验证 Telegram Token 失败: HTTP " + response.code());
             }
-            JsonNode json = objectMapper.readTree(response.body().string());
+            JsonNode json;
+            try {
+                json = objectMapper.readTree(response.body().string());
+            } catch (IOException e) {
+                throw new ChannelException("解析 Telegram 响应失败", e);
+            }
             if (!json.path("ok").asBoolean(false)) {
-                throw new Exception("Telegram Token 无效: " + json.path("description").asText(""));
+                throw new ChannelException("Telegram Token 无效: " + json.path("description").asText(""));
             }
             JsonNode result = json.path("result");
             logger.info("Telegram Bot 连接成功", Map.of(
                     "username", "@" + result.path("username").asText(""),
                     "bot_id", result.path("id").asLong()
             ));
+        } catch (IOException e) {
+            throw new ChannelException("验证 Telegram Token 时发生网络错误", e);
         }
 
         setRunning(true);
@@ -126,7 +135,7 @@ public class TelegramChannel extends BaseChannel {
     }
 
     @Override
-    public void send(OutboundMessage message) throws Exception {
+    public void send(OutboundMessage message) throws ChannelException {
         if (!isRunning()) {
             throw new IllegalStateException("Telegram Bot 未运行");
         }
@@ -139,27 +148,41 @@ public class TelegramChannel extends BaseChannel {
         body.put("text", htmlContent);
         body.put("parse_mode", "HTML");
 
-        Request request = new Request.Builder()
-                .url(url)
-                .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
-                .build();
+        Request request;
+        try {
+            request = new Request.Builder()
+                    .url(url)
+                    .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
+                    .build();
+        } catch (JsonProcessingException e) {
+            throw new ChannelException("序列化 Telegram 消息失败", e);
+        }
 
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
                 // HTML 解析失败，降级为纯文本
                 logger.warn("HTML 发送失败，降级为纯文本", Map.of("status", response.code()));
-                body.remove("parse_mode");
+
                 body.put("text", message.getContent());
-                Request fallback = new Request.Builder()
-                        .url(url)
-                        .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
-                        .build();
+                Request fallback;
+                try {
+                    fallback = new Request.Builder()
+                            .url(url)
+                            .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON_MEDIA_TYPE))
+                            .build();
+                } catch (JsonProcessingException e) {
+                    throw new ChannelException("序列化 Telegram 消息失败", e);
+                }
                 try (Response fbResp = httpClient.newCall(fallback).execute()) {
                     if (!fbResp.isSuccessful()) {
-                        throw new Exception("发送 Telegram 消息失败: HTTP " + fbResp.code());
+                        throw new ChannelException("发送 Telegram 消息失败: HTTP " + fbResp.code());
                     }
+                } catch (IOException e) {
+                    throw new ChannelException("发送 Telegram 消息时发生网络错误", e);
                 }
             }
+        } catch (IOException e) {
+            throw new ChannelException("发送 Telegram 消息时发生网络错误", e);
         }
     }
 

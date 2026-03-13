@@ -53,7 +53,7 @@ public class ListDirTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String path = (String) args.get("path");
         if (path == null || path.isEmpty()) {
             path = ".";
@@ -77,17 +77,19 @@ public class ListDirTool implements Tool {
             }
             
             StringBuilder result = new StringBuilder();
-            Files.list(dirPath).forEach(p -> {
-                if (Files.isDirectory(p)) {
-                    result.append("DIR:  ").append(p.getFileName()).append("\n");
-                } else {
-                    result.append("FILE: ").append(p.getFileName()).append("\n");
-                }
-            });
+            try (var entries = Files.list(dirPath)) {
+                entries.forEach(p -> {
+                    if (Files.isDirectory(p)) {
+                        result.append("DIR:  ").append(p.getFileName()).append("\n");
+                    } else {
+                        result.append("FILE: ").append(p.getFileName()).append("\n");
+                    }
+                });
+            }
             
             return result.toString();
         } catch (IOException e) {
-            throw new Exception("列表目录失败: " + e.getMessage());
+            throw new ToolException("列表目录失败: " + e.getMessage(), e);
         }
     }
 }

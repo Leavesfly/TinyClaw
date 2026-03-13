@@ -78,7 +78,7 @@ public class MessageTool implements Tool {
     }
     
     @Override
-    public String execute(Map<String, Object> args) throws Exception {
+    public String execute(Map<String, Object> args) throws ToolException {
         String content = (String) args.get("content");
         if (content == null || content.isEmpty()) {
             throw new IllegalArgumentException("内容参数是必需的");
