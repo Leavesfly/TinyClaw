@@ -327,10 +327,14 @@ public class GatewayBootstrap {
     }
 
     /**
-     * 触发记忆进化周期。
+     * 触发进化周期。
      *
      * 在心跳回调中异步执行，不阻塞心跳主流程。
-     * 进化过程包括：从每日笔记提炼 → 整合去重 → 衰减归档。
+     * 进化过程包括：
+     * 1. 基于反馈的智能记忆进化
+     * 2. 常规记忆进化（提炼 → 整合 → 衰减归档）
+     * 3. Prompt 优化（如果启用）
+     * 4. 清理已结束会话的跟踪数据
      */
     private void triggerMemoryEvolution() {
         if (!agentLoop.isProviderConfigured()) {
@@ -339,14 +343,12 @@ public class GatewayBootstrap {
 
         Thread evolutionThread = new Thread(() -> {
             try {
-                var evolver = agentLoop.getMemoryEvolver();
-                if (evolver != null) {
-                    evolver.evolve();
-                }
+                // 调用完整的进化周期（包含反馈驱动的进化 + Prompt 优化）
+                agentLoop.runEvolutionCycle();
             } catch (Exception e) {
-                logger.error("Memory evolution failed", Map.of("error", e.getMessage()));
+                logger.error("Evolution cycle failed", Map.of("error", e.getMessage()));
             }
-        }, "memory-evolution");
+        }, "evolution-cycle");
         evolutionThread.setDaemon(true);
         evolutionThread.start();
     }

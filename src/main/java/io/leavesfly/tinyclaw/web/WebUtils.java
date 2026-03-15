@@ -93,6 +93,7 @@ public class WebUtils {
     public static final String API_CONFIG          = "/api/config";
     public static final String API_CONFIG_MODEL    = "/api/config/model";
     public static final String API_CONFIG_AGENT    = "/api/config/agent";
+    public static final String API_FEEDBACK        = "/api/feedback";
 
     // ==================== HTTP Methods ====================
     public static final String HTTP_METHOD_GET     = "GET";

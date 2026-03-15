@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.evolution.MemoryStore;
+import io.leavesfly.tinyclaw.agent.evolution.PromptOptimizer;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.skills.SkillInfo;
@@ -54,6 +56,9 @@ public class ContextBuilder {
     private final MemoryStore memory;        // 记忆存储
     private final SkillsLoader skillsLoader; // 技能加载器
     
+    /** 可选的 Prompt 优化器（进化功能启用时设置） */
+    private volatile PromptOptimizer promptOptimizer;
+    
     /**
      * 创建上下文构建器。
      * 
@@ -107,6 +112,26 @@ public class ContextBuilder {
      */
     public void setContextWindow(int contextWindow) {
         this.contextWindow = contextWindow;
+    }
+    
+    /**
+     * 设置 Prompt 优化器（可选，用于进化功能）。
+     * 
+     * 设置后，系统提示词将包含优化后的行为指导。
+     * 
+     * @param promptOptimizer Prompt 优化器实例
+     */
+    public void setPromptOptimizer(PromptOptimizer promptOptimizer) {
+        this.promptOptimizer = promptOptimizer;
+    }
+    
+    /**
+     * 获取 Prompt 优化器。
+     * 
+     * @return 优化器实例，未设置时返回 null
+     */
+    public PromptOptimizer getPromptOptimizer() {
+        return promptOptimizer;
     }
     
     /**
@@ -322,11 +347,33 @@ public class ContextBuilder {
     }
     
     /**
-     * 获取 Agent 身份和基本信息。
+     * 获取 Agent 身份和基本信息（包含可选的优化内容）。
+     * 
+     * 如果配置了 PromptOptimizer 且有活跃的优化，
+     * 会在基础身份信息后追加优化后的行为指导。
      * 
      * @return 身份信息字符串
      */
     private String getIdentity() {
+        String baseIdentity = getBaseIdentity();
+        
+        // 如果有优化器且有活跃优化，追加优化内容
+        if (promptOptimizer != null && promptOptimizer.hasActiveOptimization()) {
+            String optimization = promptOptimizer.getActiveOptimization();
+            if (StringUtils.isNotBlank(optimization)) {
+                return baseIdentity + "\n\n## 优化后的行为指导\n\n" + optimization;
+            }
+        }
+        
+        return baseIdentity;
+    }
+    
+    /**
+     * 获取基础身份信息（不含优化）。
+     * 
+     * @return 基础身份信息字符串
+     */
+    private String getBaseIdentity() {
         String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"));
         String workspacePath = Paths.get(workspace).toAbsolutePath().toString();
         String runtime = System.getProperty("os.name") + " " + System.getProperty("os.arch") + ", Java " + System.getProperty("java.version");

@@ -1,4 +1,4 @@
-package io.leavesfly.tinyclaw.agent;
+package io.leavesfly.tinyclaw.agent.evolution;
 
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -428,5 +428,124 @@ public class MemoryEvolver {
 
         logger.debug("Quick-extracted memory from session summary",
                 Map.of("session_key", sessionKey));
+    }
+
+    // ==================== 基于评估反馈的智能进化 ====================
+
+    /**
+     * 基于评估反馈的智能记忆进化（可选启用）。
+     *
+     * 根据反馈分数采取不同策略：
+     * - 高分会话（> 0.8）：提炼为高重要性记忆，学习成功模式
+     * - 低分会话（< 0.3）：分析失败原因，生成避坑记忆
+     * - 中等分数：标准处理
+     *
+     * @param feedback 评估反馈
+     */
+    public void evolveWithFeedback(EvaluationFeedback feedback) {
+        if (feedback == null) {
+            return;
+        }
+
+        double score = feedback.getPrimaryScore();
+        String sessionKey = feedback.getSessionKey();
+
+        logger.debug("Evolving with feedback", Map.of(
+                "session", sessionKey != null ? sessionKey : "unknown",
+                "score", score,
+                "mode", feedback.getEvalMode()));
+
+        if (score > 0.8) {
+            // 高分会话：提炼高价值记忆
+            extractHighValueMemories(feedback);
+        } else if (score < 0.3) {
+            // 低分会话：提炼教训记忆
+            extractLessonsLearned(feedback);
+        }
+        // 中等分数会话不做特殊处理，由常规进化周期处理
+    }
+
+    /**
+     * 从高分会话中提炼高价值记忆。
+     *
+     * 记录成功模式，供未来参考。
+     */
+    private void extractHighValueMemories(EvaluationFeedback feedback) {
+        String sessionKey = feedback.getSessionKey();
+        String textualGradient = feedback.getTextualGradient();
+
+        // 如果有文本梯度（用户评论或 LLM 分析），作为记忆内容
+        String content;
+        if (StringUtils.isNotBlank(textualGradient)) {
+            content = "[成功模式] " + textualGradient;
+        } else if (StringUtils.isNotBlank(feedback.getUserComment())) {
+            content = "[用户正面反馈] " + feedback.getUserComment();
+        } else {
+            // 没有具体内容，生成通用记录
+            content = String.format("[成功会话] 会话 %s 获得高分 (%.2f)，表明当前处理方式有效",
+                    sessionKey != null ? sessionKey : "unknown", feedback.getPrimaryScore());
+        }
+
+        List<String> tags = new ArrayList<>();
+        tags.add("success_pattern");
+        tags.add(feedback.getEvalMode() != null ? feedback.getEvalMode().name().toLowerCase() : "implicit");
+        if (sessionKey != null && sessionKey.contains(":")) {
+            tags.add(sessionKey.substring(0, sessionKey.indexOf(":")));
+        }
+
+        // 高分会话的记忆重要性稍高
+        memoryStore.addEntry(content, 0.7, tags, "evolution_feedback");
+
+        logger.info("Extracted high-value memory from positive feedback", Map.of(
+                "session", sessionKey != null ? sessionKey : "unknown",
+                "score", feedback.getPrimaryScore()));
+    }
+
+    /**
+     * 从低分会话中提炼教训记忆。
+     *
+     * 记录失败模式，避免重复犯错。
+     */
+    private void extractLessonsLearned(EvaluationFeedback feedback) {
+        String sessionKey = feedback.getSessionKey();
+        String textualGradient = feedback.getTextualGradient();
+
+        String content;
+        if (StringUtils.isNotBlank(textualGradient)) {
+            content = "[避坑经验] " + textualGradient;
+        } else if (StringUtils.isNotBlank(feedback.getUserComment())) {
+            content = "[用户负面反馈] " + feedback.getUserComment();
+        } else {
+            // 生成基于指标的通用记录
+            StringBuilder sb = new StringBuilder("[待改进] ");
+            if (feedback.hasMetric("tool_success_rate")) {
+                double toolRate = feedback.getMetric("tool_success_rate");
+                if (toolRate < 0.5) {
+                    sb.append("工具调用成功率低 (" + String.format("%.0f%%", toolRate * 100) + "); ");
+                }
+            }
+            if (feedback.hasMetric("retry_count")) {
+                double retryRatio = feedback.getMetric("retry_count");
+                if (retryRatio > 0.4) {
+                    sb.append("用户多次重试; ");
+                }
+            }
+            sb.append("会话评分: ").append(String.format("%.2f", feedback.getPrimaryScore()));
+            content = sb.toString();
+        }
+
+        List<String> tags = new ArrayList<>();
+        tags.add("lesson_learned");
+        tags.add("improvement_needed");
+        if (sessionKey != null && sessionKey.contains(":")) {
+            tags.add(sessionKey.substring(0, sessionKey.indexOf(":")));
+        }
+
+        // 教训记忆重要性较高，防止重复犯错
+        memoryStore.addEntry(content, 0.8, tags, "evolution_feedback");
+
+        logger.info("Extracted lesson from negative feedback", Map.of(
+                "session", sessionKey != null ? sessionKey : "unknown",
+                "score", feedback.getPrimaryScore()));
     }
 }

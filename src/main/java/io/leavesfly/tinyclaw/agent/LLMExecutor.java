@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.evolution.FeedbackCollector;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -31,6 +32,12 @@ public class LLMExecutor {
     private final String model;               // 使用的模型名称
     private final int maxIterations;          // 最大迭代次数
     
+    /** 反馈收集器（可选，用于进化模块） */
+    private volatile FeedbackCollector feedbackCollector;
+    
+    /** 当前会话标识（用于反馈记录） */
+    private String currentSessionKey;
+    
     public LLMExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions, 
                       String model, int maxIterations) {
         this.provider = provider;
@@ -38,6 +45,15 @@ public class LLMExecutor {
         this.sessions = sessions;
         this.model = model;
         this.maxIterations = maxIterations;
+    }
+    
+    /**
+     * 设置反馈收集器（可选，用于进化模块）。
+     * 
+     * @param feedbackCollector 反馈收集器实例
+     */
+    public void setFeedbackCollector(FeedbackCollector feedbackCollector) {
+        this.feedbackCollector = feedbackCollector;
     }
     
     /**
@@ -55,6 +71,7 @@ public class LLMExecutor {
      * @throws Exception 调用 LLM 或执行工具时的异常
      */
     public String execute(List<Message> messages, String sessionKey) throws Exception {
+        this.currentSessionKey = sessionKey; // 设置当前会话用于反馈记录
         int iteration = 0;
         String finalContent = null;
         int emptyRetries = 0;
@@ -148,6 +165,7 @@ public class LLMExecutor {
      */
     public String executeStream(List<Message> messages, String sessionKey, 
                                LLMProvider.StreamCallback callback) throws Exception {
+        this.currentSessionKey = sessionKey; // 设置当前会话用于反馈记录
         int iteration = 0;
         String finalContent = null;
         int emptyRetries = 0;
@@ -358,11 +376,24 @@ public class LLMExecutor {
      * @return 工具执行结果，如果执行失败返回错误信息
      */
     private String executeToolCall(ToolCall toolCall) {
+        String toolName = toolCall.getName();
+        boolean success = false;
+        String result;
+        
         try {
-            return tools.execute(toolCall.getName(), toolCall.getArguments());
+            result = tools.execute(toolName, toolCall.getArguments());
+            // 工具执行成功（没有以 "Error:" 开头）
+            success = result != null && !result.startsWith("Error:");
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            result = "Error: " + e.getMessage();
         }
+        
+        // 记录工具执行结果到反馈收集器
+        if (feedbackCollector != null && currentSessionKey != null) {
+            feedbackCollector.recordToolResult(currentSessionKey, toolName, success);
+        }
+        
+        return result;
     }
     
     /**

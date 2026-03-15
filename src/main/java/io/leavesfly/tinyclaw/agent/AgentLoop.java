@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.evolution.*;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
@@ -49,6 +50,12 @@ public class AgentLoop {
     private volatile MemoryEvolver memoryEvolver;
     private volatile LLMProvider provider;
     private volatile MCPManager mcpManager;
+    
+    /* ---------- 进化组件（可选，配置启用后初始化） ---------- */
+    private volatile FeedbackStore feedbackStore;
+    private volatile FeedbackCollector feedbackCollector;
+    private volatile PromptStore promptStore;
+    private volatile PromptOptimizer promptOptimizer;
 
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
@@ -126,6 +133,50 @@ public class AgentLoop {
         this.summarizer = new SessionSummarizer(sessions, newProvider, model, contextWindow,
                 memoryStore, memoryEvolver);
         this.providerConfigured = true;
+        
+        // 初始化进化组件（如果启用）
+        initializeEvolutionComponents(newProvider, model);
+    }
+    
+    /**
+     * 初始化进化组件（反馈收集、Prompt 优化）。
+     * 
+     * 仅在配置启用时初始化，不影响现有功能。
+     */
+    private void initializeEvolutionComponents(LLMProvider newProvider, String model) {
+        EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
+        if (evolutionConfig == null || !evolutionConfig.isAnyEvolutionEnabled()) {
+            logger.debug("Evolution features disabled");
+            return;
+        }
+        
+        try {
+           // 初始化反馈存储和收集器
+            if (evolutionConfig.isFeedbackEnabled()) {
+                this.feedbackStore = new FeedbackStore(workspace, evolutionConfig.getFeedbackRetentionDays());
+                this.feedbackCollector = new FeedbackCollector(feedbackStore);
+                
+                // 将反馈收集器注入到 LLMExecutor，用于记录工具执行结果
+                if (llmExecutor != null) {
+                    llmExecutor.setFeedbackCollector(feedbackCollector);
+                }
+                logger.info("Feedback collection enabled");
+            }
+            
+            // 初始化 Prompt 优化器
+            if (evolutionConfig.isPromptOptimizationEnabled() && feedbackCollector != null) {
+                this.promptStore = new PromptStore(workspace, evolutionConfig.getMaxHistoryVersions());
+                this.promptOptimizer = new PromptOptimizer(
+                        newProvider, model, promptStore, feedbackCollector, evolutionConfig);
+                
+                // 将优化器设置到 ContextBuilder
+                contextBuilder.setPromptOptimizer(promptOptimizer);
+                logger.info("Prompt optimization enabled", Map.of(
+                        "strategy", evolutionConfig.getStrategy().name()));
+            }
+        } catch (Exception e) {
+            logger.error("Failed to initialize evolution components", Map.of("error", e.getMessage()));
+        }
     }
 
     // ==================== 生命周期 ====================
@@ -186,6 +237,67 @@ public class AgentLoop {
     /** 获取记忆进化引擎，供外部组件（如心跳服务）触发记忆进化 */
     public MemoryEvolver getMemoryEvolver() {
         return memoryEvolver;
+    }
+    
+    /** 获取反馈收集器，供外部组件记录反馈 */
+    public FeedbackCollector getFeedbackCollector() {
+        return feedbackCollector;
+    }
+    
+    /** 获取 Prompt 优化器，供外部组件触发优化 */
+    public PromptOptimizer getPromptOptimizer() {
+        return promptOptimizer;
+    }
+    
+    /**
+     * 执行进化周期（供心跳服务调用）。
+     * 
+     * 包含记忆进化和可选的 Prompt 优化。
+     */
+    public void runEvolutionCycle() {
+        // 1. 基于反馈的智能记忆进化（如果启用）
+        if (feedbackCollector != null && memoryEvolver != null) {
+            try {
+                // 获取最近一天的聚合反馈
+                List<EvaluationFeedback> recentFeedbacks = feedbackCollector.getRecentAggregatedFeedbacks(1);
+                for (EvaluationFeedback feedback : recentFeedbacks) {
+                    memoryEvolver.evolveWithFeedback(feedback);
+                }
+                if (!recentFeedbacks.isEmpty()) {
+                    logger.debug("Processed feedback-based memory evolution", Map.of(
+                            "feedback_count", recentFeedbacks.size()));
+                }
+            } catch (Exception e) {
+                logger.error("Feedback-based memory evolution failed", Map.of("error", e.getMessage()));
+            }
+        }
+        
+        // 2. 常规记忆进化
+        if (memoryEvolver != null) {
+            try {
+                memoryEvolver.evolve();
+            } catch (Exception e) {
+                logger.error("Memory evolution failed", Map.of("error", e.getMessage()));
+            }
+        }
+        
+        // 3. Prompt 优化（如果启用）
+        if (promptOptimizer != null && config.getAgent().isPromptOptimizationEnabled()) {
+            try {
+                String currentPrompt = contextBuilder.getPromptOptimizer() != null 
+                        ? contextBuilder.getPromptOptimizer().getActiveOptimization()
+                        : null;
+                // 传入基础 prompt 进行优化检查
+                promptOptimizer.maybeOptimize(currentPrompt != null ? currentPrompt : "");
+            } catch (Exception e) {
+                logger.error("Prompt optimization failed", Map.of("error", e.getMessage()));
+            }
+        }
+        
+        // 4. 清理已结束会话的跟踪数据
+        if (feedbackCollector != null) {
+            feedbackCollector.cleanupEndedSessions();
+        }
     }
 
     // ==================== 公开入口（CLI / 外部调用） ====================
@@ -294,6 +406,11 @@ public class AgentLoop {
         List<Message> messages = buildContext(sessionKey, msg);
         sessions.addMessage(sessionKey, "user", msg.getContent());
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
+
+        // 记录消息交互（进化组件启用时）
+        if (feedbackCollector != null) {
+            feedbackCollector.recordMessageExchange(sessionKey);
+        }
 
         String response = ensureNonBlank(
                 llmExecutor.execute(messages, sessionKey), DEFAULT_EMPTY_RESPONSE);

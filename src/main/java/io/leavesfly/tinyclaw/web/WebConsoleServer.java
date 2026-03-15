@@ -86,6 +86,7 @@ public class WebConsoleServer {
         httpServer.createContext(WebUtils.API_PROVIDERS, providersHandler::handle);
         httpServer.createContext(WebUtils.API_MODELS,    new ModelsHandler(config, security, providersHandler)::handle);
         httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler)::handle);
+        httpServer.createContext(WebUtils.API_FEEDBACK,  new FeedbackHandler(config, agentLoop, security)::handle);
     }
 
     private void registerStaticHandler() {

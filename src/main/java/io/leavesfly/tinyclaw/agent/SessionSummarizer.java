@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.evolution.MemoryEvolver;
+import io.leavesfly.tinyclaw.agent.evolution.MemoryStore;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMResponse;
