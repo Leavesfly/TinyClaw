@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.config;
 
+import io.leavesfly.tinyclaw.agent.evolution.EvolutionConfig;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -18,6 +20,9 @@ public class AgentConfig {
     private boolean heartbeatEnabled;
     private boolean restrictToWorkspace;
     private List<String> commandBlacklist;
+    
+    /** 进化能力配置（反馈收集、Prompt 优化）*/
+    private EvolutionConfig evolution;
 
     public AgentConfig() {
         this.workspace = "~/.tinyclaw/workspace";
@@ -29,6 +34,7 @@ public class AgentConfig {
         this.heartbeatEnabled = false;
         this.restrictToWorkspace = true; // 默认启用 workspace 限制
         this.commandBlacklist = new ArrayList<>(); // 为空表示使用默认黑名单
+        this.evolution = new EvolutionConfig(); // 默认禁用进化功能
     }
 
     public String getWorkspace() {
@@ -101,5 +107,31 @@ public class AgentConfig {
 
     public void setCommandBlacklist(List<String> commandBlacklist) {
         this.commandBlacklist = commandBlacklist;
+    }
+
+    public EvolutionConfig getEvolution() {
+        return evolution;
+    }
+
+    public void setEvolution(EvolutionConfig evolution) {
+        this.evolution = evolution;
+    }
+
+    /**
+     * 检查是否启用反馈收集。
+     *
+     * @return 启用时返回 true
+     */
+    public boolean isFeedbackEnabled() {
+        return evolution != null && evolution.isFeedbackEnabled();
+    }
+
+    /**
+     * 检查是否启用 Prompt 优化。
+     *
+     * @return 启用时返回 true
+     */
+    public boolean isPromptOptimizationEnabled() {
+        return evolution != null && evolution.isPromptOptimizationEnabled();
     }
 }
