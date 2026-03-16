@@ -4,6 +4,7 @@ import io.leavesfly.tinyclaw.security.SecurityGuard;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
@@ -86,12 +87,24 @@ public class ReadFileTool implements Tool {
         }
         
         try {
+            Path filePath = Paths.get(path);
+            
+            // 检查文件是否存在
+            if (!Files.exists(filePath)) {
+                return "文件不存在: " + path;
+            }
+            
+            // 检查是否为常规文件
+            if (!Files.isRegularFile(filePath)) {
+                return "路径不是一个常规文件: " + path;
+            }
+            
             // 检查文件大小
-            long fileSize = Files.size(Paths.get(path));
+            long fileSize = Files.size(filePath);
             if (fileSize > MAX_FILE_SIZE_BYTES) {
                 return "文件过大（" + fileSize + " 字节），超过最大限制 " + MAX_FILE_SIZE_BYTES + " 字节";
             }
-            return Files.readString(Paths.get(path));
+            return Files.readString(filePath);
         } catch (IOException e) {
             throw new ToolException("读取文件失败: " + e.getMessage(), e);
         }
