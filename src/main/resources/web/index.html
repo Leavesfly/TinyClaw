@@ -71,6 +71,10 @@
                             <span class="nav-icon">🧩</span>
                             <span>Skills</span>
                         </a>
+                        <a href="#mcp" class="nav-item" data-page="mcp">
+                            <span class="nav-icon">🔌</span>
+                            <span>MCP</span>
+                        </a>
                     </div>
                 </div>
                 
@@ -256,6 +260,26 @@
                 <div id="page-skills" class="page">
                     <p class="page-desc">View and manage agent skills</p>
                     <div class="card-grid" id="skillsGrid"></div>
+                </div>
+                
+                <!-- MCP 页面 -->
+                <div id="page-mcp" class="page">
+                    <p class="page-desc">Configure and manage MCP (Model Context Protocol) servers</p>
+                    
+                    <div class="mcp-toolbar">
+                        <div class="mcp-toggle">
+                            <label class="toggle-label">
+                                <span>MCP Enabled</span>
+                                <input type="checkbox" id="mcpEnabledToggle">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <button class="btn btn-primary" id="addMcpServerBtn">+ Add Server</button>
+                    </div>
+                    
+                    <div class="card-grid" id="mcpServersGrid">
+                        <p class="empty-state">No MCP servers configured</p>
+                    </div>
                 </div>
                 
                 <!-- Models 页面 -->

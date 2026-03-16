@@ -176,6 +176,7 @@ class TinyClawConsole {
             cron: 'Cron Jobs',
             workspace: 'Workspace',
             skills: 'Skills',
+            mcp: 'MCP Servers',
             models: 'Models',
             environments: 'Environments'
         };
@@ -202,6 +203,7 @@ class TinyClawConsole {
             case 'cron': this.loadCronJobs(); break;
             case 'workspace': this.loadWorkspaceFiles(); break;
             case 'skills': this.loadSkills(); break;
+            case 'mcp': this.loadMcpServers(); break;
             case 'models': this.loadProviders(); this.loadCurrentModel(); break;
             case 'environments': this.loadAgentConfig(); break;
         }
@@ -1098,6 +1100,419 @@ class TinyClawConsole {
             document.getElementById('modalConfirm').style.display = 'none';
         } catch (error) {
             console.error('Failed to load skill:', error);
+        }
+    }
+
+    // ==================== MCP Servers ====================
+
+    async loadMcpServers() {
+        try {
+            const response = await this.authFetch('/api/mcp');
+            const data = await response.json();
+
+            // 设置全局开关状态
+            const toggle = document.getElementById('mcpEnabledToggle');
+            toggle.checked = data.enabled;
+            toggle.onchange = () => this.toggleMcpEnabled(toggle.checked);
+
+            // 绑定添加按钮
+            document.getElementById('addMcpServerBtn').onclick = () => this.showAddMcpServerModal();
+
+            const grid = document.getElementById('mcpServersGrid');
+            const servers = data.servers || [];
+
+            if (servers.length === 0) {
+                grid.innerHTML = '<p class="empty-state">No MCP servers configured</p>';
+                return;
+            }
+
+            grid.innerHTML = servers.map(s => {
+                const statusBadge = s.enabled
+                    ? '<span class="badge badge-success">Enabled</span>'
+                    : '<span class="badge badge-disabled">Disabled</span>';
+                const serverType = (s.type || 'sse').toUpperCase();
+                const isStdio = (s.type || 'sse') === 'stdio';
+
+                let connectionInfo = '';
+                if (isStdio) {
+                    const cmdDisplay = s.command || 'Not set';
+                    const argsDisplay = s.args && s.args.length > 0 ? s.args.join(' ') : '';
+                    connectionInfo = `
+                        <div class="provider-field">
+                            <span class="provider-field-label">Command:</span>
+                            <span>${this.escapeHtml(cmdDisplay + (argsDisplay ? ' ' + argsDisplay : ''))}</span>
+                        </div>`;
+                } else {
+                    const endpointDisplay = s.endpoint
+                        ? `<span title="${this.escapeHtml(s.endpoint)}">${this.truncateUrl(s.endpoint)}</span>`
+                        : '<span class="not-set">Not set</span>';
+                    const apiKeyDisplay = s.apiKey
+                        ? `<span class="masked">${this.escapeHtml(s.apiKey)}</span>`
+                        : '<span class="not-set">Not set</span>';
+                    connectionInfo = `
+                        <div class="provider-field">
+                            <span class="provider-field-label">Endpoint:</span>
+                            ${endpointDisplay}
+                        </div>
+                        <div class="provider-field">
+                            <span class="provider-field-label">API Key:</span>
+                            ${apiKeyDisplay}
+                        </div>`;
+                }
+
+                return `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${this.escapeHtml(s.name)}</span>
+                            <span class="badge">${serverType}</span>
+                            ${statusBadge}
+                        </div>
+                        <div class="card-body">
+                            <p>${this.escapeHtml(s.description) || 'No description'}</p>
+                            ${connectionInfo}
+                            <div class="provider-field">
+                                <span class="provider-field-label">Timeout:</span>
+                                <span>${s.timeout}ms</span>
+                            </div>
+                        </div>
+                        <div id="mcpTools-${this.escapeHtml(s.name)}" class="mcp-tools-section" style="display:none"></div>
+                        <div class="card-footer">
+                            <button class="btn btn-text" onclick="app.testMcpServer('${this.escapeHtml(s.name)}')">🔌 Test</button>
+                            <button class="btn btn-text" onclick="app.showEditMcpServerModal('${this.escapeHtml(s.name)}')">Edit</button>
+                            <button class="btn btn-text btn-danger" onclick="app.deleteMcpServer('${this.escapeHtml(s.name)}')">Delete</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } catch (error) {
+            console.error('Failed to load MCP servers:', error);
+        }
+    }
+
+    async toggleMcpEnabled(enabled) {
+        try {
+            await this.authFetch('/api/mcp', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            });
+        } catch (error) {
+            console.error('Failed to toggle MCP:', error);
+            // 回滚 toggle 状态
+            document.getElementById('mcpEnabledToggle').checked = !enabled;
+        }
+    }
+
+    showAddMcpServerModal() {
+        this.showModal('Add MCP Server', `
+            <div class="form-group">
+                <label>Name <span style="color:red">*</span></label>
+                <input class="form-control" id="mcpServerName" placeholder="e.g., my-mcp-server">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input class="form-control" id="mcpServerDesc" placeholder="Server description">
+            </div>
+            <div class="form-group">
+                <label>Transport Type</label>
+                <select class="form-control" id="mcpServerType" onchange="app.toggleMcpTypeFields()">
+                    <option value="sse">SSE (HTTP)</option>
+                    <option value="streamable-http">Streamable HTTP</option>
+                    <option value="stdio">Stdio (Local Process)</option>
+                </select>
+            </div>
+            <div id="mcpSseFields">
+                <div class="form-group">
+                    <label>Endpoint <span style="color:red">*</span></label>
+                    <input class="form-control" id="mcpServerEndpoint" placeholder="https://example.com/mcp/sse">
+                </div>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <input class="form-control" id="mcpServerApiKey" placeholder="Optional API key">
+                </div>
+            </div>
+            <div id="mcpStdioFields" style="display:none">
+                <div class="form-group">
+                    <label>Command <span style="color:red">*</span></label>
+                    <input class="form-control" id="mcpServerCommand" placeholder="e.g., npx, python3, node">
+                </div>
+                <div class="form-group">
+                    <label>Arguments (one per line)</label>
+                    <textarea class="form-control" id="mcpServerArgs" rows="3" placeholder="e.g.,\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/dir"></textarea>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Timeout (ms)</label>
+                    <input type="number" class="form-control" id="mcpServerTimeout" value="30000">
+                </div>
+                <div class="form-group">
+                    <label>Enabled</label>
+                    <select class="form-control" id="mcpServerEnabled">
+                        <option value="true">Yes</option>
+                        <option value="false">No</option>
+                    </select>
+                </div>
+            </div>
+        `, async () => {
+            const name = document.getElementById('mcpServerName').value.trim();
+            const type = document.getElementById('mcpServerType').value;
+            const isStdio = type === 'stdio';
+
+            if (!name) { alert('Server name is required'); return; }
+
+            const payload = {
+                name,
+                type,
+                description: document.getElementById('mcpServerDesc').value.trim(),
+                timeout: parseInt(document.getElementById('mcpServerTimeout').value) || 30000,
+                enabled: document.getElementById('mcpServerEnabled').value === 'true'
+            };
+
+            if (type === 'stdio') {
+                const command = document.getElementById('mcpServerCommand').value.trim();
+                if (!command) { alert('Command is required for stdio type'); return; }
+                payload.command = command;
+                const argsText = document.getElementById('mcpServerArgs').value.trim();
+                if (argsText) {
+                    payload.args = argsText.split('\n').map(a => a.trim()).filter(a => a);
+                }
+            } else {
+                const endpoint = document.getElementById('mcpServerEndpoint').value.trim();
+                if (!endpoint) { alert('Endpoint is required'); return; }
+                payload.endpoint = endpoint;
+                payload.apiKey = document.getElementById('mcpServerApiKey').value.trim();
+            }
+
+            try {
+                const response = await this.authFetch('/api/mcp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    alert(err.error || 'Failed to add server');
+                    return;
+                }
+                this.loadMcpServers();
+            } catch (error) {
+                alert('Failed to add server: ' + error.message);
+            }
+        });
+    }
+
+    toggleMcpTypeFields() {
+        const type = document.getElementById('mcpServerType').value;
+        const isHttpType = type === 'sse' || type === 'streamable-http';
+        document.getElementById('mcpSseFields').style.display = isHttpType ? '' : 'none';
+        document.getElementById('mcpStdioFields').style.display = type === 'stdio' ? '' : 'none';
+    }
+
+    async showEditMcpServerModal(serverName) {
+        try {
+            const response = await this.authFetch('/api/mcp');
+            const data = await response.json();
+            const server = (data.servers || []).find(s => s.name === serverName);
+            if (!server) { alert('Server not found'); return; }
+
+            const serverType = server.type || 'sse';
+            const isStdio = serverType === 'stdio';
+            const isHttpType = serverType === 'sse' || serverType === 'streamable-http';
+            const argsText = server.args ? server.args.join('\n') : '';
+
+            this.showModal(`Edit: ${serverName}`, `
+                <div class="form-group">
+                    <label>Description</label>
+                    <input class="form-control" id="editMcpDesc" value="${this.escapeHtml(server.description || '')}">
+                </div>
+                <div class="form-group">
+                    <label>Transport Type</label>
+                    <select class="form-control" id="editMcpType" onchange="app.toggleEditMcpTypeFields()">
+                        <option value="sse" ${serverType === 'sse' ? 'selected' : ''}>SSE (HTTP)</option>
+                        <option value="streamable-http" ${serverType === 'streamable-http' ? 'selected' : ''}>Streamable HTTP</option>
+                        <option value="stdio" ${isStdio ? 'selected' : ''}>Stdio (Local Process)</option>
+                    </select>
+                </div>
+                <div id="editMcpSseFields" style="${isHttpType ? '' : 'display:none'}">
+                    <div class="form-group">
+                        <label>Endpoint</label>
+                        <input class="form-control" id="editMcpEndpoint" value="${this.escapeHtml(server.endpoint || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input class="form-control" id="editMcpApiKey" value="${this.escapeHtml(server.apiKey || '')}" placeholder="Leave unchanged to keep current key">
+                    </div>
+                </div>
+                <div id="editMcpStdioFields" style="${isStdio ? '' : 'display:none'}">
+                    <div class="form-group">
+                        <label>Command</label>
+                        <input class="form-control" id="editMcpCommand" value="${this.escapeHtml(server.command || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label>Arguments (one per line)</label>
+                        <textarea class="form-control" id="editMcpArgs" rows="3">${this.escapeHtml(argsText)}</textarea>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Timeout (ms)</label>
+                        <input type="number" class="form-control" id="editMcpTimeout" value="${server.timeout}">
+                    </div>
+                    <div class="form-group">
+                        <label>Enabled</label>
+                        <select class="form-control" id="editMcpEnabled">
+                            <option value="true" ${server.enabled ? 'selected' : ''}>Yes</option>
+                            <option value="false" ${!server.enabled ? 'selected' : ''}>No</option>
+                        </select>
+                    </div>
+                </div>
+            `, async () => {
+                const type = document.getElementById('editMcpType').value;
+                const payload = {
+                    type,
+                    description: document.getElementById('editMcpDesc').value.trim(),
+                    timeout: parseInt(document.getElementById('editMcpTimeout').value) || 30000,
+                    enabled: document.getElementById('editMcpEnabled').value === 'true'
+                };
+
+                if (type === 'stdio') {
+                    payload.command = document.getElementById('editMcpCommand').value.trim();
+                    const argsVal = document.getElementById('editMcpArgs').value.trim();
+                    if (argsVal) {
+                        payload.args = argsVal.split('\n').map(a => a.trim()).filter(a => a);
+                    }
+                } else {
+                    payload.endpoint = document.getElementById('editMcpEndpoint').value.trim();
+                    payload.apiKey = document.getElementById('editMcpApiKey').value.trim();
+                }
+
+                try {
+                    const updateResponse = await this.authFetch(`/api/mcp/${encodeURIComponent(serverName)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!updateResponse.ok) {
+                        const err = await updateResponse.json();
+                        alert(err.error || 'Failed to update server');
+                        return;
+                    }
+                    this.loadMcpServers();
+                } catch (error) {
+                    alert('Failed to update server: ' + error.message);
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load server for editing:', error);
+        }
+    }
+
+    toggleEditMcpTypeFields() {
+        const type = document.getElementById('editMcpType').value;
+        const isHttpType = type === 'sse' || type === 'streamable-http';
+        document.getElementById('editMcpSseFields').style.display = isHttpType ? '' : 'none';
+        document.getElementById('editMcpStdioFields').style.display = type === 'stdio' ? '' : 'none';
+    }
+
+    async testMcpServer(serverName) {
+        const toolsSection = document.getElementById(`mcpTools-${serverName}`);
+        if (!toolsSection) return;
+
+        // 显示加载状态
+        toolsSection.style.display = '';
+        toolsSection.innerHTML = '<div class="mcp-tools-loading">🔄 Testing connection...</div>';
+
+        try {
+            const response = await this.authFetch(`/api/mcp/${encodeURIComponent(serverName)}/test`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                toolsSection.innerHTML = `
+                    <div class="mcp-tools-error">
+                        <span class="mcp-status-icon">❌</span>
+                        <strong>Connection Failed</strong>
+                        <p>${this.escapeHtml(data.error || 'Unknown error')}</p>
+                    </div>`;
+                return;
+            }
+
+            // 构建服务器信息
+            let serverInfoHtml = '';
+            if (data.serverInfo) {
+                const parts = [];
+                if (data.serverInfo.name) parts.push(data.serverInfo.name);
+                if (data.serverInfo.version) parts.push(`v${data.serverInfo.version}`);
+                if (data.serverInfo.protocolVersion) parts.push(`protocol ${data.serverInfo.protocolVersion}`);
+                if (parts.length > 0) {
+                    serverInfoHtml = `<div class="mcp-server-info">${this.escapeHtml(parts.join(' · '))}</div>`;
+                }
+            }
+
+            // 构建工具列表
+            const tools = data.tools || [];
+            let toolsHtml = '';
+            if (tools.length === 0) {
+                toolsHtml = '<p class="mcp-no-tools">No tools available</p>';
+            } else {
+                toolsHtml = tools.map(tool => {
+                    const params = (tool.parameters || []).map(p => {
+                        const required = (tool.required || []).includes(p.name);
+                        const typeLabel = p.type ? `<span class="mcp-param-type">${this.escapeHtml(p.type)}</span>` : '';
+                        const requiredLabel = required ? '<span class="mcp-param-required">*</span>' : '';
+                        return `<span class="mcp-param">${this.escapeHtml(p.name)}${requiredLabel}${typeLabel}</span>`;
+                    }).join('');
+
+                    return `
+                        <div class="mcp-tool-item">
+                            <div class="mcp-tool-name">🔧 ${this.escapeHtml(tool.name)}</div>
+                            <div class="mcp-tool-desc">${this.escapeHtml(tool.description || '')}</div>
+                            ${params ? `<div class="mcp-tool-params">${params}</div>` : ''}
+                        </div>`;
+                }).join('');
+            }
+
+            toolsSection.innerHTML = `
+                <div class="mcp-tools-result">
+                    <div class="mcp-tools-header">
+                        <span class="mcp-status-icon">✅</span>
+                        <strong>Connected</strong> — ${tools.length} tool${tools.length !== 1 ? 's' : ''} available
+                        <button class="btn btn-text btn-sm" onclick="document.getElementById('mcpTools-${this.escapeHtml(serverName)}').style.display='none'" style="float:right">✕</button>
+                    </div>
+                    ${serverInfoHtml}
+                    <div class="mcp-tools-list">${toolsHtml}</div>
+                </div>`;
+
+        } catch (error) {
+            toolsSection.innerHTML = `
+                <div class="mcp-tools-error">
+                    <span class="mcp-status-icon">❌</span>
+                    <strong>Error</strong>
+                    <p>${this.escapeHtml(error.message)}</p>
+                </div>`;
+        }
+    }
+
+    async deleteMcpServer(serverName) {
+        if (!confirm(`Delete MCP server "${serverName}"?`)) return;
+
+        try {
+            const response = await this.authFetch(`/api/mcp/${encodeURIComponent(serverName)}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                alert(err.error || 'Failed to delete server');
+                return;
+            }
+            this.loadMcpServers();
+        } catch (error) {
+            alert('Failed to delete server: ' + error.message);
         }
     }
 

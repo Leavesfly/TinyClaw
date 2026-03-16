@@ -3,6 +3,8 @@ package io.leavesfly.tinyclaw.cli;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.MCPServersConfig;
 import io.leavesfly.tinyclaw.mcp.MCPClient;
+import io.leavesfly.tinyclaw.mcp.SSEMCPClient;
+import io.leavesfly.tinyclaw.mcp.StdioMCPClient;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
 import io.leavesfly.tinyclaw.mcp.MCPMessage;
 import io.leavesfly.tinyclaw.mcp.MCPServerInfo;
@@ -132,10 +134,19 @@ public class McpCommand extends CliCommand {
 
         for (MCPServersConfig.MCPServerConfig server : mcpConfig.getServers()) {
             String status = server.isEnabled() ? "✓ 已启用" : "✗ 已禁用";
+            String type = server.isStdio() ? "stdio" : "sse";
             System.out.println("名称: " + server.getName());
             System.out.println("  状态: " + status);
+            System.out.println("  类型: " + type);
             System.out.println("  描述: " + server.getDescription());
-            System.out.println("  端点: " + server.getEndpoint());
+            if (server.isStdio()) {
+                System.out.println("  命令: " + server.getCommand());
+                if (server.getArgs() != null && !server.getArgs().isEmpty()) {
+                    System.out.println("  参数: " + String.join(" ", server.getArgs()));
+                }
+            } else {
+                System.out.println("  端点: " + server.getEndpoint());
+            }
             System.out.println("  超时: " + server.getTimeout() + "ms");
             System.out.println();
         }
@@ -160,11 +171,21 @@ public class McpCommand extends CliCommand {
             System.out.println("⚠️  服务器已禁用");
         }
 
-        MCPClient client = new MCPClient(
-                serverConfig.getEndpoint(),
-                serverConfig.getApiKey(),
-                serverConfig.getTimeout()
-        );
+        MCPClient client;
+        if (serverConfig.isStdio()) {
+            client = new StdioMCPClient(
+                    serverConfig.getCommand(),
+                    serverConfig.getArgs(),
+                    serverConfig.getEnv(),
+                    serverConfig.getTimeout()
+            );
+        } else {
+            client = new SSEMCPClient(
+                    serverConfig.getEndpoint(),
+                    serverConfig.getApiKey(),
+                    serverConfig.getTimeout()
+            );
+        }
 
         try {
             connectAndInitialize(client);
@@ -192,6 +213,9 @@ public class McpCommand extends CliCommand {
 
         MCPMessage initResponse = client.sendRequest("initialize", initParams);
         System.out.println("   ✓ 初始化成功");
+
+        // 发送 initialized 通知（MCP 协议要求）
+        client.sendNotification("notifications/initialized", Collections.emptyMap());
 
         printServerInfo(initResponse);
     }
