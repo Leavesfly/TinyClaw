@@ -6,9 +6,11 @@ import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.channels.DiscordChannel;
 import io.leavesfly.tinyclaw.channels.TelegramChannel;
 import io.leavesfly.tinyclaw.channels.WebhookServer;
+import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.heartbeat.HeartbeatService;
+import io.leavesfly.tinyclaw.tools.CronTool;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
@@ -100,6 +102,11 @@ public class GatewayBootstrap {
         // 3. 初始化定时任务服务
         String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
         cronService = new CronService(cronStorePath);
+
+        // 设置任务处理器：通过 CronTool 执行定时任务
+        CronTool cronTool = new CronTool(cronService, (content, sessionKey, channel, chatId) ->
+                agentLoop.processDirectWithChannel(content, sessionKey, channel, chatId), bus);
+        cronService.setOnJob(job -> cronTool.executeJob(job));
 
         // 4. 初始化心跳服务
         initializeHeartbeat();
