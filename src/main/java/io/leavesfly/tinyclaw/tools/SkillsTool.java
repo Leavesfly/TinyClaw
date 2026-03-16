@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.tools;
 import io.leavesfly.tinyclaw.config.ToolsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.skills.SkillInfo;
+import io.leavesfly.tinyclaw.skills.SkillSearchResult;
 import io.leavesfly.tinyclaw.skills.SkillsInstaller;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.skills.SkillsSearcher;
@@ -386,7 +387,7 @@ public class SkillsTool implements Tool {
 
         logger.info("Searching skill registries", Map.of("query", query));
 
-        List<SkillsSearcher.SkillSearchResult> results = skillsSearcher.search(query, 5);
+        List<SkillSearchResult> results = skillsSearcher.search(query, 5);
 
         StringBuilder response = new StringBuilder();
 
@@ -433,7 +434,7 @@ public class SkillsTool implements Tool {
         ));
 
         // 搜索技能
-        List<SkillsSearcher.SkillSearchResult> results = skillsSearcher.search(query, 5);
+        List<SkillSearchResult> results = skillsSearcher.search(query, 5);
 
         if (results.isEmpty()) {
             return "未找到与 '" + query + "' 相关的技能仓库。\n\n"
@@ -443,11 +444,11 @@ public class SkillsTool implements Tool {
         }
 
         // 选择要安装的仓库
-        SkillsSearcher.SkillSearchResult selectedResult = null;
+        SkillSearchResult selectedResult = null;
 
         if (targetRepo != null && !targetRepo.isEmpty()) {
             // 用户指定了仓库，从搜索结果中匹配
-            for (SkillsSearcher.SkillSearchResult result : results) {
+            for (SkillSearchResult result : results) {
                 if (result.getFullName().equalsIgnoreCase(targetRepo)
                         || result.getFullName().toLowerCase().contains(targetRepo.toLowerCase())) {
                     selectedResult = result;
@@ -463,7 +464,7 @@ public class SkillsTool implements Tool {
             }
         } else {
             // 自动选择最佳结果：优先选择已验证包含 SKILL.md 的仓库
-            for (SkillsSearcher.SkillSearchResult result : results) {
+            for (SkillSearchResult result : results) {
                 if (result.isHasSkillFile()) {
                     selectedResult = result;
                     break;
@@ -472,7 +473,7 @@ public class SkillsTool implements Tool {
 
             // 如果没有已验证的，验证第一个结果是否包含 SKILL.md
             if (selectedResult == null) {
-                SkillsSearcher.SkillSearchResult firstResult = results.get(0);
+                SkillSearchResult firstResult = results.get(0);
                 boolean hasSkillFile = skillsSearcher.verifySkillFile(
                         firstResult.getFullName(), firstResult.getSkillSubdir());
                 if (hasSkillFile) {
@@ -520,7 +521,7 @@ public class SkillsTool implements Tool {
             response.append("⚠️ 安装失败: ").append(installError.getMessage()).append("\n\n");
             response.append("其他搜索结果：\n");
             for (int i = 0; i < results.size(); i++) {
-                SkillsSearcher.SkillSearchResult result = results.get(i);
+                SkillSearchResult result = results.get(i);
                 if (!result.getFullName().equals(selectedResult.getFullName())) {
                     response.append("- **").append(result.getFullName()).append("**");
                     if (result.getDescription() != null && !result.getDescription().isEmpty()) {

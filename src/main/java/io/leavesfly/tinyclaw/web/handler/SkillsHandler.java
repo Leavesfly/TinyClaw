@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.web.handler;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
@@ -73,6 +74,36 @@ public class SkillsHandler {
                 } else {
                     WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Skill not found"), corsOrigin);
                 }
+
+            } else if (path.startsWith(WebUtils.API_SKILLS + WebUtils.PATH_SEPARATOR)
+                    && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+                String name = URLDecoder.decode(
+                        path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+                String body = WebUtils.readRequestBody(exchange);
+                JsonNode bodyJson = WebUtils.MAPPER.readTree(body);
+                String content = bodyJson.has("content") ? bodyJson.get("content").asText() : null;
+                if (content == null) {
+                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Missing content"), corsOrigin);
+                } else if (skillsLoader.saveWorkspaceSkill(name, content)) {
+                    ObjectNode result = WebUtils.MAPPER.createObjectNode();
+                    result.put("success", true);
+                    WebUtils.sendJson(exchange, 200, result, corsOrigin);
+                } else {
+                    WebUtils.sendJson(exchange, 500, WebUtils.errorJson("Failed to save skill"), corsOrigin);
+                }
+
+            } else if (path.startsWith(WebUtils.API_SKILLS + WebUtils.PATH_SEPARATOR)
+                    && WebUtils.HTTP_METHOD_DELETE.equals(method)) {
+                String name = URLDecoder.decode(
+                        path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+                if (skillsLoader.deleteWorkspaceSkill(name)) {
+                    ObjectNode result = WebUtils.MAPPER.createObjectNode();
+                    result.put("success", true);
+                    WebUtils.sendJson(exchange, 200, result, corsOrigin);
+                } else {
+                    WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Skill not found or not a workspace skill"), corsOrigin);
+                }
+
             } else {
                 WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not found"), corsOrigin);
             }

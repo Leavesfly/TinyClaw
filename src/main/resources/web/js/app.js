@@ -1081,6 +1081,10 @@ class TinyClawConsole {
                     </div>
                     <div class="card-footer">
                         <button class="btn btn-text" onclick="app.viewSkill('${s.name}')">View</button>
+                        ${s.source === 'workspace' ? `
+                        <button class="btn btn-text" onclick="app.editSkill('${s.name}')">Edit</button>
+                        <button class="btn btn-text btn-danger" onclick="app.deleteSkill('${s.name}')">Delete</button>
+                        ` : ''}
                     </div>
                 </div>
             `).join('');
@@ -1100,6 +1104,51 @@ class TinyClawConsole {
             document.getElementById('modalConfirm').style.display = 'none';
         } catch (error) {
             console.error('Failed to load skill:', error);
+        }
+    }
+
+    async editSkill(name) {
+        try {
+            const response = await this.authFetch(`/api/skills/${encodeURIComponent(name)}`);
+            const skill = await response.json();
+
+            this.showModal(`Edit Skill: ${name}`, `
+                <textarea id="editSkillContent" style="width:100%; height:400px; font-family:monospace; font-size:13px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--bg); resize:vertical;">${this.escapeHtml(skill.content)}</textarea>
+            `, async () => {
+                const content = document.getElementById('editSkillContent').value;
+                const saveResp = await this.authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                if (saveResp.ok) {
+                    await this.loadSkills();
+                } else {
+                    const err = await saveResp.json();
+                    alert('Failed to save skill: ' + (err.error || saveResp.status));
+                }
+            });
+            document.getElementById('modalConfirm').textContent = 'Save';
+            document.getElementById('modalConfirm').style.display = 'block';
+        } catch (error) {
+            console.error('Failed to edit skill:', error);
+        }
+    }
+
+    async deleteSkill(name) {
+        if (!confirm(`Delete workspace skill "${name}"? This cannot be undone.`)) return;
+        try {
+            const response = await this.authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                await this.loadSkills();
+            } else {
+                const err = await response.json();
+                alert('Failed to delete skill: ' + (err.error || response.status));
+            }
+        } catch (error) {
+            console.error('Failed to delete skill:', error);
         }
     }
 

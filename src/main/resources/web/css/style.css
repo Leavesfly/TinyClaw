@@ -327,6 +327,14 @@ body {
     background: var(--primary-light);
 }
 
+.btn-text.btn-danger {
+    color: var(--error);
+}
+
+.btn-text.btn-danger:hover {
+    background: #fef2f2;
+}
+
 /* Forms */
 .form-group {
     margin-bottom: 16px;
