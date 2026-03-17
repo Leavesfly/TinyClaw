@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.providers.LLMProvider;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +20,8 @@ public class SpawnTool implements Tool {
     private final SubagentManager manager;
     private String originChannel = "cli";
     private String originChatId = "direct";
+    /** 流式回调（用于输出子代理执行过程） */
+    private volatile LLMProvider.EnhancedStreamCallback streamCallback;
     
     public SpawnTool(SubagentManager manager) {
         this.manager = manager;
@@ -71,6 +75,15 @@ public class SpawnTool implements Tool {
         this.originChatId = chatId != null ? chatId : "direct";
     }
     
+    /**
+     * 设置流式回调，用于输出子代理的执行过程。
+     * 
+     * @param callback 流式回调，可为 null
+     */
+    public void setStreamCallback(LLMProvider.EnhancedStreamCallback callback) {
+        this.streamCallback = callback;
+    }
+    
     @Override
     public String execute(Map<String, Object> args) throws ToolException {
         String task = (String) args.get("task");
@@ -92,6 +105,7 @@ public class SpawnTool implements Tool {
         }
         
         // 同步模式（默认）：阻塞等待子代理完成，返回实际结果
-        return manager.spawnAndWait(task, label);
+        // 如果有流式回调，使用流式版本输出子代理的执行过程
+        return manager.spawnAndWaitStream(task, label, streamCallback);
     }
 }

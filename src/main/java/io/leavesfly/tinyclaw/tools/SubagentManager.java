@@ -6,6 +6,7 @@ import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
+import io.leavesfly.tinyclaw.providers.StreamEvent;
 import io.leavesfly.tinyclaw.session.SessionManager;
 
 import java.nio.file.Paths;
@@ -115,6 +116,20 @@ public class SubagentManager {
      * 结果作为 tool_result 直接返回给主 Agent 的推理循环。
      */
     public String spawnAndWait(String task, String label) {
+        return spawnAndWaitStream(task, label, null);
+    }
+    
+    /**
+     * 同步生成子代理并等待执行完成（流式版本）。
+     * 支持通过回调输出子代理的执行过程信息。
+     * 
+     * @param task 子代理任务描述
+     * @param label 任务标签（可选）
+     * @param callback 流式回调，用于输出子代理的执行过程（可为 null）
+     * @return 子代理的执行结果
+     */
+    public String spawnAndWaitStream(String task, String label, 
+                                     LLMProvider.EnhancedStreamCallback callback) {
         maybeCleanupOldTasks();
 
         String taskId = "subagent-" + nextId.getAndIncrement();
@@ -135,9 +150,20 @@ public class SubagentManager {
                 "label", label != null ? label : "",
                 "task_preview", task.length() > 50 ? task.substring(0, 50) + "..." : task
         ));
+        
+        // 通过回调输出子代理开始事件
+        if (callback != null) {
+            callback.onEvent(StreamEvent.subagentStart(taskId, task, label));
+        }
 
         // 同步执行，阻塞当前线程直到子 Agent 完成
-        runTaskSync(subagentTask);
+        runTaskSyncWithStream(subagentTask, callback);
+        
+        // 通过回调输出子代理结束事件
+        if (callback != null) {
+            boolean success = "completed".equals(subagentTask.getStatus());
+            callback.onEvent(StreamEvent.subagentEnd(taskId, subagentTask.getResult(), success));
+        }
 
         return subagentTask.getResult();
     }
@@ -146,6 +172,17 @@ public class SubagentManager {
      * 同步执行子代理任务（不通过 MessageBus 回传，直接将结果写入 task 对象）。
      */
     private void runTaskSync(SubagentTask task) {
+        runTaskSyncWithStream(task, null);
+    }
+    
+    /**
+     * 同步执行子代理任务（流式版本）。
+     * 支持通过回调输出子代理的流式响应。
+     * 
+     * @param task 子代理任务
+     * @param callback 流式回调（可为 null）
+     */
+    private void runTaskSyncWithStream(SubagentTask task, LLMProvider.EnhancedStreamCallback callback) {
         List<Message> messages = new ArrayList<>();
         messages.add(new Message("system",
                 "你是一个子代理。独立完成给定的任务并报告结果。" +
@@ -159,7 +196,17 @@ public class SubagentManager {
 
         try {
             LLMExecutor llmExecutor = new LLMExecutor(provider, tools, subagentSessions, model, maxIterations);
-            String result = llmExecutor.execute(messages, sessionKey);
+            String result;
+            
+            if (callback != null) {
+                // 使用流式执行，将子代理的输出通过回调传递
+                result = llmExecutor.executeStream(messages, sessionKey, chunk -> {
+                    // 将子代理的内容包装为 subagentContent 事件
+                    callback.onEvent(StreamEvent.subagentContent(task.getId(), chunk));
+                });
+            } else {
+                result = llmExecutor.execute(messages, sessionKey);
+            }
 
             task.setStatus("completed");
             task.setResult(result != null ? result : "任务已完成但无返回内容");

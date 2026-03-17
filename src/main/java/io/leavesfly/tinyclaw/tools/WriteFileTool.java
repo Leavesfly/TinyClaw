@@ -79,6 +79,20 @@ public class WriteFileTool implements Tool {
         return params;
     }
     
+    /**
+     * 将路径解析为相对于 workspace 的绝对路径。
+     *
+     * 当 AI 传入相对路径（如 "foo.md"）时，若直接交给 SecurityGuard 检查，
+     * JVM 会将其解析到当前工作目录而非 workspace，导致路径落在 workspace 之外被拦截。
+     * 此方法确保相对路径始终基于 workspace 解析。
+     */
+    private String resolveAgainstWorkspace(String path) {
+        if (securityGuard == null || Paths.get(path).isAbsolute()) {
+            return path;
+        }
+        return Paths.get(securityGuard.getWorkspace(), path).normalize().toString();
+    }
+
     @Override
     public String execute(Map<String, Object> args) throws ToolException {
         String path = (String) args.get("path");
@@ -91,9 +105,12 @@ public class WriteFileTool implements Tool {
             throw new IllegalArgumentException("内容参数是必需的");
         }
         
+        // 将相对路径解析为相对于 workspace 的绝对路径，防止路径被解析到 JVM 工作目录
+        String resolvedPathString = resolveAgainstWorkspace(path);
+
         // 安全检查
         if (securityGuard != null) {
-            String error = securityGuard.checkFilePath(path);
+            String error = securityGuard.checkFilePath(resolvedPathString);
             if (error != null) {
                 throw new SecurityException(error);
             }
@@ -106,7 +123,7 @@ public class WriteFileTool implements Tool {
         }
         
         try {
-            Path filePath = Paths.get(path);
+            Path filePath = Paths.get(resolvedPathString);
             Path parentDir = filePath.getParent();
             if (parentDir != null) {
                 Files.createDirectories(parentDir);

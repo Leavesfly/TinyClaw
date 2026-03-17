@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.agent.evolution.*;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
@@ -11,6 +12,7 @@ import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
+import io.leavesfly.tinyclaw.tools.CollaborateTool;
 import io.leavesfly.tinyclaw.tools.Tool;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import io.leavesfly.tinyclaw.util.StringUtils;
@@ -56,6 +58,9 @@ public class AgentLoop {
     private volatile FeedbackCollector feedbackCollector;
     private volatile PromptStore promptStore;
     private volatile PromptOptimizer promptOptimizer;
+    
+    /* ---------- 协同组件（可选，配置启用后初始化） ---------- */
+    private volatile AgentOrchestrator orchestrator;
 
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
@@ -136,6 +141,9 @@ public class AgentLoop {
         
         // 初始化进化组件（如果启用）
         initializeEvolutionComponents(newProvider, model);
+        
+        // 初始化多Agent协同组件（如果启用）
+        initializeCollaborationComponents(newProvider, model, maxIterations);
     }
     
     /**
@@ -176,6 +184,35 @@ public class AgentLoop {
             }
         } catch (Exception e) {
             logger.error("Failed to initialize evolution components", Map.of("error", e.getMessage()));
+        }
+    }
+    
+    /**
+     * 初始化多Agent协同组件。
+     * 
+     * 仅在配置启用时初始化，不影响现有功能。
+     */
+    private void initializeCollaborationComponents(LLMProvider newProvider, String model, int maxIterations) {
+        if (!config.getAgent().isCollaborationEnabled()) {
+            logger.debug("Collaboration features disabled");
+            return;
+        }
+        
+        try {
+            // 创建协同编排器
+            this.orchestrator = new AgentOrchestrator(
+                    newProvider, tools, workspace, model, maxIterations);
+            
+            // 创建并注册协同工具（生命周期由 ToolRegistry 托管，无需成员变量持有）
+            CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
+            collaborateTool.setLLMContext(newProvider, model);
+            tools.register(collaborateTool);
+            contextBuilder.setTools(tools);
+            
+            logger.info("Collaboration features enabled", Map.of(
+                    "supportedModes", "debate,team,roleplay,consensus,hierarchy"));
+        } catch (Exception e) {
+            logger.error("Failed to initialize collaboration components", Map.of("error", e.getMessage()));
         }
     }
 

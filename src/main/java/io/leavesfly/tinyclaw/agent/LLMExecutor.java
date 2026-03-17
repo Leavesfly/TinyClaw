@@ -4,7 +4,7 @@ import io.leavesfly.tinyclaw.agent.evolution.FeedbackCollector;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;
-import io.leavesfly.tinyclaw.tools.ToolRegistry;
+import io.leavesfly.tinyclaw.tools.*;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.*;
@@ -37,6 +37,9 @@ public class LLMExecutor {
     
     /** 当前会话标识（用于反馈记录） */
     private String currentSessionKey;
+    
+    /** 当前流式回调（用于传递给子代理和协同工具） */
+    private volatile LLMProvider.EnhancedStreamCallback currentEnhancedCallback;
     
     public LLMExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions, 
                       String model, int maxIterations) {
@@ -165,92 +168,109 @@ public class LLMExecutor {
      */
     public String executeStream(List<Message> messages, String sessionKey, 
                                LLMProvider.StreamCallback callback) throws Exception {
-        this.currentSessionKey = sessionKey; // 设置当前会话用于反馈记录
+        this.currentSessionKey = sessionKey;
+        // 将回调包装为增强版本，用于输出工具调用等过程信息
+        this.currentEnhancedCallback = LLMProvider.EnhancedStreamCallback.wrap(callback);
+            
         int iteration = 0;
         String finalContent = null;
         int emptyRetries = 0;
         int totalAttempts = 0;
         int maxTotalAttempts = maxIterations + MAX_EMPTY_RESPONSE_RETRIES;
-        
-        while (iteration < maxIterations) {
-            totalAttempts++;
-            if (totalAttempts > maxTotalAttempts) {
-                logger.error("LLM stream exceeded max total attempts (iterations + empty retries)", Map.of(
-                        "totalAttempts", totalAttempts,
-                        "maxTotalAttempts", maxTotalAttempts,
-                        "iterations", iteration,
-                        "emptyRetries", emptyRetries
-                ));
-                finalContent = EMPTY_RESPONSE_FALLBACK;
-                if (callback != null) {
-                    callback.onChunk(finalContent);
-                }
-                break;
-            }
             
-            iteration++;
-            logger.debug("LLM stream iteration", Map.of("iteration", iteration, "max", maxIterations));
-            
-            LLMResponse response = callLLMStream(messages, callback);
-            
-            // 没有工具调用，返回最终响应
-            if (!response.hasToolCalls()) {
-                finalContent = response.getContent();
-                
-                // 空响应保护：如果内容为空且未超过重试次数，则重试
-                if (isEmptyContent(finalContent) && emptyRetries < MAX_EMPTY_RESPONSE_RETRIES) {
-                    emptyRetries++;
-                    logger.warn("LLM stream returned empty response, retrying", Map.of(
-                            "iteration", iteration,
-                            "retry", emptyRetries,
-                            "max_retries", MAX_EMPTY_RESPONSE_RETRIES
-                    ));
-                    iteration--;
-                    continue;
-                }
-                
-                // 重试耗尽仍为空，使用兜底提示并通过回调通知用户
-                if (isEmptyContent(finalContent)) {
-                    logger.warn("LLM stream returned empty response after retries, using fallback", Map.of(
-                            "iteration", iteration,
-                            "retries_exhausted", emptyRetries
+        try {
+            while (iteration < maxIterations) {
+                totalAttempts++;
+                if (totalAttempts > maxTotalAttempts) {
+                    logger.error("LLM stream exceeded max total attempts (iterations + empty retries)", Map.of(
+                            "totalAttempts", totalAttempts,
+                            "maxTotalAttempts", maxTotalAttempts,
+                            "iterations", iteration,
+                            "emptyRetries", emptyRetries
                     ));
                     finalContent = EMPTY_RESPONSE_FALLBACK;
                     if (callback != null) {
                         callback.onChunk(finalContent);
                     }
+                    break;
                 }
+                    
+                iteration++;
+                logger.debug("LLM stream iteration", Map.of("iteration", iteration, "max", maxIterations));
+                    
+                LLMResponse response = callLLMStream(messages, callback);
+                    
+                // 没有工具调用，返回最终响应
+                if (!response.hasToolCalls()) {
+                    finalContent = response.getContent();
+                        
+                    // 空响应保护：如果内容为空且未超过重试次数，则重试
+                    if (isEmptyContent(finalContent) && emptyRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+                        emptyRetries++;
+                        logger.warn("LLM stream returned empty response, retrying", Map.of(
+                                "iteration", iteration,
+                                "retry", emptyRetries,
+                                "max_retries", MAX_EMPTY_RESPONSE_RETRIES
+                        ));
+                        iteration--;
+                        continue;
+                    }
+                        
+                    // 重试耗尽仍为空，使用兆底提示并通过回调通知用户
+                    if (isEmptyContent(finalContent)) {
+                        logger.warn("LLM stream returned empty response after retries, using fallback", Map.of(
+                                "iteration", iteration,
+                                "retries_exhausted", emptyRetries
+                        ));
+                        finalContent = EMPTY_RESPONSE_FALLBACK;
+                        if (callback != null) {
+                            callback.onChunk(finalContent);
+                        }
+                    }
+                        
+                    logger.info("LLM stream response without tool calls", Map.of(
+                            "iteration", iteration,
+                            "content_chars", finalContent.length()
+                    ));
+                    break;
+                }
+                    
+                // 有工具调用，重置空响应重试计数
+                emptyRetries = 0;
+                    
+                // 有工具调用，执行工具并继续迭代（使用流式版本输出过程信息）
+                logToolCalls(response.getToolCalls(), iteration);
+                addAssistantMessage(messages, response, sessionKey);
+                executeToolCallsWithStream(messages, response.getToolCalls(), sessionKey, iteration);
+                // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
+                sessions.save(sessions.getOrCreate(sessionKey));
+            }
                 
-                logger.info("LLM stream response without tool calls", Map.of(
-                        "iteration", iteration,
-                        "content_chars", finalContent.length()
+            if (finalContent == null) {
+                logger.warn("LLM stream iteration limit reached without final response", Map.of(
+                        "maxIterations", maxIterations,
+                        "totalAttempts", totalAttempts
                 ));
-                break;
+                finalContent = EMPTY_RESPONSE_FALLBACK;
+                if (callback != null) {
+                    callback.onChunk(finalContent);
+                }
             }
-            
-            // 有工具调用，重置空响应重试计数
-            emptyRetries = 0;
-            
-            // 有工具调用，执行工具并继续迭代
-            logToolCalls(response.getToolCalls(), iteration);
-            addAssistantMessage(messages, response, sessionKey);
-            executeToolCalls(messages, response.getToolCalls(), sessionKey, iteration);
-            // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
-            sessions.save(sessions.getOrCreate(sessionKey));
+        } finally {
+            // 清理当前流式回调
+            this.currentEnhancedCallback = null;
         }
-        
-        if (finalContent == null) {
-            logger.warn("LLM stream iteration limit reached without final response", Map.of(
-                    "maxIterations", maxIterations,
-                    "totalAttempts", totalAttempts
-            ));
-            finalContent = EMPTY_RESPONSE_FALLBACK;
-            if (callback != null) {
-                callback.onChunk(finalContent);
-            }
-        }
-        
+            
         return finalContent;
+    }
+        
+    /**
+     * 获取当前的增强流式回调（用于子代理和协同工具）。
+     * 
+     * @return 当前的增强流式回调，如果不在流式模式则返回 null
+     */
+    public LLMProvider.EnhancedStreamCallback getEnhancedCallback() {
+        return currentEnhancedCallback;
     }
     
     /**
@@ -362,7 +382,55 @@ public class LLMExecutor {
             ));
             
             // 执行工具并保存结果
-            String result = executeToolCall(toolCall);
+            String result = executeToolCall(toolCall, sessionKey);
+            Message toolResultMsg = Message.tool(toolCall.getId(), result);
+            messages.add(toolResultMsg);
+            sessions.addFullMessage(sessionKey, toolResultMsg);
+        }
+    }
+    
+    /**
+     * 执行所有工具调用（流式版本）。
+     * 
+     * 与普通版本类似，但通过增强回调输出工具调用的过程信息。
+     * 
+     * @param messages 对话消息列表
+     * @param toolCalls 工具调用列表
+     * @param sessionKey 会话标识符
+     * @param iteration 当前迭代次数
+     */
+    private void executeToolCallsWithStream(List<Message> messages, List<ToolCall> toolCalls, 
+                                            String sessionKey, int iteration) {
+        for (ToolCall toolCall : toolCalls) {
+            String toolName = toolCall.getName();
+            Map<String, Object> args = toolCall.getArguments();
+            
+            // 记录工具调用日志
+            String argsPreview = StringUtils.truncate(
+                    args != null ? args.toString() : "", 
+                    200
+            );
+            logger.info("Tool call", Map.of(
+                    "tool", toolName,
+                    "iteration", iteration,
+                    "args_preview", argsPreview
+            ));
+            
+            // 通过增强回调输出工具调用开始事件
+            if (currentEnhancedCallback != null) {
+                currentEnhancedCallback.onEvent(StreamEvent.toolStart(toolName, args));
+            }
+            
+            // 执行工具
+            String result = executeToolCallWithStream(toolCall, sessionKey);
+            boolean success = result != null && !result.startsWith("Error:");
+            
+            // 通过增强回调输出工具调用结束事件
+            if (currentEnhancedCallback != null) {
+                currentEnhancedCallback.onEvent(StreamEvent.toolEnd(toolName, result, success));
+            }
+            
+            // 保存结果
             Message toolResultMsg = Message.tool(toolCall.getId(), result);
             messages.add(toolResultMsg);
             sessions.addFullMessage(sessionKey, toolResultMsg);
@@ -373,14 +441,17 @@ public class LLMExecutor {
      * 执行单个工具调用。
      * 
      * @param toolCall 工具调用信息
+     * @param sessionKey 会话标识符
      * @return 工具执行结果，如果执行失败返回错误信息
      */
-    private String executeToolCall(ToolCall toolCall) {
+    private String executeToolCall(ToolCall toolCall, String sessionKey) {
         String toolName = toolCall.getName();
         boolean success = false;
         String result;
         
         try {
+            // 设置工具上下文（从 sessionKey 解析 channel 和 chatId）
+            setToolContext(toolName, sessionKey, null);
             result = tools.execute(toolName, toolCall.getArguments());
             // 工具执行成功（没有以 "Error:" 开头）
             success = result != null && !result.startsWith("Error:");
@@ -394,6 +465,75 @@ public class LLMExecutor {
         }
         
         return result;
+    }
+    
+    /**
+     * 执行单个工具调用（流式版本）。
+     * 
+     * 与普通版本类似，但会将流式回调传递给支持流式输出的工具（如 SpawnTool、CollaborateTool）。
+     * 
+     * @param toolCall 工具调用信息
+     * @param sessionKey 会话标识符
+     * @return 工具执行结果，如果执行失败返回错误信息
+     */
+    private String executeToolCallWithStream(ToolCall toolCall, String sessionKey) {
+        String toolName = toolCall.getName();
+        boolean success = false;
+        String result;
+        
+        try {
+            // 设置工具上下文，并传递流式回调
+            setToolContext(toolName, sessionKey, currentEnhancedCallback);
+            result = tools.execute(toolName, toolCall.getArguments());
+            // 工具执行成功（没有以 "Error:" 开头）
+            success = result != null && !result.startsWith("Error:");
+        } catch (Exception e) {
+            result = "Error: " + e.getMessage();
+        }
+        
+        // 记录工具执行结果到反馈收集器
+        if (feedbackCollector != null && currentSessionKey != null) {
+            feedbackCollector.recordToolResult(currentSessionKey, toolName, success);
+        }
+        
+        return result;
+    }
+    
+    /**
+     * 设置工具的上下文信息（channel、chatId 和流式回调）。
+     * 
+     * 对于需要上下文感知的工具（如 SpawnTool、CollaborateTool、MessageTool、CronTool），
+     * 在执行前设置当前的通道、聊天 ID 和流式回调。
+     * 
+     * @param toolName 工具名称
+     * @param sessionKey 会话标识符（格式：channel:chatId）
+     * @param streamCallback 流式回调（用于子代理和协同工具，可为 null）
+     */
+    private void setToolContext(String toolName, String sessionKey, 
+                               LLMProvider.EnhancedStreamCallback streamCallback) {
+        if (sessionKey == null || !sessionKey.contains(":")) {
+            return;
+        }
+        
+        String[] parts = sessionKey.split(":", 2);
+        String channel = parts[0];
+        String chatId = parts[1];
+        
+        // 获取工具实例并设置上下文
+        tools.get(toolName).ifPresent(tool -> {
+            if (tool instanceof SpawnTool spawnTool) {
+                spawnTool.setContext(channel, chatId);
+                // 传递流式回调给 SpawnTool
+                spawnTool.setStreamCallback(streamCallback);
+            } else if (tool instanceof CollaborateTool collaborateTool) {
+                // 传递流式回调给 CollaborateTool
+                collaborateTool.setStreamCallback(streamCallback);
+            } else if (tool instanceof MessageTool messageTool) {
+                messageTool.setContext(channel, chatId);
+            } else if (tool instanceof CronTool cronTool) {
+                cronTool.setContext(channel, chatId);
+            }
+        });
     }
     
     /**

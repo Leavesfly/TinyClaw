@@ -299,18 +299,19 @@ class TinyClawConsole {
             if (!response.ok) return;
             
             const messages = await response.json();
-            if (!messages || messages.length === 0) return;
+            // 过滤出有实际内容的 user/assistant 消息
+            const visibleMessages = (messages || []).filter(
+                msg => (msg.role === 'user' || msg.role === 'assistant') && msg.content
+            );
+            if (visibleMessages.length === 0) return;
             
             const messagesDiv = document.getElementById('chatMessages');
-            // 清除欢迎消息
+            // 清除欢迎消息，渲染历史记录
             messagesDiv.innerHTML = '';
-            
-            // 显示历史消息
-            for (const msg of messages) {
-                if (msg.role === 'user' || msg.role === 'assistant') {
-                    this.addMessage(msg.content || '', msg.role);
-                }
+            for (const msg of visibleMessages) {
+                this.addMessage(msg.content, msg.role);
             }
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         } catch (error) {
             console.error('Failed to load chat history:', error);
         }
@@ -324,10 +325,13 @@ class TinyClawConsole {
             const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
-            // 只显示 web: 开头的会话，按时间戳降序排列（最新的在最上面）
+            // 只显示 web: 开头的会话，当前激活的 session 置顶，其余按时间戳降序排列
             const webSessions = sessions
                 .filter(s => s.key.startsWith('web:'))
                 .sort((a, b) => {
+                    // 当前激活的 session 始终排在最顶部
+                    if (a.key === this.chatSessionId) return -1;
+                    if (b.key === this.chatSessionId) return 1;
                     const tsA = parseInt(a.key.substring(4)) || 0;
                     const tsB = parseInt(b.key.substring(4)) || 0;
                     return tsB - tsA;
