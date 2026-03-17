@@ -3,7 +3,7 @@
 class TinyClawConsole {
     constructor() {
         this.currentPage = 'chat';
-        this.chatSessionId = 'web:default';
+        this.chatSessionId = localStorage.getItem('tinyclaw_chat_session') || 'web:default';
         this.allSessions = [];
         this.currentSessionPage = 1;
         this.authToken = localStorage.getItem('tinyclaw_token') || null;
@@ -232,8 +232,10 @@ class TinyClawConsole {
 
         newChatBtn.addEventListener('click', () => {
             this.chatSessionId = 'web:' + Date.now();
+            localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
             document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
             this.bindQuickPrompts();
+            this.loadChatSessions();
         });
 
         // 绑定初始的快捷提示语
@@ -381,8 +383,9 @@ class TinyClawConsole {
      */
     switchChatSession(sessionKey) {
         this.chatSessionId = sessionKey;
+        localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
         this.loadChatHistory();
-        this.loadChatSessions(); // 刷新列表高亮
+        this.loadChatSessions();
     }
 
     /**
@@ -395,6 +398,7 @@ class TinyClawConsole {
             // 如果删除的是当前会话，切换到新会话
             if (key === this.chatSessionId) {
                 this.chatSessionId = 'web:default';
+                localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
                 document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
                 this.bindQuickPrompts();
             }

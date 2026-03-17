@@ -377,7 +377,131 @@ mcp__outlook__send(to: "[收件人]", subject: "[主题]", body: "[正文]")
 
 ---
 
-## 五、开发者维护指南
+## 五、OKR 系统集成
+
+### 5.1 通过 MCP 访问 OKR 数据
+
+如果企业 OKR 系统提供了 MCP 接口，可通过以下方式读取 OKR 数据：
+
+```
+# 获取当前周期 OKR 列表
+ mcp__okr__get_objectives(period: "[Q季度/年度]", user_id: "[用户ID]")
+
+# 获取指定 Objective 的所有 KR
+mcp__okr__get_key_results(objective_id: "[O 的 ID]")
+
+# 获取 KR 的当前进度
+mcp__okr__get_kr_progress(kr_id: "[KR ID]")
+
+# 更新 KR 进度
+mcp__okr__update_progress(kr_id: "[KR ID]", current_value: [value], comment: "[备注]")
+
+# 获取团队成员 OKR
+mcp__okr__get_team_objectives(team_id: "[团队 ID]", period: "[周期]")
+```
+
+**常见使用场景**：
+
+```
+# 场景 1：生成周报时自动关联 OKR 进度
+1. 调用 mcp__okr__get_objectives 获取本周期 OKR
+2. 对每个 KR 调用 mcp__okr__get_kr_progress
+3. 在周报中输出当前进度和风险点
+
+# 场景 2：季度复盘时生成 OKR 总结
+1. 获取全季所有 KR 的最终达成率
+2. 结合数据报表解读分析达成情况
+3. 生成复盘报告
+```
+
+> **开发者维护**：各企业 OKR 系统（比如 Tita、Workpath、钉钉 OKR 模块、自研系统）的 MCP 接口名称不尽相同，请在此处确认实际使用的接口名。
+
+---
+
+### 5.2 通过 agent-browser 访问 OKR 系统
+
+若 OKR 系统没有 MCP 接口，可通过 agent-browser 直接操作系统界面。
+
+```bash
+export AGENT_BROWSER_SESSION=okr
+
+# 1. 打开 OKR 系统（链接从 work-profile.md 中读取）
+agent-browser --headed open [企业 OKR 系统链接]
+agent-browser wait --load networkidle
+
+# 2. 定位并提取 OKR 内容
+agent-browser snapshot -i
+agent-browser find text "我的 OKR" click   # 按实际界面调整
+agent-browser snapshot -i
+agent-browser get text body > /tmp/okr_raw.txt
+```
+
+**提取后的 AI 处理逻辑**：
+
+```
+1. 解析原始文本，识别每个 Objective 和其下的 KR
+2. 提取每个 KR 的当前进度数据（目标值 vs 当前实际值）
+3. 计算达成率，标注滏后风险（达成率 < 70% 视为高风险）
+4. 输出结构化摘要，格式见下方
+```
+
+**产出文件格式参考**：
+
+```markdown
+# OKR 进度快照 [日期]
+
+## 周期：[Q1 2026 等]
+
+### O1：[目标描述]
+
+| KR | 目标值 | 当前实际值 | 达成率 | 状态 |
+|----|--------|------------|--------|------|
+| KR1：[描述] | [value] | [value] | [%] | ✅/⚠️/❌ |
+| KR2：[描述] | ... | ... | ... | ... |
+
+**整体进度**：[%]（超前/正常/滏后）
+
+**风险提示**：[如有 KR 达成率 < 70%，列出并说明原因]
+```
+
+---
+
+### 5.3 OKR 相关工作流程
+
+#### 周报中自动带入 OKR 进度
+
+**触发条件**：用户说“帮我写周报”
+
+```
+步骤 1：获取 OKR 状态
+- 优先尝试 MCP 接口，若不可用则通过 agent-browser 访问
+- 读取当前周期所有 KR 的最新进度
+
+步骤 2：读取周内工作日报
+- 获取近 5 天的工作日报文件
+
+步骤 3：整合生成周报
+- 本周核心成果（对应 KR 达成进展）
+- KR 达成率更新
+- 下周重点计划
+```
+
+#### 季度 OKR 复盘报告生成
+
+**触发条件**：用户说“帮我写 OKR 复盘”或“季度总结”
+
+```
+步骤 1：获取全季 OKR 完整数据
+步骤 2：读取本季度工作日报和数据解读文件（ 工作日报/ 和 数据报表/）
+步骤 3：结合 best-practices.md 中的复盘方法论生成报告：
+  - 各 Objective 达成率与分析
+  - 亮点与不足
+  - 下季度 OKR 廻建建议
+```
+
+---
+
+## 六、开发者维护指南
 
 ### 如何添加新的系统集成
 
@@ -403,6 +527,7 @@ mcp__outlook__send(to: "[收件人]", subject: "[主题]", body: "[正文]")
 | `mcp__aone__*` | 待验证 | 需确认企业 aone 服务是否开放 MCP |
 | `mcp__dingtalk__*` | 待验证 | 需确认钉钉 MCP 接口版本 |
 | `mcp__email__*` | 待验证 | 需根据企业邮件系统类型确认接口 |
+| `mcp__okr__*` | 待验证 | 需确认 OKR 系统类型（Tita/Workpath/钉钉模块/自研）和实际接口名 |
 | `agent-browser` | 可用 | 需要提前执行 `agent-browser install` |
 
 > 接口可用性取决于用户的企业环境配置。若某接口不可用，AI 工作伙伴应告知用户并提供替代方案（如手动打开链接）。
