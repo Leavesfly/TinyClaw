@@ -143,8 +143,13 @@
                                 </div>
                             </div>
                             <div class="chat-input-container">
-                                <textarea class="chat-input" id="chatInput" placeholder="Type your message... (Ctrl+Enter to send)" rows="1"></textarea>
-                                <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
+                                <div class="chat-image-preview" id="chatImagePreview" style="display: none;"></div>
+                                <div class="chat-input-row">
+                                    <button class="btn btn-icon btn-upload" id="uploadBtn" title="Upload Image">📎</button>
+                                    <input type="file" id="imageUpload" accept="image/*" multiple style="display: none;">
+                                    <textarea class="chat-input" id="chatInput" placeholder="Type your message... (Ctrl+Enter to send)" rows="1"></textarea>
+                                    <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
+                                </div>
                             </div>
                         </div>
                     </div>

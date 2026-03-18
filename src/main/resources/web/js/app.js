@@ -211,10 +211,15 @@ class TinyClawConsole {
 
     // ==================== Chat ====================
 
+    // 待上传的图片列表（存储 Base64 数据）
+    pendingImages = [];
+
     bindChat() {
         const input = document.getElementById('chatInput');
         const sendBtn = document.getElementById('sendBtn');
         const newChatBtn = document.getElementById('newChatBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const imageUpload = document.getElementById('imageUpload');
 
         sendBtn.addEventListener('click', () => this.sendMessage());
         input.addEventListener('keydown', (e) => {
@@ -230,13 +235,26 @@ class TinyClawConsole {
             input.style.height = Math.min(input.scrollHeight, 120) + 'px';
         });
 
-        newChatBtn.addEventListener('click', () => {
-            this.chatSessionId = 'web:' + Date.now();
-            localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
-            document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
-            this.bindQuickPrompts();
-            this.loadChatSessions();
+        newChatBtn.addEventListener('click', () => this.createNewChatSession());
+
+        // 图片上传按钮
+        uploadBtn.addEventListener('click', () => imageUpload.click());
+        imageUpload.addEventListener('change', (e) => this.handleImageSelect(e));
+
+        // 支持拖拽上传
+        input.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            input.classList.add('drag-over');
         });
+        input.addEventListener('dragleave', () => input.classList.remove('drag-over'));
+        input.addEventListener('drop', (e) => {
+            e.preventDefault();
+            input.classList.remove('drag-over');
+            this.handleImageDrop(e);
+        });
+
+        // 支持粘贴图片
+        input.addEventListener('paste', (e) => this.handleImagePaste(e));
 
         // 绑定初始的快捷提示语
         this.bindQuickPrompts();
@@ -291,6 +309,144 @@ class TinyClawConsole {
     }
 
     /**
+     * 新建聊天会话：生成新 sessionId，通知后端持久化，再更新 UI。
+     * 确保刷新页面后新会话仍出现在历史列表中。
+     */
+    async createNewChatSession() {
+        const newSessionId = 'web:' + Date.now();
+        try {
+            await this.authFetch('/api/sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionKey: newSessionId })
+            });
+        } catch (error) {
+            console.error('Failed to create session on server:', error);
+        }
+        this.chatSessionId = newSessionId;
+        localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
+        document.getElementById('chatMessages').innerHTML = this.getWelcomeHtml();
+        this.bindQuickPrompts();
+        this.loadChatSessions();
+        this.clearPendingImages();
+    }
+
+    // ==================== 图片上传相关 ====================
+
+    /**
+     * 处理文件选择
+     */
+    handleImageSelect(e) {
+        const files = e.target.files;
+        if (files) {
+            this.processImageFiles(Array.from(files));
+        }
+        e.target.value = '';  // 清空输入，允许重复选择同一文件
+    }
+
+    /**
+     * 处理图片拖拽
+     */
+    handleImageDrop(e) {
+        const files = e.dataTransfer.files;
+        if (files) {
+            const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+            this.processImageFiles(imageFiles);
+        }
+    }
+
+    /**
+     * 处理图片粘贴
+     */
+    handleImagePaste(e) {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+
+        const imageFiles = [];
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) imageFiles.push(file);
+            }
+        }
+        if (imageFiles.length > 0) {
+            e.preventDefault();
+            this.processImageFiles(imageFiles);
+        }
+    }
+
+    /**
+     * 处理图片文件，转换为 Base64 并添加到待上传列表
+     */
+    async processImageFiles(files) {
+        for (const file of files) {
+            if (file.size > 10 * 1024 * 1024) {
+                alert(`图片 ${file.name} 超过 10MB 限制`);
+                continue;
+            }
+
+            try {
+                const base64 = await this.fileToBase64(file);
+                this.pendingImages.push({
+                    data: base64,
+                    name: file.name
+                });
+            } catch (err) {
+                console.error('Failed to read image:', err);
+            }
+        }
+        this.updateImagePreview();
+    }
+
+    /**
+     * 文件转 Base64
+     */
+    fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    /**
+     * 更新图片预览区域
+     */
+    updateImagePreview() {
+        const previewDiv = document.getElementById('chatImagePreview');
+        if (this.pendingImages.length === 0) {
+            previewDiv.style.display = 'none';
+            previewDiv.innerHTML = '';
+            return;
+        }
+
+        previewDiv.style.display = 'flex';
+        previewDiv.innerHTML = this.pendingImages.map((img, idx) => `
+            <div class="preview-item">
+                <img src="${img.data}" alt="Preview">
+                <button class="preview-remove" onclick="app.removePendingImage(${idx})">×</button>
+            </div>
+        `).join('');
+    }
+
+    /**
+     * 移除待上传的图片
+     */
+    removePendingImage(index) {
+        this.pendingImages.splice(index, 1);
+        this.updateImagePreview();
+    }
+
+    /**
+     * 清空待上传图片
+     */
+    clearPendingImages() {
+        this.pendingImages = [];
+        this.updateImagePreview();
+    }
+
+    /**
      * 加载当前 session 的聊天历史
      */
     async loadChatHistory() {
@@ -301,7 +457,7 @@ class TinyClawConsole {
             const messages = await response.json();
             // 过滤出有实际内容的 user/assistant 消息
             const visibleMessages = (messages || []).filter(
-                msg => (msg.role === 'user' || msg.role === 'assistant') && msg.content
+                msg => (msg.role === 'user' || msg.role === 'assistant') && (msg.content || (msg.images && msg.images.length > 0))
             );
             if (visibleMessages.length === 0) return;
             
@@ -309,7 +465,7 @@ class TinyClawConsole {
             // 清除欢迎消息，渲染历史记录
             messagesDiv.innerHTML = '';
             for (const msg of visibleMessages) {
-                this.addMessage(msg.content, msg.role);
+                this.addMessage(msg.content, msg.role, msg.images || []);
             }
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         } catch (error) {
@@ -325,13 +481,10 @@ class TinyClawConsole {
             const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
-            // 只显示 web: 开头的会话，当前激活的 session 置顶，其余按时间戳降序排列
+            // 只显示 web: 开头的会话，严格按时间戳降序排列
             const webSessions = sessions
                 .filter(s => s.key.startsWith('web:'))
                 .sort((a, b) => {
-                    // 当前激活的 session 始终排在最顶部
-                    if (a.key === this.chatSessionId) return -1;
-                    if (b.key === this.chatSessionId) return 1;
                     const tsA = parseInt(a.key.substring(4)) || 0;
                     const tsB = parseInt(b.key.substring(4)) || 0;
                     return tsB - tsA;
@@ -415,7 +568,9 @@ class TinyClawConsole {
     async sendMessage() {
         const input = document.getElementById('chatInput');
         const message = input.value.trim();
-        if (!message) return;
+        const hasImages = this.pendingImages.length > 0;
+        
+        if (!message && !hasImages) return;
 
         input.value = '';
         input.style.height = 'auto';
@@ -426,8 +581,25 @@ class TinyClawConsole {
         const welcome = messagesDiv.querySelector('.chat-welcome');
         if (welcome) welcome.remove();
 
-        // Add user message
-        this.addMessage(message, 'user');
+        // 上传图片并获取文件路径
+        let imagePaths = [];
+        if (hasImages) {
+            try {
+                const uploadResp = await this.authFetch('/api/upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ images: this.pendingImages })
+                });
+                const uploadResult = await uploadResp.json();
+                imagePaths = uploadResult.files || [];
+            } catch (err) {
+                console.error('Failed to upload images:', err);
+            }
+        }
+
+        // Add user message (包含图片)
+        this.addMessage(message, 'user', imagePaths);
+        this.clearPendingImages();
 
         // Add assistant message placeholder for streaming
         const assistantDiv = document.createElement('div');
@@ -443,11 +615,15 @@ class TinyClawConsole {
         let dataLineCountInCurrentMessage = 0;
 
         try {
-            // 使用流式 API
+            // 使用流式 API，包含图片路径
             const response = await this.authFetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, sessionId: this.chatSessionId })
+                body: JSON.stringify({ 
+                    message, 
+                    sessionId: this.chatSessionId,
+                    images: imagePaths.length > 0 ? imagePaths : undefined
+                })
             });
 
             const reader = response.body.getReader();
@@ -500,18 +676,32 @@ class TinyClawConsole {
         }
     }
 
-    addMessage(content, role) {
+    addMessage(content, role, images = []) {
         const messagesDiv = document.getElementById('chatMessages');
         const div = document.createElement('div');
         div.className = `message ${role}`;
         
-        // assistant 消息使用 Markdown 渲染，user 消息纯文本
-        if (role === 'assistant' && typeof marked !== 'undefined') {
-            div.innerHTML = `<div class="message-content markdown-body">${marked.parse(content)}</div>`;
-        } else {
-            div.innerHTML = `<div class="message-content">${this.escapeHtml(content)}</div>`;
+        let html = '';
+        
+        // 显示图片（如果有）
+        if (images && images.length > 0) {
+            html += '<div class="message-images">';
+            for (const imgPath of images) {
+                // 图片路径可能是相对路径或 Base64
+                const imgSrc = imgPath.startsWith('data:') ? imgPath : `/api/files/${imgPath}`;
+                html += `<img src="${imgSrc}" alt="Image" class="message-image" onclick="window.open('${imgSrc}', '_blank')">`;
+            }
+            html += '</div>';
         }
         
+        // assistant 消息使用 Markdown 渲染，user 消息纯文本
+        if (role === 'assistant' && typeof marked !== 'undefined') {
+            html += `<div class="message-content markdown-body">${marked.parse(content || '')}</div>`;
+        } else {
+            html += `<div class="message-content">${this.escapeHtml(content || '')}</div>`;
+        }
+        
+        div.innerHTML = html;
         messagesDiv.appendChild(div);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }

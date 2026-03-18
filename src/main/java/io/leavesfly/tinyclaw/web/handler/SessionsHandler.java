@@ -1,10 +1,12 @@
 package io.leavesfly.tinyclaw.web.handler;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
@@ -55,6 +57,21 @@ public class SessionsHandler {
                 }
                 WebUtils.sendJson(exchange, 200, sessions, corsOrigin);
 
+            } else if (WebUtils.API_SESSIONS.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+                String body = WebUtils.readRequestBodyLimited(exchange);
+                JsonNode json = WebUtils.MAPPER.readTree(body);
+                String sessionKey = json.path("sessionKey").asText();
+                if (sessionKey == null || sessionKey.isBlank()) {
+                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("sessionKey is required"), corsOrigin);
+                    return;
+                }
+                Session session = sessionManager.getOrCreate(sessionKey);
+                sessionManager.save(session);
+                ObjectNode result = WebUtils.MAPPER.createObjectNode();
+                result.put("key", sessionKey);
+                result.put("messageCount", 0);
+                WebUtils.sendJson(exchange, 200, result, corsOrigin);
+
             } else if (path.startsWith(WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR)
                     && WebUtils.HTTP_METHOD_GET.equals(method)) {
                 String key = URLDecoder.decode(
@@ -65,6 +82,13 @@ public class SessionsHandler {
                     ObjectNode m = WebUtils.MAPPER.createObjectNode();
                     m.put("role", msg.getRole());
                     m.put("content", msg.getContent() != null ? msg.getContent() : "");
+                    // 添加图片字段（多模态支持）
+                    if (msg.hasImages()) {
+                        ArrayNode imagesArray = m.putArray("images");
+                        for (String imgPath : msg.getImages()) {
+                            imagesArray.add(imgPath);
+                        }
+                    }
                     messages.add(m);
                 }
                 WebUtils.sendJson(exchange, 200, messages, corsOrigin);

@@ -475,6 +475,25 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         String channel, String chatId) {
+        return buildMessages(history, summary, currentMessage, null, channel, chatId);
+    }
+    
+    /**
+     * 为 LLM 构建消息列表，支持多模态内容（文本+图片）。
+     * 
+     * 组装完整的消息上下文，包括系统提示词、历史消息和当前用户消息。
+     * 当包含图片时，使用多模态消息格式。
+     * 
+     * @param history 历史消息列表
+     * @param summary 之前对话的摘要
+     * @param currentMessage 当前用户消息
+     * @param images 图片路径列表（可为 null，可以是相对路径或完整路径）
+     * @param channel 当前通道名称
+     * @param chatId 当前聊天 ID
+     * @return 完整的消息列表
+     */
+    public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
+                                        List<String> images, String channel, String chatId) {
         List<Message> messages = new ArrayList<>();
         
         // 构建系统提示词（传入当前消息用于记忆相关性检索）
@@ -490,13 +509,65 @@ public class ContextBuilder {
         
         // 添加历史记录（清理可能存在的孤立 tool 消息，防止 LLM API 报错）
         if (history != null && !history.isEmpty()) {
-            messages.addAll(sanitizeHistory(new ArrayList<>(history)));
+            // 处理历史消息中的图片路径
+            List<Message> processedHistory = processHistoryImages(sanitizeHistory(new ArrayList<>(history)));
+            messages.addAll(processedHistory);
         }
         
-        // 添加当前用户消息
-        messages.add(Message.user(currentMessage));
+        // 添加当前用户消息（支持多模态）
+        if (images != null && !images.isEmpty()) {
+            // 将相对路径转换为完整路径
+            List<String> fullPaths = resolveImagePaths(images);
+            messages.add(Message.user(currentMessage, fullPaths));
+        } else {
+            messages.add(Message.user(currentMessage));
+        }
         
         return messages;
+    }
+    
+    /**
+     * 将相对图片路径转换为完整路径。
+     * 如果路径已经是完整路径或 data URI，则不做转换。
+     */
+    private List<String> resolveImagePaths(List<String> images) {
+        List<String> resolved = new ArrayList<>();
+        for (String imagePath : images) {
+            if (imagePath.startsWith("data:") || imagePath.startsWith("/")) {
+                // 已经是 data URI 或完整路径
+                resolved.add(imagePath);
+                logger.info("图片路径保持不变", Map.of("path", imagePath.length() > 50 ? imagePath.substring(0, 50) + "..." : imagePath));
+            } else {
+                // 相对路径，转换为完整路径
+                String fullPath = Paths.get(workspace, imagePath).toAbsolutePath().toString();
+                resolved.add(fullPath);
+                logger.info("图片路径转换", Map.of(
+                        "relative", imagePath,
+                        "workspace", workspace,
+                        "full_path", fullPath));
+            }
+        }
+        return resolved;
+    }
+    
+    /**
+     * 处理历史消息中的图片路径，将相对路径转换为完整路径。
+     */
+    private List<Message> processHistoryImages(List<Message> history) {
+        List<Message> processed = new ArrayList<>();
+        for (Message msg : history) {
+            if (msg.hasImages()) {
+                // 创建新的消息对象，避免修改原始对象
+                Message newMsg = new Message(msg.getRole(), msg.getContent());
+                newMsg.setImages(resolveImagePaths(msg.getImages()));
+                newMsg.setToolCalls(msg.getToolCalls());
+                newMsg.setToolCallId(msg.getToolCallId());
+                processed.add(newMsg);
+            } else {
+                processed.add(msg);
+            }
+        }
+        return processed;
     }
     
     /**

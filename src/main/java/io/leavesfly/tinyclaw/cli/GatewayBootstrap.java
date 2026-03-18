@@ -112,7 +112,9 @@ public class GatewayBootstrap {
         initializeHeartbeat();
 
         // 5. 初始化 Session 和 Skills
-        sessionManager = new SessionManager(Paths.get(workspace, "sessions").toString());
+        // 复用 AgentLoop 内部的 SessionManager，确保 Web Console 与 Agent 共享同一内存状态，
+        // 避免 AgentLoop 写入新会话后 WebConsoleServer 因持有独立实例而看不到新会话的问题。
+        sessionManager = agentLoop.getSessionManager();
         skillsLoader = new SkillsLoader(workspace, null, null);
 
         // 6. 初始化 Webhook Server（传入通道配置用于签名校验）

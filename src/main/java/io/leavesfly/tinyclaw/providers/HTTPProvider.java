@@ -11,6 +11,8 @@ import okhttp3.*;
 import okio.BufferedSource;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -361,7 +363,10 @@ public class HTTPProvider implements LLMProvider {
     }
     
     /**
-     * 构建单个消息节点。
+     * 构建单个消息节点，支持多模态内容（文本+图片）。
+     * 
+     * 当消息包含图片时，使用 OpenAI Vision API 格式：
+     * content 字段为数组，包含 text 和 image_url 类型的元素。
      * 
      * @param msg 消息对象
      * @return JSON 消息节点
@@ -371,8 +376,45 @@ public class HTTPProvider implements LLMProvider {
         ObjectNode msgNode = objectMapper.createObjectNode();
         msgNode.put("role", msg.getRole());
         
-        if (msg.getContent() != null) {
-            msgNode.put("content", msg.getContent());
+        // 检查是否包含图片（多模态消息）
+        if (msg.hasImages() && "user".equals(msg.getRole())) {
+            // 多模态格式：content 为数组
+            ArrayNode contentArray = msgNode.putArray("content");
+            
+            // 添加文本内容
+            if (msg.getContent() != null && !msg.getContent().isEmpty()) {
+                ObjectNode textNode = contentArray.addObject();
+                textNode.put("type", "text");
+                textNode.put("text", msg.getContent());
+            }
+            
+            // 添加图片内容
+            for (String imagePath : msg.getImages()) {
+                // 判断是 Base64 数据还是文件路径
+                String imageUrl;
+                if (imagePath.startsWith("data:")) {
+                    // 已经是 Base64 格式
+                    imageUrl = imagePath;
+                } else {
+                    // 文件路径，读取并转换为 Base64
+                    imageUrl = readImageAsBase64(imagePath);
+                }
+                
+                // 只有成功读取的图片才添加到请求中
+                if (imageUrl != null && !imageUrl.isEmpty()) {
+                    ObjectNode imageNode = contentArray.addObject();
+                    imageNode.put("type", "image_url");
+                    ObjectNode imageUrlNode = imageNode.putObject("image_url");
+                    imageUrlNode.put("url", imageUrl);
+                } else {
+                    logger.warn("Skipping image due to read failure", Map.of("path", imagePath));
+                }
+            }
+        } else {
+            // 纯文本格式
+            if (msg.getContent() != null) {
+                msgNode.put("content", msg.getContent());
+            }
         }
         
         if (msg.getToolCallId() != null) {
@@ -394,6 +436,56 @@ public class HTTPProvider implements LLMProvider {
         }
         
         return msgNode;
+    }
+    
+    /**
+     * 读取图片文件并转换为 Base64 格式。
+     * 
+     * @param imagePath 图片文件路径
+     * @return Base64 编码的图片数据（包含 data URI 前缀），读取失败返回 null
+     */
+    private String readImageAsBase64(String imagePath) {
+        try {
+            Path path = Paths.get(imagePath);
+            
+            // 检查文件是否存在
+            if (!java.nio.file.Files.exists(path)) {
+                logger.error("Image file not found", Map.of(
+                        "path", imagePath,
+                        "absolute_path", path.toAbsolutePath().toString()));
+                return null;
+            }
+            
+            byte[] imageBytes = java.nio.file.Files.readAllBytes(path);
+            String base64 = Base64.getEncoder().encodeToString(imageBytes);
+            
+            // 根据文件扩展名确定 MIME 类型
+            String mimeType = getMimeType(imagePath);
+            String result = "data:" + mimeType + ";base64," + base64;
+            
+            logger.info("图片读取成功", Map.of(
+                    "path", imagePath,
+                    "size_bytes", imageBytes.length,
+                    "base64_length", result.length()));
+            
+            return result;
+        } catch (Exception e) {
+            logger.error("Failed to read image", Map.of(
+                    "path", imagePath,
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            return null;
+        }
+    }
+    
+    /**
+     * 根据文件路径获取 MIME 类型。
+     */
+    private String getMimeType(String path) {
+        String lower = path.toLowerCase();
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".gif")) return "image/gif";
+        if (lower.endsWith(".webp")) return "image/webp";
+        return "image/jpeg";  // 默认 JPEG
     }
     
     /**

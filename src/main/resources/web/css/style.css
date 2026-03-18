@@ -600,6 +600,12 @@ body {
     padding: 16px 24px;
     border-top: 1px solid var(--border);
     display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.chat-input-row {
+    display: flex;
     gap: 12px;
     align-items: flex-end;
 }
@@ -620,12 +626,102 @@ body {
     border-color: var(--primary);
 }
 
+.chat-input.drag-over {
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+
 .btn-send {
     width: 44px;
     height: 44px;
     padding: 0;
     border-radius: 50%;
     font-size: 18px;
+}
+
+/* 图片上传按钮 */
+.btn-upload {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 18px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-upload:hover {
+    background: var(--bg-dark);
+    border-color: var(--primary);
+}
+
+/* 图片预览区域 */
+.chat-image-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.preview-item {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.preview-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.preview-remove {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.preview-remove:hover {
+    background: rgba(0, 0, 0, 0.8);
+}
+
+/* 消息中的图片 */
+.message-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.message-image {
+    max-width: 200px;
+    max-height: 200px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.message-image:hover {
+    transform: scale(1.02);
 }
 
 /* Sessions */

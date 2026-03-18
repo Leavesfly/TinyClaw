@@ -12,6 +12,8 @@ import io.leavesfly.tinyclaw.web.WebUtils;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -83,19 +85,23 @@ public class ChatHandler {
 
     /**
      * 处理流式聊天请求（SSE）：设置响应头并逐递将 Agent 输出推送到客户端。
+     * 支持多模态内容，可以接收图片路径列表。
      */
     private void handleChatStream(HttpExchange exchange) throws IOException {
-        String body = WebUtils.readRequestBodyLimited(exchange);
+        String body = WebUtils.readRequestBody(exchange);  // 图片可能较大，不限制大小
         JsonNode json = WebUtils.MAPPER.readTree(body);
         String message = json.path("message").asText();
         String sessionId = json.path("sessionId").asText(WebUtils.DEFAULT_SESSION_ID);
+        
+        // 解析图片列表（多模态支持）
+        List<String> images = parseImages(json);
 
         setupSSEHeaders(exchange);
         exchange.sendResponseHeaders(200, 0);
 
         OutputStream os = exchange.getResponseBody();
         try {
-            streamAgentResponse(message, sessionId, os);
+            streamAgentResponse(message, images, sessionId, os);
             writeSSEDone(os);
         } catch (Exception e) {
             logger.error("Chat stream error", Map.of("error", e.getMessage()));
@@ -103,6 +109,29 @@ public class ChatHandler {
         } finally {
             os.close();
         }
+    }
+    
+    /**
+     * 从请求 JSON 中解析图片路径列表。
+     * 支持 images 字段为字符串数组（图片路径）。
+     */
+    private List<String> parseImages(JsonNode json) {
+        List<String> images = new ArrayList<>();
+        JsonNode imagesNode = json.path("images");
+        if (imagesNode.isArray()) {
+            for (JsonNode imgNode : imagesNode) {
+                String imgPath = imgNode.asText();
+                if (imgPath != null && !imgPath.isEmpty()) {
+                    images.add(imgPath);
+                }
+            }
+        }
+        if (!images.isEmpty()) {
+            logger.info("收到图片请求", Map.of(
+                    "image_count", images.size(),
+                    "image_paths", images));
+        }
+        return images.isEmpty() ? null : images;
     }
 
     /**
@@ -117,11 +146,12 @@ public class ChatHandler {
 
     /**
      * 调用 AgentLoop 流式接口，将每个 chunk 逗次写入 SSE 流。
+     * 支持多模态内容（文本+图片）。
      * 内部异常尝试向客户端写入错误消息，避免连接空截断。
      */
-    private void streamAgentResponse(String message, String sessionId, OutputStream os) {
+    private void streamAgentResponse(String message, List<String> images, String sessionId, OutputStream os) {
         try {
-            agentLoop.processDirectStream(message, sessionId, chunk -> {
+            agentLoop.processDirectStream(message, images, sessionId, chunk -> {
                 try {
                     writeSSEData(os, chunk);
                 } catch (IOException e) {

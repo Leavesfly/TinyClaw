@@ -88,6 +88,9 @@ public class WebConsoleServer {
         httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler)::handle);
         httpServer.createContext(WebUtils.API_FEEDBACK,  new FeedbackHandler(config, agentLoop, security)::handle);
         httpServer.createContext(WebUtils.API_MCP,       new MCPHandler(config, security)::handle);
+        // 多模态支持：文件上传和静态文件服务
+        httpServer.createContext(WebUtils.API_UPLOAD,    new UploadHandler(config, security)::handle);
+        httpServer.createContext(WebUtils.API_FILES,     new FilesHandler(config, security)::handle);
     }
 
     private void registerStaticHandler() {

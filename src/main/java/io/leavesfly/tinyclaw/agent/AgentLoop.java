@@ -271,6 +271,11 @@ public class AgentLoop {
         return contextBuilder.getMemoryStore();
     }
 
+    /** 获取会话管理器，供外部组件（如 WebConsoleServer）共享同一实例，避免内存状态不一致 */
+    public SessionManager getSessionManager() {
+        return sessions;
+    }
+
     /** 获取记忆进化引擎，供外部组件（如心跳服务）触发记忆进化 */
     public MemoryEvolver getMemoryEvolver() {
         return memoryEvolver;
@@ -349,6 +354,12 @@ public class AgentLoop {
     /** 流式处理单条消息，通过回调逐块输出，适用于 CLI 流式模式。 */
     public String processDirectStream(String content, String sessionKey,
                                       LLMProvider.StreamCallback callback) throws Exception {
+        return processDirectStream(content, null, sessionKey, callback);
+    }
+    
+    /** 流式处理单条消息，支持多模态内容（文本+图片）。 */
+    public String processDirectStream(String content, List<String> images, String sessionKey,
+                                      LLMProvider.StreamCallback callback) throws Exception {
         if (!providerConfigured) {
             notifyCallback(callback, PROVIDER_NOT_CONFIGURED_MSG);
             return PROVIDER_NOT_CONFIGURED_MSG;
@@ -356,9 +367,15 @@ public class AgentLoop {
 
         logIncoming("cli", sessionKey, content);
 
+        // 将相对路径转换为绝对路径，确保 HTTPProvider 能读取到图片文件
+        List<String> absoluteImagePaths = resolveImagePaths(images);
+
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
-        List<Message> messages = buildContext(sessionKey, message);
-        sessions.addMessage(sessionKey, "user", content);
+        message.setMedia(absoluteImagePaths);  // 设置图片列表
+        List<Message> messages = buildContextWithImages(sessionKey, message, absoluteImagePaths);
+        
+        // 保存用户消息（含图片，存储相对路径供前端显示）
+        sessions.addFullMessage(sessionKey, Message.user(content, images));
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
@@ -504,6 +521,14 @@ public class AgentLoop {
                 sessions.getSummary(sessionKey),
                 msg.getContent(), msg.getChannel(), msg.getChatId());
     }
+    
+    /** 构建带图片的上下文（多模态）。 */
+    private List<Message> buildContextWithImages(String sessionKey, InboundMessage msg, List<String> images) {
+        return contextBuilder.buildMessages(
+                sessions.getHistory(sessionKey),
+                sessions.getSummary(sessionKey),
+                msg.getContent(), images, msg.getChannel(), msg.getChatId());
+    }
 
     /** 保存助手回复并按需触发会话摘要。 */
     private void persistAndSummarize(String sessionKey, String response) {
@@ -550,6 +575,29 @@ public class AgentLoop {
     }
 
     // ==================== 通用工具方法 ====================
+
+    /**
+     * 将图片路径列表中的相对路径转换为绝对路径。
+     *
+     * 上传的图片存储为相对路径（如 "uploads/xxx.jpg"），
+     * HTTPProvider 需要绝对路径才能读取文件并转换为 Base64。
+     *
+     * @param images 原始图片路径列表（可能包含相对路径或已是绝对路径）
+     * @return 转换后的绝对路径列表，null 输入返回 null
+     */
+    private List<String> resolveImagePaths(List<String> images) {
+        if (images == null || images.isEmpty()) {
+            return images;
+        }
+        return images.stream()
+                .map(path -> {
+                    if (path == null || path.startsWith("/") || path.startsWith("data:")) {
+                        return path;
+                    }
+                    return Paths.get(workspace, path).toAbsolutePath().toString();
+                })
+                .collect(java.util.stream.Collectors.toList());
+    }
 
     private static String ensureNonBlank(String value, String fallback) {
         return StringUtils.isBlank(value) ? fallback : value;
