@@ -245,7 +245,7 @@ public class Config {
      */
     private static void setAgentDefaults(Config config) {
         config.getAgent().setWorkspace("~/.tinyclaw/workspace");
-        config.getAgent().setModel("qwen3-max");
+        config.getAgent().setModel("qwen3.5-plus");
         config.getAgent().setMaxTokens(32768);
         config.getAgent().setTemperature(0.7);
         config.getAgent().setMaxToolIterations(20);

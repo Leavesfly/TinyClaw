@@ -31,7 +31,7 @@ public class AgentConfig {
 
     public AgentConfig() {
         this.workspace = "~/.tinyclaw/workspace";
-        this.model = "qwen3-max";
+        this.model = "qwen3.5-plus";
         this.provider = "dashscope";
         this.maxTokens = 32768;
         this.temperature = 0.7;
