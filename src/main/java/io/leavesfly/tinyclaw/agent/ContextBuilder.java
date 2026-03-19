@@ -245,7 +245,7 @@ public class ContextBuilder {
     private void appendInstalledSkillsSummary(StringBuilder sb, String skillsSummary) {
         sb.append("## 已安装技能\n\n");
         sb.append("以下技能扩展了你的能力。");
-        sb.append("要使用某个技能，请使用 read_file 工具读取其 SKILL.md 文件。\n\n");
+        sb.append("使用 `skills(action='invoke', name='技能名')` 调用技能，获取完整内容和 base-path（可用于执行技能目录下的脚本）。\n\n");
         sb.append(skillsSummary);
         sb.append("\n\n");
     }

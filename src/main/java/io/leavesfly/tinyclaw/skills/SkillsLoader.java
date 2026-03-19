@@ -220,25 +220,6 @@ public class SkillsLoader {
     }
 
     /**
-     * 为对话上下文加载多个技能，用分隔线连接
-     */
-    public String loadSkillsForContext(List<String> skillNames) {
-        if (skillNames == null || skillNames.isEmpty()) return "";
-
-        StringBuilder sb = new StringBuilder();
-        for (String name : skillNames) {
-            String content = loadSkill(name);
-            if (content != null) {
-                if (sb.length() > 0) {
-                    sb.append("\n\n---\n\n");
-                }
-                sb.append("### Skill: ").append(name).append("\n\n").append(content);
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
      * 构建技能摘要（XML 格式）
      */
     public String buildSkillsSummary() {

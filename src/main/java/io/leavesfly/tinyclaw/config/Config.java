@@ -53,9 +53,6 @@ import java.util.Optional;
  */
 public class Config {
 
-    private static final String DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";        // OpenRouter 默认 API 地址
-    private static final String DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";  // DashScope 默认 API 地址
-
     private ModelsConfig models;                // 模型配置
     private AgentConfig agent;                  // Agent 配置
     private ChannelsConfig channels;            // 通道配置

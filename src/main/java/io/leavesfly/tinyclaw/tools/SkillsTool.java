@@ -101,9 +101,9 @@ public class SkillsTool implements Tool {
 
     @Override
     public String description() {
-        return "管理和执行技能：列出、查看、调用（invoke）、搜索 GitHub 上的技能、搜索并自动安装、从 GitHub 安装、创建新技能、编辑现有技能或删除技能。"
+        return "管理和执行技能：列出、调用（invoke）、搜索 GitHub 上的技能、搜索并自动安装、从 GitHub 安装、创建新技能、编辑现有技能或删除技能。"
                 + "使用 search 操作搜索 GitHub 上的社区技能，使用 search_install 一键搜索并安装最匹配的技能。"
-                + "使用 invoke 操作来调用带脚本的技能，会返回技能目录路径以便执行脚本。";
+                + "使用 invoke 操作调用技能，会返回技能完整内容和目录路径（base-path），可用于执行技能目录下的脚本。";
     }
 
     @Override
@@ -118,20 +118,19 @@ public class SkillsTool implements Tool {
         actionParam.put("description",
                 "要执行的操作："
                         + "'list' - 列出所有已安装的技能; "
-                        + "'show' - 显示技能的完整内容; "
-                        + "'invoke' - 调用技能并返回基础路径（用于执行带脚本的技能）; "
+                        + "'invoke' - 调用技能，返回完整内容和基础路径（base-path），可用于执行技能目录下的脚本; "
                         + "'search' - 在 GitHub 上搜索可用的技能仓库（需要 query 参数）; "
                         + "'search_install' - 搜索 GitHub 并自动安装最匹配的技能（需要 query 参数）; "
                         + "'install' - 从 GitHub 安装技能（例如 'owner/repo' 或 'owner/repo/skill-name'）; "
                         + "'create' - 创建新技能，指定名称和内容; "
                         + "'edit' - 更新现有技能的内容; "
                         + "'remove' - 按名称删除技能");
-        actionParam.put("enum", new String[]{"list", "show", "invoke", "search", "search_install", "install", "create", "edit", "remove"});
+        actionParam.put("enum", new String[]{"list", "invoke", "search", "search_install", "install", "create", "edit", "remove"});
         properties.put("action", actionParam);
 
         Map<String, Object> nameParam = new HashMap<>();
         nameParam.put("type", "string");
-        nameParam.put("description", "技能名称（show、create、edit、remove 操作必需）");
+        nameParam.put("description", "技能名称（invoke、create、edit、remove 操作必需）");
         properties.put("name", nameParam);
 
         Map<String, Object> queryParam = new HashMap<>();
@@ -171,7 +170,6 @@ public class SkillsTool implements Tool {
 
         return switch (action) {
             case "list" -> executeList();
-            case "show" -> executeShow(args);
             case "invoke" -> executeInvoke(args);
             case "search" -> executeSearch(args);
             case "search_install" -> {
@@ -210,7 +208,7 @@ public class SkillsTool implements Tool {
                 }
             }
             default -> throw new IllegalArgumentException("未知操作: " + action
-                    + "。有效操作：list、show、invoke、search、search_install、install、create、edit、remove");
+                    + "。有效操作：list、invoke、search、search_install、install、create、edit、remove");
         };
     }
 
@@ -241,24 +239,29 @@ public class SkillsTool implements Tool {
         return result.toString();
     }
 
+    private record SkillContent(String name, String content) {}
+
     /**
-     * 查看指定技能的完整内容。
-     * 
-     * @param args 参数映射，必须包含 name 字段
-     * @return 技能内容或错误信息
+     * 从参数中提取技能名称，并加载其内容。
+     *
+     * @param args      参数映射，必须包含 name 字段
+     * @param operation 当前操作名称，用于错误提示
+     * @return 技能名称和内容的二元组
+     * @throws IllegalArgumentException 如果 name 参数缺失
+     * @throws ToolException            如果技能未找到
      */
-    private String executeShow(Map<String, Object> args) {
+    private SkillContent resolveSkillContent(Map<String, Object> args, String operation) throws ToolException {
         String skillName = (String) args.get("name");
         if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("对于 'show' 操作，name 参数是必需的");
+            throw new IllegalArgumentException("对于 '" + operation + "' 操作，name 参数是必需的");
         }
 
         String content = skillsLoader.loadSkill(skillName);
         if (content == null) {
-            return "技能 '" + skillName + "' 未找到。使用 'list' 操作查看可用技能。";
+            throw new ToolException("技能 '" + skillName + "' 未找到。使用 'list' 操作查看可用技能。");
         }
 
-        return "=== 技能: " + skillName + " ===\n\n" + content;
+        return new SkillContent(skillName, content);
     }
 
     /**
@@ -271,21 +274,15 @@ public class SkillsTool implements Tool {
      * @param args 参数映射，必须包含 name 字段
      * @return 包含 Base Path 和技能内容的字符串
      */
-    private String executeInvoke(Map<String, Object> args) {
-        String skillName = (String) args.get("name");
-        if (skillName == null || skillName.isEmpty()) {
-            throw new IllegalArgumentException("对于 'invoke' 操作，name 参数是必需的");
-        }
+    private String executeInvoke(Map<String, Object> args) throws ToolException {
+        SkillContent skill = resolveSkillContent(args, "invoke");
+        String skillName = skill.name();
+        String content = skill.content();
 
         // 查找技能并获取其路径
         SkillLocation location = findSkillLocation(skillName);
         if (location == null) {
-            return "技能 '" + skillName + "' 未找到。使用 'list' 操作查看可用技能。";
-        }
-
-        String content = skillsLoader.loadSkill(skillName);
-        if (content == null) {
-            return "技能 '" + skillName + "' 内容加载失败。";
+            return "技能 '" + skillName + "' 位置解析失败，无法获取 base-path。";
         }
 
         logger.info("技能调用", Map.of(

@@ -42,22 +42,22 @@ public class MemoryStore {
     private static final String ARCHIVE_FILE = "MEMORIES_ARCHIVE.json";
 
     /** 默认记忆 token 预算（当调用方未指定时） */
-    private static final int DEFAULT_MEMORY_TOKEN_BUDGET = 1024;
+    private static final int DEFAULT_MEMORY_TOKEN_BUDGET = 2048;
 
     /** 每日笔记在记忆上下文中的最大 token 占比 */
-    private static final double DAILY_NOTES_TOKEN_RATIO = 0.3;
+    private static final double DAILY_NOTES_TOKEN_RATIO = 0.30;
 
     /** 结构化记忆在记忆上下文中的最大 token 占比 */
-    private static final double STRUCTURED_MEMORY_TOKEN_RATIO = 0.5;
+    private static final double STRUCTURED_MEMORY_TOKEN_RATIO = 0.45;
 
     /** 传统 MEMORY.md 在记忆上下文中的最大 token 占比 */
-    private static final double LEGACY_MEMORY_TOKEN_RATIO = 0.2;
+    private static final double LEGACY_MEMORY_TOKEN_RATIO = 0.15;
 
     /** 每条记忆的最大 token 数，超过此值的单条记忆会被截断 */
     private static final int MAX_SINGLE_ENTRY_TOKENS = 256;
 
     /** 相关性匹配的权重倍数（相关记忆的综合得分乘以此值） */
-    private static final double RELEVANCE_BOOST_MULTIPLIER = 3.0;
+    private static final double RELEVANCE_BOOST_MULTIPLIER = 2.0;
 
     private final String workspace;
     private final String memoryDir;

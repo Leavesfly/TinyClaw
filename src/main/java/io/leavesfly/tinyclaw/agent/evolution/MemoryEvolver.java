@@ -38,7 +38,7 @@ public class MemoryEvolver {
     private static final int CONSOLIDATION_THRESHOLD = 50;
 
     /** 归档的综合得分阈值（低于此分的记忆会被归档） */
-    private static final double ARCHIVE_SCORE_THRESHOLD = 0.05;
+    private static final double ARCHIVE_SCORE_THRESHOLD = 0.10;
 
     /** 活跃记忆的最大条目数（超过后强制归档最低分的记忆） */
     private static final int MAX_ACTIVE_ENTRIES = 200;
