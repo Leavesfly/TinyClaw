@@ -639,6 +639,13 @@ body {
     font-size: 18px;
 }
 
+.btn-send.loading {
+    border-radius: 10px;
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 /* 图片上传按钮 */
 .btn-upload {
     width: 44px;
@@ -1822,6 +1829,82 @@ body {
 
 .mcp-status-icon {
     margin-right: 4px;
+}
+
+/* Token 消耗页面 */
+.token-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.token-date-range {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+}
+
+.token-date-input {
+    border: none;
+    background: transparent;
+    font-size: 14px;
+    color: var(--text);
+    padding: 0;
+    width: auto;
+}
+
+.token-date-input:focus {
+    outline: none;
+}
+
+.token-date-sep {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.token-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    margin-bottom: 28px;
+}
+
+.token-summary-card {
+    text-align: center;
+    padding: 32px 20px;
+}
+
+.token-summary-value {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+}
+
+.token-summary-label {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.token-section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.token-section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 16px;
 }
 
 /* Responsive */

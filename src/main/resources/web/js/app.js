@@ -178,7 +178,8 @@ class TinyClawConsole {
             skills: 'Skills',
             mcp: 'MCP Servers',
             models: 'Models',
-            environments: 'Environments'
+            environments: 'Environments',
+            'token-usage': 'Token Usage'
         };
         document.getElementById('pageTitle').textContent = titles[page] || page;
 
@@ -206,6 +207,7 @@ class TinyClawConsole {
             case 'mcp': this.loadMcpServers(); break;
             case 'models': this.loadProviders(); this.loadCurrentModel(); break;
             case 'environments': this.loadAgentConfig(); break;
+            case 'token-usage': this.loadTokenUsage(); break;
         }
     }
 
@@ -567,6 +569,7 @@ class TinyClawConsole {
 
     async sendMessage() {
         const input = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
         const message = input.value.trim();
         const hasImages = this.pendingImages.length > 0;
         
@@ -574,6 +577,10 @@ class TinyClawConsole {
 
         input.value = '';
         input.style.height = 'auto';
+
+        // 进入 loading 状态：禁用按钮，改为圆角方形
+        sendBtn.classList.add('loading');
+        sendBtn.disabled = true;
 
         const messagesDiv = document.getElementById('chatMessages');
         
@@ -673,6 +680,10 @@ class TinyClawConsole {
             this.loadChatSessions();
         } catch (error) {
             contentDiv.innerHTML = this.escapeHtml('Error: ' + error.message);
+        } finally {
+            // 恢复按钮状态：可点击，恢复圆形
+            sendBtn.classList.remove('loading');
+            sendBtn.disabled = false;
         }
     }
 
@@ -2083,6 +2094,123 @@ class TinyClawConsole {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // ==================== Token 消耗 ====================
+
+    /**
+     * 初始化并加载 Token 消耗页面。
+     * 设置默认日期范围（最近 30 天），绑定刷新按钮，然后拉取数据。
+     */
+    async loadTokenUsage() {
+        const today = new Date();
+        const twoDaysAgo = new Date(today);
+        twoDaysAgo.setDate(today.getDate() - 2);
+
+        const formatDate = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const startInput = document.getElementById('tokenStartDate');
+        const endInput = document.getElementById('tokenEndDate');
+
+        startInput.value = formatDate(twoDaysAgo);
+        endInput.value = formatDate(today);
+
+        // 绑定刷新按钮（避免重复绑定）
+        const refreshBtn = document.getElementById('tokenRefreshBtn');
+        refreshBtn.onclick = () => this.fetchTokenStats();
+
+        await this.fetchTokenStats();
+    }
+
+    /**
+     * 从后端拉取 Token 消耗统计数据并渲染页面。
+     */
+    async fetchTokenStats() {
+        const startDate = document.getElementById('tokenStartDate').value;
+        const endDate = document.getElementById('tokenEndDate').value;
+
+        if (!startDate || !endDate) return;
+
+        try {
+            const response = await this.authFetch(
+                `/api/token-stats?startDate=${startDate}&endDate=${endDate}`
+            );
+            if (!response.ok) {
+                console.error('Failed to fetch token stats:', response.status);
+                return;
+            }
+            const data = await response.json();
+            this.renderTokenStats(data);
+        } catch (error) {
+            console.error('Token stats fetch error:', error);
+        }
+    }
+
+    /**
+     * 将 Token 统计数据渲染到页面上。
+     *
+     * @param {Object} data - 后端返回的统计数据
+     */
+    renderTokenStats(data) {
+        // 渲染总量汇总
+        document.getElementById('tokenTotalPrompt').textContent =
+            this.formatTokenCount(data.totalPromptTokens || 0);
+        document.getElementById('tokenTotalCompletion').textContent =
+            this.formatTokenCount(data.totalCompletionTokens || 0);
+
+        // 渲染按模型分组表格
+        const byModelBody = document.getElementById('tokenByModelBody');
+        const byModel = data.byModel || [];
+        if (byModel.length === 0) {
+            byModelBody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无数据</td></tr>';
+        } else {
+            byModelBody.innerHTML = byModel.map(row => `
+                <tr>
+                    <td><strong>${this.escapeHtml(row.provider)}</strong></td>
+                    <td>${this.escapeHtml(row.model)}</td>
+                    <td>${this.formatTokenCount(row.promptTokens)}</td>
+                    <td>${this.formatTokenCount(row.completionTokens)}</td>
+                    <td>${row.callCount}</td>
+                </tr>
+            `).join('');
+        }
+
+        // 渲染按日期分组表格
+        const byDateBody = document.getElementById('tokenByDateBody');
+        const byDate = data.byDate || [];
+        if (byDate.length === 0) {
+            byDateBody.innerHTML = '<tr><td colspan="4" class="empty-state">暂无数据</td></tr>';
+        } else {
+            byDateBody.innerHTML = byDate.map(row => `
+                <tr>
+                    <td><strong>${this.escapeHtml(row.date)}</strong></td>
+                    <td>${this.formatTokenCount(row.promptTokens)}</td>
+                    <td>${this.formatTokenCount(row.completionTokens)}</td>
+                    <td>${row.callCount}</td>
+                </tr>
+            `).join('');
+        }
+    }
+
+    /**
+     * 将 token 数量格式化为易读形式（如 19700 → 19.7K）。
+     *
+     * @param {number} count - token 数量
+     * @returns {string} 格式化后的字符串
+     */
+    formatTokenCount(count) {
+        if (count >= 1_000_000) {
+            return (count / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+        }
+        if (count >= 1_000) {
+            return (count / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+        }
+        return String(count);
     }
 }
 

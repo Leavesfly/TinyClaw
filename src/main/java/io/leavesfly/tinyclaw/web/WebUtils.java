@@ -97,6 +97,7 @@ public class WebUtils {
     public static final String API_MCP             = "/api/mcp";
     public static final String API_UPLOAD          = "/api/upload";
     public static final String API_FILES           = "/api/files";
+    public static final String API_TOKEN_STATS     = "/api/token-stats";
 
     // ==================== HTTP Methods ====================
     public static final String HTTP_METHOD_GET     = "GET";

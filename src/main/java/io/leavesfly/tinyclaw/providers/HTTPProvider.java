@@ -76,6 +76,9 @@ public class HTTPProvider implements LLMProvider {
             throw new LLMException("构建请求体失败", e);
         }
         requestBody.put("stream", true);
+        // 显式要求在流式响应的最后一个 chunk 中返回 usage 信息（OpenAI 兼容 API 标准）
+        ObjectNode streamOptions = requestBody.putObject("stream_options");
+        streamOptions.put("include_usage", true);
         
         String requestJson;
         try {

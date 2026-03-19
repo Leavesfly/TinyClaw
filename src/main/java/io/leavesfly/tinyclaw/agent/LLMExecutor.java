@@ -5,6 +5,7 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.tools.*;
+import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.*;
@@ -30,8 +31,12 @@ public class LLMExecutor {
     private final ToolRegistry tools;         // 工具注册表
     private final SessionManager sessions;    // 会话管理器
     private final String model;               // 使用的模型名称
+    private final String providerName;        // 提供商名称（如 dashscope、openai）
     private final int maxIterations;          // 最大迭代次数
-    
+
+    /** Token 消耗存储（可选，注入后自动记录每次 LLM 调用的 token 数据） */
+    private volatile TokenUsageStore tokenUsageStore;
+
     /** 反馈收集器（可选，用于进化模块） */
     private volatile FeedbackCollector feedbackCollector;
     
@@ -41,15 +46,25 @@ public class LLMExecutor {
     /** 当前流式回调（用于传递给子代理和协同工具） */
     private volatile LLMProvider.EnhancedStreamCallback currentEnhancedCallback;
     
-    public LLMExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions, 
-                      String model, int maxIterations) {
+    public LLMExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions,
+                      String model, String providerName, int maxIterations) {
         this.provider = provider;
         this.tools = tools;
         this.sessions = sessions;
         this.model = model;
+        this.providerName = providerName != null ? providerName : "unknown";
         this.maxIterations = maxIterations;
     }
     
+    /**
+     * 设置 Token 消耗存储（可选，注入后自动记录每次 LLM 调用的 token 数据）。
+     *
+     * @param tokenUsageStore Token 消耗存储实例
+     */
+    public void setTokenUsageStore(TokenUsageStore tokenUsageStore) {
+        this.tokenUsageStore = tokenUsageStore;
+    }
+
     /**
      * 设置反馈收集器（可选，用于进化模块）。
      * 
@@ -283,7 +298,9 @@ public class LLMExecutor {
     private LLMResponse callLLM(List<Message> messages) throws Exception {
         List<ToolDefinition> toolDefs = tools.getDefinitions();
         Map<String, Object> options = buildLLMOptions();
-        return provider.chat(messages, toolDefs, model, options);
+        LLMResponse response = provider.chat(messages, toolDefs, model, options);
+        recordTokenUsage(response);
+        return response;
     }
     
     /**
@@ -298,7 +315,24 @@ public class LLMExecutor {
                                       LLMProvider.StreamCallback callback) throws Exception {
         List<ToolDefinition> toolDefs = tools.getDefinitions();
         Map<String, Object> options = buildLLMOptions();
-        return provider.chatStream(messages, toolDefs, model, options, callback);
+        LLMResponse response = provider.chatStream(messages, toolDefs, model, options, callback);
+        recordTokenUsage(response);
+        return response;
+    }
+
+    /**
+     * 将本次 LLM 调用的 token 消耗记录到 TokenUsageStore。
+     * 仅在 tokenUsageStore 已注入且响应包含 usage 信息时执行。
+     *
+     * @param response LLM 响应
+     */
+    private void recordTokenUsage(LLMResponse response) {
+        if (tokenUsageStore == null || response == null || response.getUsage() == null) {
+            return;
+        }
+        LLMResponse.UsageInfo usage = response.getUsage();
+        tokenUsageStore.record(providerName, model,
+                usage.getPromptTokens(), usage.getCompletionTokens());
     }
     
     /**

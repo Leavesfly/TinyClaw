@@ -93,6 +93,10 @@
                             <span class="nav-icon">🌍</span>
                             <span>Environments</span>
                         </a>
+                        <a href="#token-usage" class="nav-item" data-page="token-usage">
+                            <span class="nav-icon">📊</span>
+                            <span>Token Usage</span>
+                        </a>
                     </div>
                 </div>
             </div>
@@ -327,6 +331,74 @@
                     </div>
                 </div>
                 
+                <!-- Token 消耗页面 -->
+                <div id="page-token-usage" class="page">
+                    <p class="page-desc">View LLM Token usage over a time range, grouped by date and model.</p>
+
+                    <!-- 日期筛选工具栏 -->
+                    <div class="token-toolbar">
+                        <div class="token-date-range">
+                            <input type="date" class="form-control token-date-input" id="tokenStartDate">
+                            <span class="token-date-sep">→</span>
+                            <input type="date" class="form-control token-date-input" id="tokenEndDate">
+                        </div>
+                        <button class="btn btn-primary" id="tokenRefreshBtn">刷新</button>
+                    </div>
+
+                    <!-- 总量汇总卡片 -->
+                    <div class="token-summary-grid">
+                        <div class="card token-summary-card">
+                            <div class="token-summary-value" id="tokenTotalPrompt">—</div>
+                            <div class="token-summary-label">输入 Token</div>
+                        </div>
+                        <div class="card token-summary-card">
+                            <div class="token-summary-value" id="tokenTotalCompletion">—</div>
+                            <div class="token-summary-label">输出 Token</div>
+                        </div>
+                    </div>
+
+                    <!-- 按模型分组表格 -->
+                    <div class="token-section">
+                        <h3 class="token-section-title">按模型</h3>
+                        <div class="sessions-table-container">
+                            <table class="sessions-table">
+                                <thead>
+                                    <tr>
+                                        <th>提供商</th>
+                                        <th>模型</th>
+                                        <th>输入 Token</th>
+                                        <th>输出 Token</th>
+                                        <th>总调用次数</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tokenByModelBody">
+                                    <tr><td colspan="5" class="empty-state">暂无数据</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 按日期分组表格 -->
+                    <div class="token-section">
+                        <h3 class="token-section-title">按日期</h3>
+                        <div class="sessions-table-container">
+                            <table class="sessions-table">
+                                <thead>
+                                    <tr>
+                                        <th>日期</th>
+                                        <th>输入 Token</th>
+                                        <th>输出 Token</th>
+                                        <th>总调用次数</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tokenByDateBody">
+                                    <tr><td colspan="4" class="empty-state">暂无数据</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Environments 页面 -->
                 <div id="page-environments" class="page">
                     <p class="page-desc">Configure agent default parameters</p>

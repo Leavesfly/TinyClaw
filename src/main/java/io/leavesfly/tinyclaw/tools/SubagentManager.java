@@ -195,7 +195,7 @@ public class SubagentManager {
         String sessionKey = "subagent:" + task.getId();
 
         try {
-            LLMExecutor llmExecutor = new LLMExecutor(provider, tools, subagentSessions, model, maxIterations);
+            LLMExecutor llmExecutor = new LLMExecutor(provider, tools, subagentSessions, model, null, maxIterations);
             String result;
             
             if (callback != null) {
@@ -280,7 +280,7 @@ public class SubagentManager {
         
         try {
             // 使用 LLMExecutor 实现完整的工具调用和循环能力
-            LLMExecutor executor = new LLMExecutor(provider, tools, subagentSessions, model, maxIterations);
+            LLMExecutor executor = new LLMExecutor(provider, tools, subagentSessions, model, null, maxIterations);
             String result = executor.execute(messages, sessionKey);
             
             task.setStatus("completed");

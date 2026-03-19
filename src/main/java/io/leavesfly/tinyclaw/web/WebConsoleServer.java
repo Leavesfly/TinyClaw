@@ -7,6 +7,7 @@ import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
+import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.web.handler.*;
 
 import java.io.IOException;
@@ -91,6 +92,9 @@ public class WebConsoleServer {
         // 多模态支持：文件上传和静态文件服务
         httpServer.createContext(WebUtils.API_UPLOAD,    new UploadHandler(config, security)::handle);
         httpServer.createContext(WebUtils.API_FILES,     new FilesHandler(config, security)::handle);
+        // Token 消耗统计
+        TokenUsageStore tokenUsageStore = new TokenUsageStore(config.getWorkspacePath());
+        httpServer.createContext(WebUtils.API_TOKEN_STATS, new TokenStatsHandler(config, tokenUsageStore, security)::handle);
     }
 
     private void registerStaticHandler() {

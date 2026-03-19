@@ -15,6 +15,8 @@ import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.tools.CollaborateTool;
 import io.leavesfly.tinyclaw.tools.Tool;
+import io.leavesfly.tinyclaw.tools.TokenUsageStore;
+import io.leavesfly.tinyclaw.tools.TokenUsageTool;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
@@ -146,7 +148,18 @@ public class AgentLoop {
         String model = config.getAgent().getModel();
         int maxIterations = config.getAgent().getMaxToolIterations();
         int contextWindow = resolveContextWindow(model);
-        this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, maxIterations);
+        String providerName = config.getModels().getDefinitions().containsKey(model)
+                ? config.getModels().getDefinitions().get(model).getProvider()
+                : "unknown";
+        this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
+
+        // 注入 Token 消耗存储，用于统计每次 LLM 调用的 token 数据
+        TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
+        this.llmExecutor.setTokenUsageStore(tokenUsageStore);
+
+        // 注册 Token 消耗查询工具，供大模型通过 function calling 查询 token 使用情况
+        tools.register(new TokenUsageTool(tokenUsageStore));
+        contextBuilder.setTools(tools);
 
         // 创建记忆进化引擎
         MemoryStore memoryStore = contextBuilder.getMemoryStore();
@@ -302,6 +315,13 @@ public class AgentLoop {
     }
     
     /** 获取反馈收集器，供外部组件记录反馈 */
+    public TokenUsageStore getTokenUsageStore() {
+        if (llmExecutor == null) {
+            return null;
+        }
+        return new TokenUsageStore(workspace);
+    }
+
     public FeedbackCollector getFeedbackCollector() {
         return feedbackCollector;
     }

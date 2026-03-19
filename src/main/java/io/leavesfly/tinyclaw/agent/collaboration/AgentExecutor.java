@@ -48,8 +48,8 @@ public class AgentExecutor {
         String effectiveModel = (role.getModel() != null && !role.getModel().isEmpty()) 
                 ? role.getModel() : model;
         
-        this.llmExecutor = new LLMExecutor(provider, tools, sessionManager, 
-                effectiveModel, maxIterations);
+        this.llmExecutor = new LLMExecutor(provider, tools, sessionManager,
+                effectiveModel, null, maxIterations);
     }
     
     /**
