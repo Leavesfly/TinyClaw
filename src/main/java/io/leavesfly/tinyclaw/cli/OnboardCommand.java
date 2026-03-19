@@ -161,7 +161,6 @@ public class OnboardCommand extends CliCommand {
         System.out.println();
         System.out.println("下一步：");
         System.out.println("  1. 将你的 API 密钥添加到 " + configPath);
-        System.out.println("     在此获取：https://openrouter.ai/keys");
         System.out.println("  2. 聊天：java -jar tinyclaw.jar agent -m \"Hello!\"");
     }
     
