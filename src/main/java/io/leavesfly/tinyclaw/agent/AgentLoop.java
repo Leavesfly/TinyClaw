@@ -6,6 +6,7 @@ import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
+import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -118,6 +119,25 @@ public class AgentLoop {
     }
 
     /**
+     * 从 ModelsConfig 中解析当前模型的上下文窗口大小。
+     *
+     * 优先使用 ModelsConfig 中配置的 maxContextSize，
+     * 若模型未在配置中定义则 fallback 到 DEFAULT_CONTEXT_WINDOW。
+     *
+     * @param model 模型名称
+     * @return 上下文窗口 token 数
+     */
+    private int resolveContextWindow(String model) {
+        ModelsConfig.ModelDefinition definition = config.getModels().getDefinitions().get(model);
+        if (definition != null && definition.getMaxContextSize() != null) {
+            return definition.getMaxContextSize();
+        }
+        logger.warn("Model not found in ModelsConfig, using default context window",
+                Map.of("model", model, "default", AgentConstants.DEFAULT_CONTEXT_WINDOW));
+        return AgentConstants.DEFAULT_CONTEXT_WINDOW;
+    }
+
+    /**
      * 将 provider 及其派生组件一次性赋值，消除构造器与 setProvider 之间的重复逻辑。
      * 调用方需自行保证线程安全（构造器天然安全，setProvider 通过 providerLock 保护）。
      */
@@ -125,7 +145,7 @@ public class AgentLoop {
         this.provider = newProvider;
         String model = config.getAgent().getModel();
         int maxIterations = config.getAgent().getMaxToolIterations();
-        int contextWindow = config.getAgent().getMaxTokens();
+        int contextWindow = resolveContextWindow(model);
         this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, maxIterations);
 
         // 创建记忆进化引擎

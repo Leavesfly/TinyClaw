@@ -33,7 +33,7 @@ public class AgentConfig {
         this.workspace = "~/.tinyclaw/workspace";
         this.model = "qwen3.5-plus";
         this.provider = "dashscope";
-        this.maxTokens = 32768;
+        this.maxTokens = 16384;
         this.temperature = 0.7;
         this.maxToolIterations = 20;
         this.heartbeatEnabled = false;

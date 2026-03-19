@@ -103,7 +103,7 @@ public class ContextBuilder {
     }
     
     /** 上下文窗口大小，用于计算记忆 token 预算 */
-    private int contextWindow = AgentConstants.DEFAULT_MAX_TOKENS;
+    private int contextWindow = AgentConstants.DEFAULT_CONTEXT_WINDOW;
     
     /**
      * 设置上下文窗口大小，用于动态计算记忆 token 预算。
