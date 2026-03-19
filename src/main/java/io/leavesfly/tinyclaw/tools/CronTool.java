@@ -133,10 +133,6 @@ public class CronTool implements Tool {
         jobId.put("description", "任务 ID（用于 remove/enable/disable 操作）");
         properties.put("job_id", jobId);
         
-        Map<String, Object> deliver = new HashMap<>();
-        deliver.put("type", "boolean");
-        deliver.put("description", "如果为 true，直接将消息发送到通道。如果为 false，让 Agent 处理消息（用于复杂任务）。默认：true");
-        properties.put("deliver", deliver);
         
         params.put("properties", properties);
         params.put("required", List.of("action"));
@@ -196,14 +192,9 @@ public class CronTool implements Tool {
             return "错误: 必须提供 at_seconds、every_seconds 或 cron_expr 之一";
         }
         
-        // 读取 deliver 参数，默认为 true
-        boolean deliver = args.containsKey("deliver") && args.get("deliver") instanceof Boolean
-                ? (Boolean) args.get("deliver")
-                : true;
-        
         // 创建任务
         String messagePreview = StringUtils.truncate(message, MESSAGE_PREVIEW_LENGTH);
-        CronJob job = cronService.addJob(messagePreview, schedule, message, deliver, channel, chatId);
+        CronJob job = cronService.addJob(messagePreview, schedule, message, channel, chatId);
         
         logger.info("Added cron job", Map.of(
                 "job_id", job.getId(),
@@ -328,14 +319,6 @@ public class CronTool implements Tool {
     public String executeJob(CronJob job) {
         String jobChannel = getJobChannel(job);
         String jobChatId = getJobChatId(job);
-        
-        // 如果 deliver=true，直接发送消息不经过 agent 处理
-        if (job.getPayload().isDeliver()) {
-            msgBus.publishOutbound(new OutboundMessage(jobChannel, jobChatId, job.getPayload().getMessage()));
-            return "ok";
-        }
-        
-        // 对于 deliver=false，通过 agent 处理（用于复杂任务）
         return executeJobThroughAgent(job, jobChannel, jobChatId);
     }
     

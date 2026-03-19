@@ -480,19 +480,18 @@ public class CronService {
      * @param name 任务名称
      * @param schedule 调度配置
      * @param message 消息内容
-     * @param deliver 是否推送到通道
      * @param channel 目标通道
      * @param to 目标接收者
      * @return 创建的任务对象
      */
-    public CronJob addJob(String name, CronSchedule schedule, String message, boolean deliver, 
+    public CronJob addJob(String name, CronSchedule schedule, String message,
                           String channel, String to) {
         lock.writeLock().lock();
         try {
             long now = System.currentTimeMillis();
             boolean deleteAfterRun = CronSchedule.ScheduleKind.AT == schedule.getKind();
             
-            CronJob job = createJob(name, schedule, message, deliver, channel, to, now, deleteAfterRun);
+            CronJob job = createJob(name, schedule, message, channel, to, now, deleteAfterRun);
             
             store.getJobs().add(job);
             saveStoreUnsafe();
@@ -515,22 +514,21 @@ public class CronService {
      * @param name 任务名称
      * @param schedule 调度配置
      * @param message 消息内容
-     * @param deliver 是否推送
      * @param channel 目标通道
      * @param to 目标接收者
      * @param now 当前时间戳
      * @param deleteAfterRun 执行后是否删除
      * @return 任务对象
      */
-    private CronJob createJob(String name, CronSchedule schedule, String message, 
-                             boolean deliver, String channel, String to, 
+    private CronJob createJob(String name, CronSchedule schedule, String message,
+                             String channel, String to,
                              long now, boolean deleteAfterRun) {
         CronJob job = new CronJob();
         job.setId(generateId());
         job.setName(name);
         job.setEnabled(true);
         job.setSchedule(schedule);
-        job.setPayload(new CronPayload(message, deliver, channel, to));
+        job.setPayload(new CronPayload(message, channel, to));
         job.setCreatedAtMs(now);
         job.setUpdatedAtMs(now);
         job.setDeleteAfterRun(deleteAfterRun);

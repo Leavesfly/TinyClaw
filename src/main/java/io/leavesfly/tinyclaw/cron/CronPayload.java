@@ -11,16 +11,14 @@ public class CronPayload {
     
     private String kind;
     private String message;
-    private boolean deliver = true;
     private String channel;
     private String to;
     
     public CronPayload() {}
     
-    public CronPayload(String message, boolean deliver, String channel, String to) {
+    public CronPayload(String message, String channel, String to) {
         this.kind = "agent_turn";
         this.message = message;
-        this.deliver = deliver;
         this.channel = channel;
         this.to = to;
     }
@@ -31,9 +29,6 @@ public class CronPayload {
     
     public String getMessage() { return message; }
     public void setMessage(String message) { this.message = message; }
-    
-    public boolean isDeliver() { return deliver; }
-    public void setDeliver(boolean deliver) { this.deliver = deliver; }
     
     public String getChannel() { return channel; }
     public void setChannel(String channel) { this.channel = channel; }

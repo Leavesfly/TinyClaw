@@ -128,7 +128,9 @@ public class CronHandler {
             WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Missing schedule"), corsOrigin);
             return;
         }
-        CronJob job = cronService.addJob(name, schedule, message, false, null, null);
+        String channel = json.has("channel") ? json.get("channel").asText() : null;
+        String to = json.has("to") ? json.get("to").asText() : null;
+        CronJob job = cronService.addJob(name, schedule, message, channel, to);
         WebUtils.sendJson(exchange, 200,
                 WebUtils.MAPPER.valueToTree(Map.of("id", job.getId())), corsOrigin);
     }

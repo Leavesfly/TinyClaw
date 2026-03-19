@@ -240,10 +240,9 @@ public class CronCommand extends CliCommand {
         // 创建任务
         CronService service = new CronService(storePath);
         CronJob job = service.addJob(
-                jobParams.name, 
-                schedule, 
-                jobParams.message, 
-                jobParams.deliver,
+                jobParams.name,
+                schedule,
+                jobParams.message,
                 jobParams.channel != null ? jobParams.channel : "",
                 jobParams.to != null ? jobParams.to : ""
         );
@@ -254,7 +253,7 @@ public class CronCommand extends CliCommand {
     
     /**
      * 解析任务参数。
-     * 
+     *
      * @param params 参数映射
      * @return 任务参数对象
      */
@@ -263,11 +262,10 @@ public class CronCommand extends CliCommand {
         String message = getParam(params, "m", "message");
         String everyStr = getParam(params, "e", "every");
         String cronExpr = getParam(params, "c", "cron");
-        boolean deliver = params.containsKey("d") || params.containsKey("deliver");
         String channel = params.get("channel");
         String to = params.get("to");
-        
-        return new JobParams(name, message, everyStr, cronExpr, deliver, channel, to);
+
+        return new JobParams(name, message, everyStr, cronExpr, channel, to);
     }
     
     /**
@@ -377,7 +375,7 @@ public class CronCommand extends CliCommand {
         System.out.println("  -m, --message    Agent 的消息");
         System.out.println("  -e, --every      每隔 N 秒运行");
         System.out.println("  -c, --cron       Cron 表达式（例如 '0 9 * * *'）");
-        System.out.println("  -d, --deliver    将响应发送到通道");
+
         System.out.println("  --to             发送接收者");
         System.out.println("  --channel        发送通道");
     }
@@ -390,7 +388,6 @@ public class CronCommand extends CliCommand {
             String message,
             String everyStr,
             String cronExpr,
-            boolean deliver,
             String channel,
             String to
     ) {

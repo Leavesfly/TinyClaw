@@ -1059,8 +1059,17 @@ class TinyClawConsole {
             </div>
             <div class="form-group" id="cronExprGroup" style="display:none;">
                 <label>Cron Expression</label>
-                <input class="form-control" id="cronExpr" placeholder="0 * * * *">
+                <input class="form-control" id="cronExpr" placeholder="0 8 * * *">
             </div>
+            <div class="form-group">
+                <label>Channel (optional)</label>
+                <input class="form-control" id="cronChannel" placeholder="e.g. dingtalk, telegram (leave empty for default)">
+            </div>
+            <div class="form-group">
+                <label>To / Chat ID (optional)</label>
+                <input class="form-control" id="cronTo" placeholder="Target chat ID (leave empty to use channel default)">
+            </div>
+
         `, async () => {
             const data = {
                 name: document.getElementById('cronName').value,
@@ -1071,12 +1080,22 @@ class TinyClawConsole {
             } else {
                 data.cron = document.getElementById('cronExpr').value;
             }
+            const channel = document.getElementById('cronChannel').value.trim();
+            const to = document.getElementById('cronTo').value.trim();
+            if (channel) data.channel = channel;
+            if (to) data.to = to;
             await this.authFetch('/api/cron', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
             this.loadCronJobs();
+        });
+
+        // 切换调度类型显示
+        document.getElementById('cronType').addEventListener('change', (e) => {
+            document.getElementById('cronEveryGroup').style.display = e.target.value === 'every' ? '' : 'none';
+            document.getElementById('cronExprGroup').style.display = e.target.value === 'cron' ? '' : 'none';
         });
 
         document.getElementById('cronType').onchange = (e) => {
