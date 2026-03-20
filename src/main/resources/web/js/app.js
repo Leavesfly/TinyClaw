@@ -476,14 +476,14 @@ class TinyClawConsole {
     }
 
     /**
-     * 加载左侧历史聊天会话列表
+     * 加载左侧历史聊天会话列表，按天分组折叠显示
      */
     async loadChatSessions() {
         try {
             const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
-            // 只显示 web: 开头的会话，严格按时间戳降序排列
+            // 只显示 web: 开头的会话，按时间戳降序排列
             const webSessions = sessions
                 .filter(s => s.key.startsWith('web:'))
                 .sort((a, b) => {
@@ -497,18 +497,63 @@ class TinyClawConsole {
                 historyDiv.innerHTML = '<div class="chat-history-empty">No chat history</div>';
                 return;
             }
-            
-            historyDiv.innerHTML = webSessions.map(s => {
-                const isActive = s.key === this.chatSessionId;
-                const title = this.extractChatTitle(s.key);
-                return `
-                    <div class="chat-history-item ${isActive ? 'active' : ''}" data-session="${this.escapeHtml(s.key)}">
-                        <span class="history-title">${this.escapeHtml(title)}</span>
-                        <button class="history-delete" onclick="event.stopPropagation(); app.deleteChatSession('${this.escapeHtml(s.key)}')" title="Delete">×</button>
+
+            // 按天分组（key 格式 web:<timestamp>，取日期字符串作为分组 key）
+            const todayLabel = this.formatDateLabel(new Date());
+            const groups = new Map(); // dateLabel -> sessions[]
+            for (const session of webSessions) {
+                const timestamp = parseInt(session.key.substring(4)) || 0;
+                const dateLabel = timestamp ? this.formatDateLabel(new Date(timestamp)) : 'Unknown';
+                if (!groups.has(dateLabel)) groups.set(dateLabel, []);
+                groups.get(dateLabel).push(session);
+            }
+
+            // 渲染分组 HTML（groups 已按时间倒排，Map 保持插入顺序）
+            let html = '';
+            for (const [dateLabel, groupSessions] of groups) {
+                const isToday = dateLabel === todayLabel;
+                const collapsedClass = isToday ? '' : 'collapsed';
+                html += `
+                    <div class="chat-history-group ${collapsedClass}" data-group-date="${this.escapeHtml(dateLabel)}">
+                        <div class="chat-history-group-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                            <span class="group-date-label"><span class="group-icon">${dateLabel === 'Today' ? '⚡' : dateLabel === 'Yesterday' ? '🌙' : '🗓'}</span>${this.escapeHtml(dateLabel)}</span>
+                            <span class="group-arrow">▾</span>
+                        </div>
+                        <div class="chat-history-group-items">
+                            ${groupSessions.map(s => {
+                                const isActive = s.key === this.chatSessionId;
+                                const title = this.extractChatTitle(s.key, s.firstMessage);
+                                return `
+                                    <div class="chat-history-item ${isActive ? 'active' : ''}" data-session="${this.escapeHtml(s.key)}">
+                                        <span class="history-title">${this.escapeHtml(title)}</span>
+                                        <button class="history-delete" onclick="event.stopPropagation(); app.deleteChatSession('${this.escapeHtml(s.key)}')" title="Delete">×</button>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
                     </div>
                 `;
-            }).join('');
-            
+            }
+            // 恢复之前的折叠状态（避免切换 session 时分组被重置折叠）
+            const previousCollapsedGroups = new Set(
+                [...historyDiv.querySelectorAll('.chat-history-group.collapsed')]
+                    .map(el => el.dataset.groupDate)
+            );
+
+            historyDiv.innerHTML = html;
+
+            // 有历史状态时按历史状态恢复，否则保持渲染时的默认状态（今天展开，其他折叠）
+            if (previousCollapsedGroups.size > 0 || historyDiv.querySelectorAll('.chat-history-group').length > 0) {
+                historyDiv.querySelectorAll('.chat-history-group').forEach(groupEl => {
+                    const groupDate = groupEl.dataset.groupDate;
+                    if (previousCollapsedGroups.has(groupDate)) {
+                        groupEl.classList.add('collapsed');
+                    } else if (previousCollapsedGroups.size > 0) {
+                        groupEl.classList.remove('collapsed');
+                    }
+                });
+            }
+
             // 绑定点击事件
             historyDiv.querySelectorAll('.chat-history-item').forEach(item => {
                 item.addEventListener('click', () => {
@@ -522,15 +567,34 @@ class TinyClawConsole {
     }
 
     /**
-     * 从会话 key 提取标题（用第一条用户消息或时间戳）
+     * 将 Date 格式化为日期分组标签，今天显示 "Today"，昨天显示 "Yesterday"，其余显示 yyyy/M/d
      */
-    extractChatTitle(key) {
-        // web:1234567890 -> 显示时间
+    formatDateLabel(date) {
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
+        const dateStr = `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+        if (dateStr === todayStr) return 'Today';
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        const yesterdayStr = `${yesterday.getFullYear()}/${yesterday.getMonth() + 1}/${yesterday.getDate()}`;
+        if (dateStr === yesterdayStr) return 'Yesterday';
+        return dateStr;
+    }
+
+    /**
+     * 从会话 key 和 firstMessage 提取标题
+     * 优先使用第一条用户消息，无消息时降级显示时间
+     */
+    extractChatTitle(key, firstMessage) {
+        if (firstMessage && firstMessage.trim()) {
+            return firstMessage.trim();
+        }
+        // 降级：显示时间
         if (key.startsWith('web:')) {
             const timestamp = key.substring(4);
             if (/^\d+$/.test(timestamp)) {
                 const date = new Date(parseInt(timestamp));
-                return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             }
             return timestamp === 'default' ? 'Default Chat' : timestamp;
         }

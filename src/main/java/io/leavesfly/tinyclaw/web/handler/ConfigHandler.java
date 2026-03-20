@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.web.handler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
+import io.leavesfly.tinyclaw.agent.AgentLoop;
 import io.leavesfly.tinyclaw.config.AgentConfig;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -22,14 +23,17 @@ public class ConfigHandler {
     private final Config config;
     private final SecurityMiddleware security;
     private final ProvidersHandler providersHandler;
+    private final AgentLoop agentLoop;
 
     /**
-     * 构造 ConfigHandler，注入全局配置、安全中间件以及 ProvidersHandler（用于分析当前 Provider）。
+     * 构造 ConfigHandler，注入全局配置、安全中间件、ProvidersHandler 以及 AgentLoop（用于模型热重载）。
      */
-    public ConfigHandler(Config config, SecurityMiddleware security, ProvidersHandler providersHandler) {
+    public ConfigHandler(Config config, SecurityMiddleware security, ProvidersHandler providersHandler,
+                         AgentLoop agentLoop) {
         this.config = config;
         this.security = security;
         this.providersHandler = providersHandler;
+        this.agentLoop = agentLoop;
     }
 
     /**
@@ -63,6 +67,10 @@ public class ConfigHandler {
                 if (json.has("model"))    config.getAgent().setModel(json.path("model").asText());
                 if (json.has("provider")) config.getAgent().setProvider(json.path("provider").asText());
                 WebUtils.saveConfig(config, logger);
+                // 配置保存后立即热重载，使模型选择无需重启即可生效
+                if (agentLoop != null) {
+                    agentLoop.reloadModel();
+                }
                 WebUtils.sendJson(exchange, 200, WebUtils.successJson("Model updated"), corsOrigin);
 
             } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {

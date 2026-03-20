@@ -86,7 +86,7 @@ public class WebConsoleServer {
         httpServer.createContext(WebUtils.API_SKILLS,    new SkillsHandler(config, skillsLoader, security)::handle);
         httpServer.createContext(WebUtils.API_PROVIDERS, providersHandler::handle);
         httpServer.createContext(WebUtils.API_MODELS,    new ModelsHandler(config, security, providersHandler)::handle);
-        httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler)::handle);
+        httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler, agentLoop)::handle);
         httpServer.createContext(WebUtils.API_FEEDBACK,  new FeedbackHandler(config, agentLoop, security)::handle);
         httpServer.createContext(WebUtils.API_MCP,       new MCPHandler(config, security)::handle);
         // 多模态支持：文件上传和静态文件服务

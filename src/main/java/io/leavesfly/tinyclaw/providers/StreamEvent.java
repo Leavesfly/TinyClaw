@@ -150,7 +150,21 @@ public class StreamEvent {
     public String format() {
         return switch (type) {
             case CONTENT -> content;
-            case TOOL_START -> "\n🔧 调用工具: " + content + "\n";
+            case TOOL_START -> {
+                Map<String, Object> args = getMeta("args");
+                String argsPreview = "";
+                if (args != null && !args.isEmpty()) {
+                    String argsStr = args.entrySet().stream()
+                            .map(e -> e.getKey() + "=" + e.getValue())
+                            .reduce((a, b) -> a + ", " + b)
+                            .orElse("");
+                    if (argsStr.length() > 50) {
+                        argsStr = argsStr.substring(0, 50) + "...";
+                    }
+                    argsPreview = " " + argsStr;
+                }
+                yield "\n🔧 调用工具: " + content + argsPreview + "\n";
+            }
             case TOOL_END -> {
                 Boolean success = getMeta("success");
                 String icon = Boolean.TRUE.equals(success) ? "✅" : "❌";

@@ -5,10 +5,14 @@ import io.leavesfly.tinyclaw.agent.evolution.*;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
+import io.leavesfly.tinyclaw.channels.Channel;
+import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ModelsConfig;
+import io.leavesfly.tinyclaw.config.ProvidersConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
+import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -65,6 +69,9 @@ public class AgentLoop {
     /* ---------- 协同组件（可选，配置启用后初始化） ---------- */
     private volatile AgentOrchestrator orchestrator;
 
+    /* ---------- 通道管理器（可选，由 GatewayBootstrap 注入） ---------- */
+    private volatile ChannelManager channelManager;
+
     private volatile boolean running = false;
     private volatile boolean providerConfigured = false;
 
@@ -112,12 +119,73 @@ public class AgentLoop {
                 "model", config.getAgent().getModel()));
     }
 
+    /**
+     * 根据当前 config 中的 provider/model 配置热重载 LLM Provider，无需重启即可生效。
+     *
+     * 从 config.getAgent() 读取最新的 provider 名称，查找对应的 ProviderConfig，
+     * 构建新的 HTTPProvider 实例后调用 setProvider() 完成线程安全的热更新。
+     *
+     * @return true 表示重载成功，false 表示 provider 未配置或无效
+     */
+    public boolean reloadModel() {
+        String providerName = config.getAgent().getProvider();
+        if (providerName == null || providerName.isEmpty()) {
+            logger.warn("reloadModel skipped: provider name not set in agent config");
+            return false;
+        }
+
+        ProvidersConfig.ProviderConfig providerConfig = resolveProviderConfig(providerName);
+        if (providerConfig == null || !providerConfig.isValid()) {
+            logger.warn("reloadModel skipped: provider not configured or invalid",
+                    Map.of("provider", providerName));
+            return false;
+        }
+
+        String apiKey = providerConfig.getApiKey();
+        String apiBase = providerConfig.getApiBase();
+        if (apiBase == null || apiBase.isEmpty()) {
+            apiBase = ProvidersConfig.getDefaultApiBase(providerName);
+        }
+
+        LLMProvider newProvider = new HTTPProvider(apiKey, apiBase);
+        setProvider(newProvider);
+
+        logger.info("Model reloaded successfully",
+                Map.of("provider", providerName, "model", config.getAgent().getModel()));
+        return true;
+    }
+
+    /**
+     * 根据 provider 名称从 config 中查找对应的 ProviderConfig。
+     */
+    private ProvidersConfig.ProviderConfig resolveProviderConfig(String providerName) {
+        ProvidersConfig pc = config.getProviders();
+        return switch (providerName) {
+            case "openrouter"  -> pc.getOpenrouter();
+            case "openai"      -> pc.getOpenai();
+            case "anthropic"   -> pc.getAnthropic();
+            case "zhipu"       -> pc.getZhipu();
+            case "dashscope"   -> pc.getDashscope();
+            case "gemini"      -> pc.getGemini();
+            case "ollama"      -> pc.getOllama();
+            default -> null;
+        };
+    }
+
     public boolean isProviderConfigured() {
         return providerConfigured;
     }
 
     public LLMProvider getProvider() {
         return provider;
+    }
+
+    /**
+     * 注入通道管理器，供 AgentLoop 在处理消息时查询通道能力（如流式输出支持）。
+     * 由 GatewayBootstrap 在初始化完成后调用。
+     */
+    public void setChannelManager(ChannelManager channelManager) {
+        this.channelManager = channelManager;
     }
 
     /**
@@ -506,12 +574,55 @@ public class AgentLoop {
             feedbackCollector.recordMessageExchange(sessionKey);
         }
 
+        boolean usedStreaming = isStreamingChannel(msg);
         String response = ensureNonBlank(
-                llmExecutor.execute(messages, sessionKey), DEFAULT_EMPTY_RESPONSE);
+                executeWithStreamingIfSupported(msg, messages, sessionKey, usedStreaming),
+                DEFAULT_EMPTY_RESPONSE);
 
         persistAndSummarize(sessionKey, response);
+        // 无论是否走流式路径，最终完整回复统一由此处发送
+        // 流式路径中 callback 只负责发送"思考中"占位消息，不发送最终内容
         publishReplyIfNeeded(msg, response);
         return response;
+    }
+
+    /**
+     * 判断当前消息的目标通道是否支持流式输出。
+     */
+    private boolean isStreamingChannel(InboundMessage msg) {
+        if (channelManager == null || "cli".equals(msg.getChannel())) {
+            return false;
+        }
+        Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
+        return channel != null && channel.supportsStreaming();
+    }
+
+    /**
+     * 根据目标通道是否支持流式输出，选择对应的 LLM 执行路径。
+     *
+     * <p>若通道支持流式（如钉钉），则先发送占位消息告知用户正在处理，
+     * LLM 完成后通过通道直接发送完整回复，避免重复发送。</p>
+     *
+     * @param msg           入站消息，用于获取通道名称和 chatId
+     * @param messages      已构建好的上下文消息列表
+     * @param sessionKey    当前会话 key
+     * @param usedStreaming 是否走流式路径
+     * @return LLM 生成的完整回复内容
+     */
+    private String executeWithStreamingIfSupported(InboundMessage msg,
+                                                   List<Message> messages,
+                                                   String sessionKey,
+                                                   boolean usedStreaming) throws Exception {
+        if (!usedStreaming) {
+            return llmExecutor.execute(messages, sessionKey);
+        }
+
+        Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
+        LLMProvider.StreamCallback streamingCallback = channel.createStreamingCallback(msg.getChatId());
+
+        logger.info("Using streaming output for channel", Map.of("channel", msg.getChannel()));
+        // callback 仅负责发送"思考中"占位消息，最终完整回复由外层 processUserMessage 统一发送
+        return llmExecutor.executeStream(messages, sessionKey, streamingCallback);
     }
 
     /**

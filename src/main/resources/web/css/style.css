@@ -456,6 +456,64 @@ body {
     color: var(--error);
 }
 
+/* Chat History - 按天分组折叠 */
+.chat-history-group {
+    margin-bottom: 4px;
+}
+
+.chat-history-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    cursor: pointer;
+    border-radius: 6px;
+    user-select: none;
+    transition: background 0.15s ease;
+}
+
+.chat-history-group-header:hover {
+    background: var(--bg-dark);
+}
+
+.group-date-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.group-icon {
+    font-size: 14px;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.group-arrow {
+    font-size: 15px;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+    line-height: 1;
+}
+
+.chat-history-group.collapsed .group-arrow {
+    transform: rotate(-90deg);
+}
+
+.chat-history-group-items {
+    overflow: hidden;
+    transition: max-height 0.2s ease;
+}
+
+.chat-history-group.collapsed .chat-history-group-items {
+    display: none;
+}
+
 .chat-main {
     flex: 1;
     display: flex;
@@ -1661,6 +1719,36 @@ body {
     border: none;
     border-top: 1px solid var(--border);
     margin: 0.5em 0;
+}
+
+.markdown-body table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.5em 0;
+    font-size: 0.9em;
+    overflow-x: auto;
+    display: block;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+    border: 1px solid var(--border);
+    padding: 8px 14px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.markdown-body table thead tr {
+    background: var(--bg);
+    font-weight: 600;
+}
+
+.markdown-body table tbody tr:nth-child(even) {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+.markdown-body table tbody tr:hover {
+    background: rgba(0, 0, 0, 0.04);
 }
 
 /* MCP */

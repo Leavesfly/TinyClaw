@@ -37,8 +37,8 @@ public class ModelsConfig {
         definitions.put("claude-3-5-haiku-20241022", new ModelDefinition("anthropic", "claude-3-5-haiku-20241022", 200000));
 
         // 智谱系列
-        definitions.put("glm-4-plus", new ModelDefinition("zhipu", "glm-4-plus", 128000));
-        definitions.put("glm-4-flash", new ModelDefinition("zhipu", "glm-4-flash", 128000));
+        definitions.put("glm-4.7", new ModelDefinition("zhipu", "glm-4.7", 128000));
+        definitions.put("glm-4.6", new ModelDefinition("zhipu", "glm-4.6", 128000));
 
         // Gemini 系列
         definitions.put("gemini-2.0-flash-exp", new ModelDefinition("gemini", "gemini-2.0-flash-exp", 1000000));

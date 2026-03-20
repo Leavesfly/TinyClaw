@@ -96,6 +96,9 @@ public class GatewayBootstrap {
         // 1. 初始化通道管理器
         channelManager = new ChannelManager(config, bus);
 
+        // 将通道管理器注入 AgentLoop，使其能感知各通道的能力（如流式输出）
+        agentLoop.setChannelManager(channelManager);
+
         // 2. 初始化语音转写器
         initializeTranscriber();
 

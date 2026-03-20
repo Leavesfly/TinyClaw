@@ -95,7 +95,7 @@ public class HTTPProvider implements LLMProvider {
         // 构建并执行 HTTP 请求
         Request request = buildHttpRequest(requestJson);
         try (Response response = httpClient.newCall(request).execute()) {
-            validateResponse(response);
+            validateResponse(response, model);
             return parseStreamResponse(response.body().source(), callback);
         } catch (IOException e) {
             throw new LLMException("执行请求失败", e);
@@ -566,7 +566,7 @@ public class HTTPProvider implements LLMProvider {
         Request request = buildHttpRequest(requestJson);
         try (Response response = httpClient.newCall(request).execute()) {
             String responseBody = response.body() != null ? response.body().string() : "";
-            validateResponse(response, responseBody);
+            validateResponse(response, responseBody, model);
             return parseResponse(responseBody);
         } catch (IOException e) {
             throw new LLMException("执行请求失败", e);
@@ -595,47 +595,53 @@ public class HTTPProvider implements LLMProvider {
     }
     
     /**
-     * 验证 HTTP 响应状态。
-     * 
+     * 验证 HTTP 响应状态（流式请求）。
+     *
      * @param response HTTP 响应对象
+     * @param model    请求使用的模型名称
      * @throws IOException 响应失败时抛出异常
      */
-    private void validateResponse(Response response) throws IOException {
+    private void validateResponse(Response response, String model) throws IOException {
         if (response.isSuccessful()) {
             return;
         }
-        
+
         String errorBody = response.body() != null ? response.body().string() : "";
         String errorPreview = errorBody.substring(0, Math.min(MAX_ERROR_RESPONSE_LENGTH, errorBody.length()));
-        
+
         logger.error("LLM API error", Map.of(
+                "model", model,
+                "api_base", apiBase,
                 "status_code", response.code(),
                 "response", errorPreview
         ));
-        
-        throw new IOException("LLM API error (status " + response.code() + "): " + errorBody);
+
+        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + errorBody);
     }
-    
+
     /**
-     * 验证 HTTP 响应状态（带响应体参数）。
-     * 
-     * @param response HTTP 响应对象
+     * 验证 HTTP 响应状态（非流式请求，带响应体参数）。
+     *
+     * @param response     HTTP 响应对象
      * @param responseBody 响应体内容
+     * @param model        请求使用的模型名称
      * @throws IOException 响应失败时抛出异常
      */
-    private void validateResponse(Response response, String responseBody) throws IOException {
+    private void validateResponse(Response response, String responseBody, String model) throws IOException {
         if (response.isSuccessful()) {
             return;
         }
-        
+
         String errorPreview = responseBody.substring(0, Math.min(MAX_ERROR_RESPONSE_LENGTH, responseBody.length()));
-        
+
         logger.error("LLM API error", Map.of(
+                "model", model,
+                "api_base", apiBase,
                 "status_code", response.code(),
                 "response", errorPreview
         ));
-        
-        throw new IOException("LLM API error (status " + response.code() + "): " + responseBody);
+
+        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + responseBody);
     }
     
     /**

@@ -14,12 +14,15 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.util.SSLUtils;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
+import io.leavesfly.tinyclaw.providers.LLMProvider;
+
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 钉钉通道实现 - 基于钉钉机器人 Webhook API 和 Stream 模式
@@ -367,25 +370,36 @@ public class DingTalkChannel extends BaseChannel {
         }
         
         String chatId = message.getChatId();
-        
-        // 优先使用 session_webhook
-        String webhook = sessionWebhooks.get(chatId);
-        if (webhook == null || webhook.isEmpty()) {
-            // 尝试使用配置的 Webhook
-            webhook = config.getWebhook();
-        }
-        
-        if (webhook == null || webhook.isEmpty()) {
-            throw new ChannelException("未找到 chat " + chatId + " 的 session_webhook，无法发送消息");
-        }
+        String webhook = resolveWebhook(chatId);
         
         logger.info("发送钉钉消息", Map.of(
             "chat_id", chatId,
             "preview", StringUtils.truncate(message.getContent(), 100)
         ));
         
-        // 发送 Markdown 格式消息
         sendMarkdownMessage(webhook, "TinyClaw", message.getContent());
+    }
+
+    @Override
+    public boolean supportsStreaming() {
+        // 钉钉不支持消息编辑，无法实现逐字更新的流式效果。
+        // 使用普通模式：LLM 生成完毕后统一发送一条完整回复，体验最干净。
+        return false;
+    }
+
+    /**
+     * 根据 chatId 解析对应的 Webhook 地址。
+     * 优先使用 session_webhook，其次使用配置的静态 Webhook。
+     */
+    private String resolveWebhook(String chatId) {
+        String webhook = sessionWebhooks.get(chatId);
+        if (webhook == null || webhook.isEmpty()) {
+            webhook = config.getWebhook();
+        }
+        if (webhook == null || webhook.isEmpty()) {
+            throw new ChannelException("未找到 chat " + chatId + " 的 session_webhook，无法发送消息");
+        }
+        return webhook;
     }
     
     /**

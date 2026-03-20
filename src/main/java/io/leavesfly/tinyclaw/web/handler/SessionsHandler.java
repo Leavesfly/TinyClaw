@@ -50,9 +50,17 @@ public class SessionsHandler {
             if (WebUtils.API_SESSIONS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
                 ArrayNode sessions = WebUtils.MAPPER.createArrayNode();
                 for (String key : sessionManager.getSessionKeys()) {
+                    var history = sessionManager.getHistory(key);
                     ObjectNode session = WebUtils.MAPPER.createObjectNode();
                     session.put("key", key);
-                    session.put("messageCount", sessionManager.getHistory(key).size());
+                    session.put("messageCount", history.size());
+                    // 取第一条 user 消息作为会话预览标题
+                    String firstMessage = history.stream()
+                            .filter(m -> "user".equals(m.getRole()) && m.getContent() != null && !m.getContent().isBlank())
+                            .findFirst()
+                            .map(m -> m.getContent().length() > 15 ? m.getContent().substring(0, 15) + "…" : m.getContent())
+                            .orElse("");
+                    session.put("firstMessage", firstMessage);
                     sessions.add(session);
                 }
                 WebUtils.sendJson(exchange, 200, sessions, corsOrigin);
