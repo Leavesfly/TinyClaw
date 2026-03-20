@@ -621,6 +621,11 @@ body {
     line-height: 1.6;
 }
 
+/* marked.parse 渲染后加了 markdown-body class，此时 HTML 里的 \n 不应被 pre-wrap 渲染成空行 */
+.message-content-text.markdown-body {
+    white-space: normal;
+}
+
 .message-content p {
     margin: 0.3em 0;
 }
@@ -635,8 +640,12 @@ body {
     margin: 0.1em 0;
 }
 
-.message-content li p {
-    margin: 0.1em 0;
+.message-content li p,
+.message-content li > p,
+.markdown-body li p,
+.markdown-body li > p {
+    margin: 0 !important;
+    padding: 0;
 }
 
 .message-content ol li {
@@ -1895,6 +1904,11 @@ body {
 
 .markdown-body li {
     margin: 0.05em 0;
+}
+
+/* loose list（列表项间有空行）时，<li> 内的 <p> 不加额外间距 */
+.markdown-body li > p {
+    margin: 0;
 }
 
 .markdown-body code {

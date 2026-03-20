@@ -11,9 +11,10 @@ class TinyClawConsole {
     }
 
     init() {
-        // 配置 Markdown 渲染：启用换行符转 <br>
+        // 配置 Markdown 渲染：不开启 breaks，避免列表等块级元素产生多余 <br> 间距
+        // 流式渲染阶段用 CSS white-space: pre-wrap 处理换行，finalizeCurrentText 后由 marked 正确渲染
         if (typeof marked !== 'undefined') {
-            marked.setOptions({ breaks: true });
+            marked.setOptions({ breaks: false });
         }
         
         this.bindNavigation();
@@ -832,10 +833,13 @@ class TinyClawConsole {
          */
         const finalizeCurrentText = () => {
             if (currentTextDiv && currentTextContent) {
+                // 流式阶段已经实时用 marked.parse 渲染，这里只需去掉流式光标，确保最终状态干净
                 if (typeof marked !== 'undefined') {
                     currentTextDiv.classList.add('markdown-body');
+                    currentTextDiv.style.whiteSpace = '';
                     currentTextDiv.innerHTML = marked.parse(currentTextContent);
                 } else {
+                    currentTextDiv.style.whiteSpace = 'pre-wrap';
                     currentTextDiv.textContent = currentTextContent;
                 }
             }
@@ -970,7 +974,11 @@ class TinyClawConsole {
                 // 非 JSON 格式（旧版兼容）：作为普通文本追加
                 const textDiv = getOrCreateTextDiv();
                 currentTextContent += jsonStr;
-                textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                textDiv.style.whiteSpace = 'pre-wrap';
+                textDiv.textContent = currentTextContent;
+                const legacyCursor = document.createElement('span');
+                legacyCursor.className = 'streaming-cursor';
+                textDiv.appendChild(legacyCursor);
                 return;
             }
 
@@ -978,7 +986,18 @@ class TinyClawConsole {
                 case 'CONTENT': {
                     const textDiv = getOrCreateTextDiv();
                     currentTextContent += event.content || '';
-                    textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                    // 流式阶段实时用 marked.parse 渲染，保证列表等 Markdown 结构正确显示
+                    if (typeof marked !== 'undefined') {
+                        textDiv.classList.add('markdown-body');
+                        textDiv.style.whiteSpace = '';
+                        textDiv.innerHTML = marked.parse(currentTextContent) + '<span class="streaming-cursor"></span>';
+                    } else {
+                        textDiv.style.whiteSpace = 'pre-wrap';
+                        textDiv.textContent = currentTextContent;
+                        const cursor = document.createElement('span');
+                        cursor.className = 'streaming-cursor';
+                        textDiv.appendChild(cursor);
+                    }
                     break;
                 }
                 case 'THINKING': {
