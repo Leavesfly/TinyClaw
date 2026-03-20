@@ -1,5 +1,8 @@
 package io.leavesfly.tinyclaw.providers;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.util.Map;
 
 /**
@@ -158,8 +161,8 @@ public class StreamEvent {
                             .map(e -> e.getKey() + "=" + e.getValue())
                             .reduce((a, b) -> a + ", " + b)
                             .orElse("");
-                    if (argsStr.length() > 50) {
-                        argsStr = argsStr.substring(0, 50) + "...";
+                    if (argsStr.length() > 200) {
+                        argsStr = argsStr.substring(0, 200) + "...";
                     }
                     argsPreview = " " + argsStr;
                 }
@@ -194,6 +197,105 @@ public class StreamEvent {
         };
     }
     
+    /**
+     * 序列化为 JSON 字符串，用于 SSE 结构化传输。
+     * 前端通过 type 字段区分事件类型，渲染不同 UI 组件。
+     *
+     * 输出格式示例：
+     * {"type":"CONTENT","content":"hello"}
+     * {"type":"TOOL_START","content":"write_file","tool":"write_file","args":{"path":"...","content":"..."}}
+     * {"type":"TOOL_END","tool":"write_file","success":true,"result":"..."}
+     */
+    public String toJson() {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode node = mapper.createObjectNode();
+            node.put("type", type.name());
+
+            switch (type) {
+                case CONTENT -> node.put("content", content != null ? content : "");
+                case THINKING -> node.put("content", content != null ? content : "");
+                case TOOL_START -> {
+                    node.put("tool", content != null ? content : "");
+                    Map<String, Object> args = getMeta("args");
+                    if (args != null && !args.isEmpty()) {
+                        ObjectNode argsNode = mapper.createObjectNode();
+                        args.forEach((key, value) -> {
+                            if (value == null) {
+                                argsNode.put(key, "");
+                                return;
+                            }
+                            String strValue = value.toString();
+                            // 对超长参数值（如文件内容）做截断，避免单个 SSE 事件过大导致传输异常
+                            if (strValue.length() > 500) {
+                                strValue = strValue.substring(0, 500) + "…（内容过长已截断）";
+                            }
+                            argsNode.put(key, strValue);
+                        });
+                        node.set("args", argsNode);
+                    }
+                }
+                case TOOL_END -> {
+                    String toolName = getMeta("tool");
+                    Boolean success = getMeta("success");
+                    node.put("tool", toolName != null ? toolName : "");
+                    node.put("success", Boolean.TRUE.equals(success));
+                    node.put("result", content != null ? content : "");
+                }
+                case SUBAGENT_START -> {
+                    String taskId = getMeta("taskId");
+                    String label = getMeta("label");
+                    node.put("taskId", taskId != null ? taskId : "");
+                    node.put("label", label != null ? label : "");
+                    node.put("task", content != null ? content : "");
+                }
+                case SUBAGENT_CONTENT -> {
+                    String taskId = getMeta("taskId");
+                    node.put("taskId", taskId != null ? taskId : "");
+                    node.put("content", content != null ? content : "");
+                }
+                case SUBAGENT_END -> {
+                    String taskId = getMeta("taskId");
+                    Boolean success = getMeta("success");
+                    node.put("taskId", taskId != null ? taskId : "");
+                    node.put("success", Boolean.TRUE.equals(success));
+                    node.put("result", content != null ? content : "");
+                }
+                case COLLABORATE_START -> {
+                    String mode = getMeta("mode");
+                    node.put("mode", mode != null ? mode : "");
+                    node.put("topic", content != null ? content : "");
+                }
+                case COLLABORATE_AGENT -> {
+                    String agent = getMeta("agent");
+                    node.put("agent", agent != null ? agent : "");
+                    node.put("content", content != null ? content : "");
+                }
+                case COLLABORATE_END -> {
+                    String mode = getMeta("mode");
+                    node.put("mode", mode != null ? mode : "");
+                    node.put("result", content != null ? content : "");
+                }
+            }
+
+            return mapper.writeValueAsString(node);
+        } catch (Exception e) {
+            // 序列化失败时降级为纯文本内容，保证流不中断
+            return "{\"type\":\"CONTENT\",\"content\":" + escapeJsonString(content) + "}";
+        }
+    }
+
+    private static String escapeJsonString(String value) {
+        if (value == null) return "\"\"";
+        return "\"" + value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+                + "\"";
+    }
+
     @Override
     public String toString() {
         return "StreamEvent{type=" + type + ", content='" + 

@@ -116,7 +116,7 @@ public class ChannelsHandler {
     }
 
     /**
-     * 根据通道名获取详情节点（密阥字段自动脲码）。
+     * 根据通道名获取详情节点。
      * 不支持的通道名返回 null。
      */
     private ObjectNode getChannelDetail(String name) {

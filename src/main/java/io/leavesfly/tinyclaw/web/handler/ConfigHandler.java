@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.agent.AgentLoop;
 import io.leavesfly.tinyclaw.config.AgentConfig;
 import io.leavesfly.tinyclaw.config.Config;
+import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
@@ -64,7 +65,18 @@ public class ConfigHandler {
             } else if (WebUtils.API_CONFIG_MODEL.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
                 String body = WebUtils.readRequestBodyLimited(exchange);
                 JsonNode json = WebUtils.MAPPER.readTree(body);
-                if (json.has("model"))    config.getAgent().setModel(json.path("model").asText());
+                if (json.has("model")) {
+                    String newModel = json.path("model").asText();
+                    config.getAgent().setModel(newModel);
+                    // 切换 model 时，自动从 ModelsConfig 同步对应的 provider，
+                    // 避免 provider 与 model 手动错配（如 qwen3-max 被发到智谱的 api_base）
+                    ModelsConfig.ModelDefinition modelDef =
+                            config.getModels().getDefinitions().get(newModel);
+                    if (modelDef != null) {
+                        config.getAgent().setProvider(modelDef.getProvider());
+                    }
+                }
+                // 允许显式覆盖 provider（优先级高于 model 自动推断，适用于自定义场景）
                 if (json.has("provider")) config.getAgent().setProvider(json.path("provider").asText());
                 WebUtils.saveConfig(config, logger);
                 // 配置保存后立即热重载，使模型选择无需重启即可生效

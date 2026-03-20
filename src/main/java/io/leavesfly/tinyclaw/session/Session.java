@@ -16,9 +16,12 @@ public class Session {
     private String summary;
     private Instant created;
     private Instant updated;
+    /** 工具调用记录列表，用于历史会话回放时重建工具调用卡片 */
+    private List<ToolCallRecord> toolCallRecords;
     
     public Session() {
         this.messages = new ArrayList<>();
+        this.toolCallRecords = new ArrayList<>();
         this.created = Instant.now();
         this.updated = Instant.now();
     }
@@ -69,6 +72,34 @@ public class Session {
         this.updated = updated;
     }
     
+    public List<ToolCallRecord> getToolCallRecords() {
+        return toolCallRecords;
+    }
+
+    public void setToolCallRecords(List<ToolCallRecord> toolCallRecords) {
+        this.toolCallRecords = toolCallRecords != null ? toolCallRecords : new ArrayList<>();
+    }
+
+    /**
+     * 添加一条工具调用记录。
+     * afterAssistantIndex 由调用方传入，表示该工具调用发生在第几条 assistant 消息之后。
+     */
+    public void addToolCallRecord(ToolCallRecord record) {
+        if (this.toolCallRecords == null) {
+            this.toolCallRecords = new ArrayList<>();
+        }
+        this.toolCallRecords.add(record);
+        this.updated = Instant.now();
+    }
+
+    /**
+     * 统计当前 messages 中 assistant 消息的数量（用于计算 afterAssistantIndex）
+     */
+    public int countAssistantMessages() {
+        if (messages == null) return 0;
+        return (int) messages.stream().filter(m -> "assistant".equals(m.getRole())).count();
+    }
+
     /**
      * 向会话添加一条简单消息
      */

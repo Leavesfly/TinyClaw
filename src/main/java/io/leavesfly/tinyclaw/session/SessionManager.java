@@ -98,6 +98,31 @@ public class SessionManager {
         Session session = getOrCreate(sessionKey);
         session.addFullMessage(message);
     }
+
+    /**
+     * 添加工具调用记录到会话。
+     * afterAssistantIndex 由调用方传入，表示该工具调用发生在第几条 assistant 消息之后。
+     */
+    public void addToolCallRecord(String sessionKey, ToolCallRecord record) {
+        Session session = getOrCreate(sessionKey);
+        session.addToolCallRecord(record);
+    }
+
+    /**
+     * 获取当前 session 中 assistant 消息的数量，用于计算 afterAssistantIndex。
+     */
+    public int countAssistantMessages(String sessionKey) {
+        Session session = sessions.get(sessionKey);
+        return session != null ? session.countAssistantMessages() : 0;
+    }
+
+    /**
+     * 获取会话的工具调用记录列表
+     */
+    public java.util.List<ToolCallRecord> getToolCallRecords(String sessionKey) {
+        Session session = sessions.get(sessionKey);
+        return session != null ? session.getToolCallRecords() : java.util.List.of();
+    }
     
     /**
      * 获取会话的消息历史

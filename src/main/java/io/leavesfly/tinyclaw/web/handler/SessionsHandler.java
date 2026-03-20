@@ -8,12 +8,14 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.session.ToolCallRecord;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -85,7 +87,27 @@ public class SessionsHandler {
                 String key = URLDecoder.decode(
                         path.substring(WebUtils.API_SESSIONS.length() + 1), StandardCharsets.UTF_8);
                 var history = sessionManager.getHistory(key);
+                var toolCallRecords = sessionManager.getToolCallRecords(key);
+                var summary = sessionManager.getSummary(key);
+
+                // 按 messageIndex（assistant 消息在 history 中的绝对位置索引）分组工具调用记录
+                Map<Integer, java.util.List<ToolCallRecord>> recordsByIndex = new HashMap<>();
+                for (ToolCallRecord record : toolCallRecords) {
+                    recordsByIndex
+                            .computeIfAbsent(record.getMessageIndex(), idx -> new java.util.ArrayList<>())
+                            .add(record);
+                }
+
                 ArrayNode messages = WebUtils.MAPPER.createArrayNode();
+                // 如果会话有摘要（说明历史已被压缩），在消息列表最前面插入一条虚拟摘要消息，
+                // 前端检测到 role=summary 时渲染为摘要提示卡片，告知用户前面有内容已被压缩
+                if (summary != null && !summary.isBlank()) {
+                    ObjectNode summaryMsg = WebUtils.MAPPER.createObjectNode();
+                    summaryMsg.put("role", "summary");
+                    summaryMsg.put("content", summary);
+                    messages.add(summaryMsg);
+                }
+                int msgIdx = 0;
                 for (var msg : history) {
                     ObjectNode m = WebUtils.MAPPER.createObjectNode();
                     m.put("role", msg.getRole());
@@ -97,7 +119,23 @@ public class SessionsHandler {
                             imagesArray.add(imgPath);
                         }
                     }
+                    // assistant 消息：按绝对位置索引附带其触发的工具调用记录
+                    if ("assistant".equals(msg.getRole())) {
+                        var records = recordsByIndex.get(msgIdx);
+                        if (records != null && !records.isEmpty()) {
+                            ArrayNode toolCallsArray = m.putArray("toolCallRecords");
+                            for (ToolCallRecord record : records) {
+                                ObjectNode r = WebUtils.MAPPER.createObjectNode();
+                                r.put("toolName", record.getToolName());
+                                r.put("argsSummary", record.getArgsSummary());
+                                r.put("resultSummary", record.getResultSummary());
+                                r.put("success", record.isSuccess());
+                                toolCallsArray.add(r);
+                            }
+                        }
+                    }
                     messages.add(m);
+                    msgIdx++;
                 }
                 WebUtils.sendJson(exchange, 200, messages, corsOrigin);
 

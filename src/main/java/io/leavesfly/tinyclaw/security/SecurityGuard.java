@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -181,6 +182,14 @@ public class SecurityGuard {
         // 检查命令是否匹配黑名单
         for (Pattern pattern : commandBlacklist) {
             if (pattern.matcher(command).find()) {
+                // 对于 workspace 内豁免类规则，若命令在 workspace 内执行则放行
+                if (isWorkspaceExemptPattern(pattern) && isCommandWithinWorkspace(command)) {
+                    logger.info("Command allowed within workspace (exempt pattern)", Map.of(
+                        "command", command,
+                        "pattern", pattern.pattern()
+                    ));
+                    continue;
+                }
                 logger.warn("Command blocked by blacklist", Map.of(
                     "command", command,
                     "pattern", pattern.pattern()
@@ -193,6 +202,81 @@ public class SecurityGuard {
         }
         
         return null; // 允许执行
+    }
+    
+    /**
+     * 判断该黑名单规则是否属于"workspace 内可豁免"类型。
+     * 
+     * 删除类命令（rm -rf、rmdir /s、del /f）在 workspace 内是合法的构建/清理操作，
+     * 允许豁免。磁盘操作、sudo、fork 炸弹等无论在哪都危险，不可豁免。
+     */
+    private boolean isWorkspaceExemptPattern(Pattern pattern) {
+        String patternStr = pattern.pattern();
+        return patternStr.contains("rm\\s+-[rf]") 
+            || patternStr.contains("del\\s+/[fq]")
+            || patternStr.contains("rmdir\\s+/s");
+    }
+    
+    /**
+     * 判断命令是否在 workspace 目录内执行。
+     * 
+     * 检测两种情况：
+     * 1. 命令以 "cd <workspace路径>" 开头，说明显式切换到 workspace 下的子目录
+     * 2. 命令中出现的所有绝对路径都在 workspace 内
+     * 
+     * 只要满足其一，即认为命令在 workspace 内执行。
+     */
+    private boolean isCommandWithinWorkspace(String command) {
+        if (workspace == null || workspace.isEmpty()) {
+            return false;
+        }
+        
+        try {
+            Path resolvedWorkspace = resolveRealPath(Paths.get(workspace));
+            
+            // 检测 "cd <path>" 模式，判断切换的目录是否在 workspace 内
+            Pattern cdPattern = Pattern.compile("(?:^|&&|;|\\|\\|)\\s*cd\\s+([^\\s&;|]+)");
+            Matcher cdMatcher = cdPattern.matcher(command);
+            while (cdMatcher.find()) {
+                String cdPath = cdMatcher.group(1);
+                try {
+                    Path resolvedCdPath = resolveRealPath(Paths.get(cdPath));
+                    if (resolvedCdPath.startsWith(resolvedWorkspace)) {
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                    // 路径解析失败，跳过此条
+                }
+            }
+            
+            // 检测命令中出现的绝对路径，判断是否都在 workspace 内
+            Pattern absolutePathPattern = Pattern.compile("(?<![\\w])((?:/[\\w.\\-]+)+)");
+            Matcher pathMatcher = absolutePathPattern.matcher(command);
+            boolean foundAbsolutePath = false;
+            while (pathMatcher.find()) {
+                String absolutePath = pathMatcher.group(1);
+                foundAbsolutePath = true;
+                try {
+                    Path resolvedPath = resolveRealPath(Paths.get(absolutePath));
+                    if (!resolvedPath.startsWith(resolvedWorkspace)) {
+                        return false; // 存在不在 workspace 内的绝对路径，不豁免
+                    }
+                } catch (Exception ignored) {
+                    // 路径解析失败，保守处理：不豁免
+                    return false;
+                }
+            }
+            
+            // 命令中存在绝对路径且全部在 workspace 内
+            return foundAbsolutePath;
+            
+        } catch (Exception e) {
+            logger.warn("Failed to check if command is within workspace", Map.of(
+                "command", command,
+                "error", e.getMessage()
+            ));
+            return false;
+        }
     }
     
     /**

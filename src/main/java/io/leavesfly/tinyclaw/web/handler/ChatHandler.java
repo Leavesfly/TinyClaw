@@ -6,6 +6,8 @@ import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.agent.AgentLoop;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMProvider;
+import io.leavesfly.tinyclaw.providers.StreamEvent;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -145,23 +147,25 @@ public class ChatHandler {
     }
 
     /**
-     * 调用 AgentLoop 流式接口，将每个 chunk 逗次写入 SSE 流。
-     * 支持多模态内容（文本+图片）。
-     * 内部异常尝试向客户端写入错误消息，避免连接空截断。
+     * 调用 AgentLoop 流式接口，将每个事件序列化为 JSON 后写入 SSE 流。
+     * 使用 EnhancedStreamCallback 接收结构化事件（工具调用、子代理、普通内容等），
+     * 前端通过 JSON 中的 type 字段区分事件类型并渲染不同 UI 组件。
      */
     private void streamAgentResponse(String message, List<String> images, String sessionId, OutputStream os) {
+        LLMProvider.EnhancedStreamCallback enhancedCallback = event -> {
+            try {
+                writeSSEJson(os, event);
+            } catch (IOException e) {
+                logger.error("SSE write error", Map.of("error", e.getMessage()));
+            }
+        };
+
         try {
-            agentLoop.processDirectStream(message, images, sessionId, chunk -> {
-                try {
-                    writeSSEData(os, chunk);
-                } catch (IOException e) {
-                    logger.error("SSE write error", Map.of("error", e.getMessage()));
-                }
-            });
+            agentLoop.processDirectStream(message, images, sessionId, enhancedCallback);
         } catch (Exception e) {
             logger.error("Agent stream processing error", Map.of("error", e.getMessage()));
             try {
-                writeSSEData(os, "错误: " + e.getMessage());
+                writeSSEJson(os, StreamEvent.content("错误: " + e.getMessage()));
             } catch (IOException ioException) {
                 logger.error("Failed to write error to SSE stream",
                         Map.of("error", ioException.getMessage()));
@@ -170,12 +174,25 @@ public class ChatHandler {
     }
 
     /**
-     * 将单个文本块包装为 SSE data 事件并刷入输出流。
+     * 将 StreamEvent 序列化为单行 JSON 后包装为 SSE data 事件并刷入输出流。
+     * toJson() 输出紧凑单行 JSON，不含真实换行符，无需做换行替换，
+     * 保证前端能直接 JSON.parse 整行 data 字段。
      */
-    private void writeSSEData(OutputStream os, String content) throws IOException {
-        String sseData = WebUtils.SSE_PREFIX + escapeSSE(content) + WebUtils.SSE_SUFFIX;
+    private void writeSSEJson(OutputStream os, StreamEvent event) throws IOException {
+        String json = event.toJson();
+        // 确保 JSON 是单行（移除任何真实换行符，防止 SSE 协议解析错误）
+        String singleLineJson = json.replace("\n", "\\n").replace("\r", "\\r");
+        String sseData = WebUtils.SSE_PREFIX + singleLineJson + WebUtils.SSE_SUFFIX;
         os.write(sseData.getBytes(StandardCharsets.UTF_8));
         os.flush();
+    }
+
+    /**
+     * 将单个文本块包装为 CONTENT 类型的 JSON SSE 事件并刷入输出流。
+     * 保留此方法供内部降级使用。
+     */
+    private void writeSSEData(OutputStream os, String content) throws IOException {
+        writeSSEJson(os, StreamEvent.content(content));
     }
 
     /**

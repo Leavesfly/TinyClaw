@@ -5,13 +5,14 @@ import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
+import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.config.ProvidersConfig;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
-import io.leavesfly.tinyclaw.skills.SkillsLoader;
+
 import io.leavesfly.tinyclaw.tools.*;
 
 import java.io.File;
@@ -150,20 +151,63 @@ public abstract class CliCommand {
     }
     
     /**
-     * 创建 LLM Provider，自动获取第一个可用的 Provider
+     * 创建 LLM Provider，优先按当前 model 定义选择对应的 provider。
+     *
+     * 解析顺序：
+     * 1. 从 ModelsConfig 中查找当前 model 对应的 provider（保证 api_base 与 model 一致）
+     * 2. 若 model 未在 ModelsConfig 中定义，则 fallback 到第一个有效的 provider
      */
     protected LLMProvider createProvider(Config config) {
         ProvidersConfig providers = config.getProviders();
+        String modelName = config.getAgent().getModel();
+
+        // 优先从 ModelsConfig 中通过 model 反查 provider，保证 api_base 与 model 绑定一致
+        ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(modelName);
+        if (modelDef != null) {
+            String providerName = modelDef.getProvider();
+            ProvidersConfig.ProviderConfig providerConfig = resolveProviderConfig(providers, providerName);
+            if (providerConfig != null && (providerConfig.isValid() || providerConfig.isValidForLocal())) {
+                String apiBase = providerConfig.getApiBase();
+                if (apiBase == null || apiBase.isEmpty()) {
+                    apiBase = ProvidersConfig.getDefaultApiBase(providerName);
+                }
+                return new HTTPProvider(providerConfig.getApiKey(), apiBase);
+            }
+            // model 对应的 provider 未配置 apiKey，抛出明确的错误提示
+            throw new IllegalStateException(
+                "模型 \"" + modelName + "\" 对应的 Provider \"" + providerName + "\" 未配置 API Key，" +
+                "请通过 Web Console -> Settings -> Models 配置后重试。"
+            );
+        }
+
+        // model 未在 ModelsConfig 中定义时，fallback 到第一个有效的 provider
+        logger.warn("Model not found in ModelsConfig, falling back to first valid provider",
+                Map.of("model", modelName));
         ProvidersConfig.ProviderConfig providerConfig = providers.getFirstValidProvider()
             .orElseThrow(() -> new IllegalStateException("未配置 API 密钥"));
-        
+
         String providerName = providers.getProviderName(providerConfig);
         String apiBase = providerConfig.getApiBase();
         if (apiBase == null || apiBase.isEmpty()) {
             apiBase = ProvidersConfig.getDefaultApiBase(providerName);
         }
-        
         return new HTTPProvider(providerConfig.getApiKey(), apiBase);
+    }
+
+    /**
+     * 根据 provider 名称从 ProvidersConfig 中查找对应的 ProviderConfig。
+     */
+    private ProvidersConfig.ProviderConfig resolveProviderConfig(ProvidersConfig providers, String providerName) {
+        return switch (providerName) {
+            case "openrouter" -> providers.getOpenrouter();
+            case "openai"     -> providers.getOpenai();
+            case "anthropic"  -> providers.getAnthropic();
+            case "zhipu"      -> providers.getZhipu();
+            case "dashscope"  -> providers.getDashscope();
+            case "gemini"     -> providers.getGemini();
+            case "ollama"     -> providers.getOllama();
+            default -> null;
+        };
     }
     
     /**

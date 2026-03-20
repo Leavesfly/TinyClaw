@@ -449,7 +449,8 @@ class TinyClawConsole {
     }
 
     /**
-     * 加载当前 session 的聊天历史
+     * 加载当前 session 的聊天历史。
+     * 连续的 assistant 消息会合并成一个气泡，避免多轮工具调用产生的碎片感。
      */
     async loadChatHistory() {
         try {
@@ -458,21 +459,127 @@ class TinyClawConsole {
             
             const messages = await response.json();
             // 过滤出有实际内容的 user/assistant 消息
-            const visibleMessages = (messages || []).filter(
-                msg => (msg.role === 'user' || msg.role === 'assistant') && (msg.content || (msg.images && msg.images.length > 0))
-            );
+            // 注意：assistant 消息即使 content 为空，只要有 toolCallRecords 也需要保留，
+            // 否则工具调用卡片会因找不到对应消息而丢失
+            const visibleMessages = (messages || []).filter(msg => {
+                if (msg.role === 'summary') return true; // 摘要消息始终保留
+                if (msg.role !== 'user' && msg.role !== 'assistant') return false;
+                const hasContent = msg.content || (msg.images && msg.images.length > 0);
+                const hasToolCalls = msg.role === 'assistant' && msg.toolCallRecords && msg.toolCallRecords.length > 0;
+                return hasContent || hasToolCalls;
+            });
             if (visibleMessages.length === 0) return;
+
+            // 将连续的 assistant 消息合并，减少碎片气泡
+            const mergedMessages = [];
+            for (const msg of visibleMessages) {
+                // 清洗旧格式遗留数据：过滤掉以 {"type":"TOOL_ 开头的行（改造前后端误存的 StreamEvent JSON）
+                let cleanContent = msg.content;
+                if (msg.role === 'assistant' && cleanContent) {
+                    const cleanedLines = cleanContent
+                        .split('\n')
+                        .filter(line => !line.trimStart().startsWith('{"type":"TOOL_'));
+                    cleanContent = cleanedLines.join('\n').trim();
+                }
+
+                const last = mergedMessages[mergedMessages.length - 1];
+                // 有工具调用记录的 assistant 消息不合并，保持独立渲染，
+                // 确保工具卡片能插入在正确位置（两段文字之间）
+                const lastHasToolCalls = last && last.toolCallRecords && last.toolCallRecords.length > 0;
+                if (msg.role === 'assistant' && last && last.role === 'assistant' && !lastHasToolCalls) {
+                    // 合并：用双换行分隔，保持段落感
+                    last.content = [last.content, cleanContent].filter(Boolean).join('\n\n');
+                } else {
+                    mergedMessages.push({
+                        role: msg.role,
+                        content: cleanContent,
+                        images: msg.images || [],
+                        toolCallRecords: msg.toolCallRecords || []
+                    });
+                }
+            }
             
             const messagesDiv = document.getElementById('chatMessages');
             // 清除欢迎消息，渲染历史记录
             messagesDiv.innerHTML = '';
-            for (const msg of visibleMessages) {
-                this.addMessage(msg.content, msg.role, msg.images || []);
+            for (const msg of mergedMessages) {
+                // 摘要消息：渲染为折叠提示卡片，告知用户前面有内容已被压缩
+                if (msg.role === 'summary') {
+                    const summaryDiv = document.createElement('div');
+                    summaryDiv.className = 'history-summary-banner';
+                    summaryDiv.innerHTML = `
+                        <span class="summary-icon">📋</span>
+                        <span class="summary-label">以上内容已压缩为摘要</span>
+                        <details class="summary-details">
+                            <summary>查看摘要</summary>
+                            <div class="summary-content">${this.escapeHtml(msg.content)}</div>
+                        </details>`;
+                    messagesDiv.appendChild(summaryDiv);
+                    continue;
+                }
+                this.addMessage(msg.content, msg.role, msg.images, false);
+                // assistant 消息后插入工具调用卡片（历史回放）
+                // 卡片必须追加到消息气泡的 .message-content 内部，与流式渲染保持一致
+                if (msg.role === 'assistant' && msg.toolCallRecords && msg.toolCallRecords.length > 0) {
+                    const lastMessageEl = messagesDiv.lastElementChild;
+                    const contentEl = lastMessageEl ? lastMessageEl.querySelector('.message-content') : null;
+                    const targetContainer = contentEl || messagesDiv;
+                    for (const record of msg.toolCallRecords) {
+                        this.appendHistoryToolCallCard(targetContainer, record);
+                    }
+                }
             }
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            // 历史回放完成后滚到顶部，让用户从头阅读完整会话
+            messagesDiv.scrollTop = 0;
         } catch (error) {
             console.error('Failed to load chat history:', error);
         }
+    }
+
+    /**
+     * 在历史回放时，将一条工具调用记录渲染为卡片并追加到消息容器。
+     * 复用流式渲染时的 tool-call-card 样式，保持视觉一致性。
+     *
+     * @param {HTMLElement} container - 消息容器（chatMessages div）
+     * @param {Object} record - 工具调用记录 { toolName, argsSummary, resultSummary, success }
+     */
+    appendHistoryToolCallCard(container, record) {
+        const toolName = record.toolName || 'unknown';
+        const argsSummary = record.argsSummary || '';
+        const resultSummary = record.resultSummary || '';
+        const success = record.success !== false;
+
+        const card = document.createElement('div');
+        card.className = 'tool-call-card';
+
+        const argsSection = argsSummary
+            ? `<div class="tool-call-section">
+                 <div class="tool-call-section-label">参数</div>
+                 <div class="tool-call-args">${this.escapeHtml(argsSummary)}</div>
+               </div>`
+            : '';
+
+        const resultSection = resultSummary
+            ? `<div class="tool-call-section">
+                 <div class="tool-call-section-label">结果</div>
+                 <div class="tool-call-result${success ? '' : ' error-result'}">${this.escapeHtml(resultSummary)}</div>
+               </div>`
+            : '';
+
+        const statusClass = success ? 'success' : 'error';
+        const statusText = success ? '✅ 完成' : '❌ 失败';
+
+        card.innerHTML = `
+            <div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')">
+                <span class="tool-call-icon">🔧</span>
+                <span class="tool-call-name">${this.escapeHtml(toolName)}</span>
+                <span class="tool-call-status ${statusClass}">${statusText}</span>
+                <span class="tool-call-toggle">▼</span>
+            </div>
+            <div class="tool-call-body">${argsSection}${resultSection}</div>
+        `;
+
+        container.appendChild(card);
     }
 
     /**
@@ -582,19 +689,27 @@ class TinyClawConsole {
     }
 
     /**
-     * 从会话 key 和 firstMessage 提取标题
-     * 优先使用第一条用户消息，无消息时降级显示时间
+     * 从会话 key 和 firstMessage 提取标题。
+     * 优先级：localStorage 缓存的用户首条消息 > 后端返回的 firstMessage > 降级显示时间
      */
     extractChatTitle(key, firstMessage) {
+        // 优先读 localStorage 中缓存的首条用户消息（服务重启后后端内存丢失时的兜底）
+        const cachedTitle = localStorage.getItem(`tinyclaw_title_${key}`);
+        if (cachedTitle && cachedTitle.trim()) {
+            return cachedTitle.trim();
+        }
         if (firstMessage && firstMessage.trim()) {
             return firstMessage.trim();
         }
-        // 降级：显示时间
+        // 降级：从时间戳生成友好的时间字符串
         if (key.startsWith('web:')) {
             const timestamp = key.substring(4);
             if (/^\d+$/.test(timestamp)) {
                 const date = new Date(parseInt(timestamp));
-                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                return date.toLocaleString([], {
+                    month: 'numeric', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
             }
             return timestamp === 'default' ? 'Default Chat' : timestamp;
         }
@@ -618,6 +733,8 @@ class TinyClawConsole {
         if (!confirm('Delete this chat?')) return;
         try {
             await this.authFetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
+            // 清除该会话缓存的标题
+            localStorage.removeItem(`tinyclaw_title_${key}`);
             // 如果删除的是当前会话，切换到新会话
             if (key === this.chatSessionId) {
                 this.chatSessionId = 'web:default';
@@ -668,6 +785,14 @@ class TinyClawConsole {
             }
         }
 
+        // 如果是该会话的第一条消息，缓存到 localStorage 作为会话标题
+        // （后端内存会话重启后丢失，localStorage 可跨重启保持标题）
+        const titleKey = `tinyclaw_title_${this.chatSessionId}`;
+        if (message && !localStorage.getItem(titleKey)) {
+            const titleText = message.length > 30 ? message.substring(0, 30) + '…' : message;
+            localStorage.setItem(titleKey, titleText);
+        }
+
         // Add user message (包含图片)
         this.addMessage(message, 'user', imagePaths);
         this.clearPendingImages();
@@ -675,15 +800,241 @@ class TinyClawConsole {
         // Add assistant message placeholder for streaming
         const assistantDiv = document.createElement('div');
         assistantDiv.className = 'message assistant';
-        assistantDiv.innerHTML = '<div class="message-content"><span class="streaming-cursor"></span></div>';
+        assistantDiv.innerHTML = '<div class="message-content"></div>';
         messagesDiv.appendChild(assistantDiv);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        
+
         const contentDiv = assistantDiv.querySelector('.message-content');
-        let fullResponse = '';
-        // 跟踪同一个 SSE 消息内是否已有 data: 行
-        // SSE 协议：同一消息内多个 data: 行之间用 \n 分隔，消息之间用 \n\n（空行）分隔
-        let dataLineCountInCurrentMessage = 0;
+
+        // 渲染状态：跟踪当前正在流式输出的文本内容 div 和工具调用卡片
+        let currentTextContent = '';
+        let currentTextDiv = null;
+        // toolCardMap: toolName -> { card, statusEl, bodyEl, resultEl, spinnerEl }
+        const toolCardMap = {};
+        // subagentCardMap: taskId -> { card, bodyEl, statusEl, contentBuffer }
+        const subagentCardMap = {};
+
+        /**
+         * 获取或创建当前文本输出区域（用于流式追加 CONTENT 事件）。
+         * 每次工具调用前后都会创建新的文本区域，保持内容与卡片的视觉分离。
+         */
+        const getOrCreateTextDiv = () => {
+            if (!currentTextDiv) {
+                currentTextDiv = document.createElement('div');
+                currentTextDiv.className = 'message-content-text';
+                contentDiv.appendChild(currentTextDiv);
+            }
+            return currentTextDiv;
+        };
+
+        /**
+         * 将当前文本区域用 Markdown 渲染并封闭，下次 CONTENT 事件将新建文本区域。
+         */
+        const finalizeCurrentText = () => {
+            if (currentTextDiv && currentTextContent) {
+                if (typeof marked !== 'undefined') {
+                    currentTextDiv.classList.add('markdown-body');
+                    currentTextDiv.innerHTML = marked.parse(currentTextContent);
+                } else {
+                    currentTextDiv.textContent = currentTextContent;
+                }
+            }
+            currentTextDiv = null;
+            currentTextContent = '';
+        };
+
+        /**
+         * 处理 TOOL_START 事件：创建工具调用卡片，显示工具名和运行状态。
+         */
+        const handleToolStart = (event) => {
+            finalizeCurrentText();
+
+            const toolName = event.tool || 'unknown';
+            const args = event.args || {};
+
+            const card = document.createElement('div');
+            card.className = 'tool-call-card';
+
+            // 将参数格式化为可读文本，还原 JSON 字符串中的转义换行符
+            const argsText = Object.keys(args).length > 0
+                ? JSON.stringify(args, null, 2).replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+                : '';
+
+            const argsSection = argsText
+                ? `<div class="tool-call-section"><div class="tool-call-section-label">参数</div><div class="tool-call-args">${this.escapeHtml(argsText)}</div></div>`
+                : '';
+            card.innerHTML = `<div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">🔧</span><span class="tool-call-name">${this.escapeHtml(toolName)}</span><span class="tool-call-status running"><span class="tool-call-spinner"></span>运行中</span><span class="tool-call-toggle">▼</span></div><div class="tool-call-body">${argsSection}<div class="tool-call-section tool-call-result-section" style="display:none"><div class="tool-call-section-label">结果</div><div class="tool-call-result"></div></div></div>`;
+
+            contentDiv.appendChild(card);
+            toolCardMap[toolName] = {
+                card,
+                statusEl: card.querySelector('.tool-call-status'),
+                resultSectionEl: card.querySelector('.tool-call-result-section'),
+                resultEl: card.querySelector('.tool-call-result'),
+            };
+        };
+
+        /**
+         * 处理 TOOL_END 事件：更新工具调用卡片状态，显示结果。
+         */
+        const handleToolEnd = (event) => {
+            const toolName = event.tool || 'unknown';
+            const success = event.success !== false;
+            const result = event.result || '';
+            const cardInfo = toolCardMap[toolName];
+
+            if (cardInfo) {
+                const { statusEl, resultSectionEl, resultEl } = cardInfo;
+
+                // 更新状态图标
+                statusEl.className = `tool-call-status ${success ? 'success' : 'error'}`;
+                statusEl.innerHTML = success ? '✅ 完成' : '❌ 失败';
+
+                // 显示结果（截断过长内容）
+                const displayResult = result.length > 2000
+                    ? result.substring(0, 2000) + '\n... (内容已截断)'
+                    : result;
+                resultEl.textContent = displayResult;
+                if (!success) resultEl.classList.add('error-result');
+                resultSectionEl.style.display = '';
+
+                delete toolCardMap[toolName];
+            }
+
+            // 工具调用结束后，下一段文本需要新建文本区域
+            currentTextDiv = null;
+            currentTextContent = '';
+        };
+
+        /**
+         * 处理 SUBAGENT_START 事件：创建子代理卡片。
+         */
+        const handleSubagentStart = (event) => {
+            finalizeCurrentText();
+
+            const taskId = event.taskId || 'unknown';
+            const label = event.label || '';
+            const task = event.task || '';
+            const displayName = label || task.substring(0, 40) || '子代理';
+
+            const card = document.createElement('div');
+            card.className = 'subagent-card';
+            card.innerHTML = `<div class="subagent-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">👤</span><span class="subagent-name">${this.escapeHtml(displayName)}</span><span class="subagent-status"><span class="tool-call-spinner"></span>执行中</span><span class="tool-call-toggle">▼</span></div><div class="subagent-body"></div>`;
+
+            contentDiv.appendChild(card);
+            subagentCardMap[taskId] = {
+                card,
+                bodyEl: card.querySelector('.subagent-body'),
+                statusEl: card.querySelector('.subagent-status'),
+                contentBuffer: '',
+            };
+        };
+
+        /**
+         * 处理 SUBAGENT_CONTENT 事件：将子代理输出追加到卡片内容区。
+         */
+        const handleSubagentContent = (event) => {
+            const taskId = event.taskId || 'unknown';
+            const content = event.content || '';
+            const cardInfo = subagentCardMap[taskId];
+            if (cardInfo) {
+                cardInfo.contentBuffer += content;
+                cardInfo.bodyEl.textContent = cardInfo.contentBuffer;
+            }
+        };
+
+        /**
+         * 处理 SUBAGENT_END 事件：更新子代理卡片状态。
+         */
+        const handleSubagentEnd = (event) => {
+            const taskId = event.taskId || 'unknown';
+            const success = event.success !== false;
+            const cardInfo = subagentCardMap[taskId];
+            if (cardInfo) {
+                cardInfo.statusEl.className = `subagent-status ${success ? 'success' : 'error'}`;
+                cardInfo.statusEl.innerHTML = success ? '✅ 完成' : '❌ 失败';
+                delete subagentCardMap[taskId];
+            }
+            currentTextDiv = null;
+            currentTextContent = '';
+        };
+
+        /**
+         * 处理单个 SSE JSON 事件，根据 type 分发到对应的渲染函数。
+         */
+        const handleSseEvent = (jsonStr) => {
+            let event;
+            try {
+                event = JSON.parse(jsonStr);
+            } catch {
+                // 非 JSON 格式（旧版兼容）：作为普通文本追加
+                const textDiv = getOrCreateTextDiv();
+                currentTextContent += jsonStr;
+                textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                return;
+            }
+
+            switch (event.type) {
+                case 'CONTENT': {
+                    const textDiv = getOrCreateTextDiv();
+                    currentTextContent += event.content || '';
+                    textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                    break;
+                }
+                case 'THINKING': {
+                    const thinkingDiv = document.createElement('div');
+                    thinkingDiv.className = 'thinking-block';
+                    thinkingDiv.textContent = event.content || '';
+                    contentDiv.appendChild(thinkingDiv);
+                    break;
+                }
+                case 'TOOL_START':
+                    handleToolStart(event);
+                    break;
+                case 'TOOL_END':
+                    handleToolEnd(event);
+                    break;
+                case 'SUBAGENT_START':
+                    handleSubagentStart(event);
+                    break;
+                case 'SUBAGENT_CONTENT':
+                    handleSubagentContent(event);
+                    break;
+                case 'SUBAGENT_END':
+                    handleSubagentEnd(event);
+                    break;
+                case 'COLLABORATE_START': {
+                    finalizeCurrentText();
+                    const colDiv = document.createElement('div');
+                    colDiv.className = 'thinking-block';
+                    colDiv.textContent = `🤝 启动多 Agent 协同: ${event.topic || ''}`;
+                    contentDiv.appendChild(colDiv);
+                    currentTextDiv = null;
+                    break;
+                }
+                case 'COLLABORATE_AGENT': {
+                    const agentDiv = document.createElement('div');
+                    agentDiv.className = 'thinking-block';
+                    agentDiv.textContent = `[${event.agent || 'Agent'}]: ${event.content || ''}`;
+                    contentDiv.appendChild(agentDiv);
+                    break;
+                }
+                case 'COLLABORATE_END': {
+                    finalizeCurrentText();
+                    currentTextDiv = null;
+                    break;
+                }
+                default: {
+                    // 未知事件类型：尝试作为文本内容处理
+                    const fallbackContent = event.content || event.result || '';
+                    if (fallbackContent) {
+                        const textDiv = getOrCreateTextDiv();
+                        currentTextContent += fallbackContent;
+                        textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                    }
+                }
+            }
+        };
 
         try {
             // 使用流式 API，包含图片路径
@@ -699,51 +1050,51 @@ class TinyClawConsole {
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
+            // 用于跨 chunk 拼接不完整行（网络缓冲区可能在行中间切断）
+            let lineBuffer = '';
+            let streamDone = false;
 
-            while (true) {
+            while (!streamDone) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n');
+                // 将新数据追加到行缓冲区
+                lineBuffer += decoder.decode(value, { stream: true });
+
+                // 按换行符切分，最后一段可能不完整，留在 buffer 里
+                const lines = lineBuffer.split('\n');
+                lineBuffer = lines.pop(); // 最后一段（可能不完整）留存
 
                 for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-                        if (data === '[DONE]') {
-                            break;
-                        } else if (data.startsWith('[ERROR]')) {
-                            fullResponse += data.slice(8);
-                        } else {
-                            // 同一 SSE 消息内的第 2+ 个 data: 行，需要还原换行符
-                            if (dataLineCountInCurrentMessage > 0) {
-                                fullResponse += '\n';
-                            }
-                            fullResponse += data;
-                        }
-                        dataLineCountInCurrentMessage++;
-                        // 流式过程中使用 escapeHtml 并将换行转为 <br> 显示
-                        contentDiv.innerHTML = this.escapeHtml(fullResponse).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    } else if (line === '') {
-                        // 空行表示当前 SSE 消息结束，重置计数器
-                        dataLineCountInCurrentMessage = 0;
+                    if (!line.startsWith('data: ')) continue;
+
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        streamDone = true;
+                        break;
+                    } else if (data.startsWith('[ERROR]')) {
+                        const errorText = data.slice(7);
+                        const textDiv = getOrCreateTextDiv();
+                        currentTextContent += errorText;
+                        textDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>');
+                    } else {
+                        // 每个 data: 行是一个完整的单行 JSON 事件，直接解析
+                        handleSseEvent(data);
                     }
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
             }
 
-            // 移除光标，使用 Markdown 渲染最终内容
-            if (typeof marked !== 'undefined') {
-                contentDiv.classList.add('markdown-body');
-                contentDiv.innerHTML = marked.parse(fullResponse);
-            } else {
-                contentDiv.innerHTML = this.escapeHtml(fullResponse);
-            }
+            // 流结束：将最后一段文本用 Markdown 渲染
+            finalizeCurrentText();
+            // 移除所有残留的流式光标
+            contentDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
             
             // 刷新左侧会话列表
             this.loadChatSessions();
         } catch (error) {
-            contentDiv.innerHTML = this.escapeHtml('Error: ' + error.message);
+            const textDiv = getOrCreateTextDiv();
+            textDiv.textContent = 'Error: ' + error.message;
         } finally {
             // 恢复按钮状态：可点击，恢复圆形
             sendBtn.classList.remove('loading');
@@ -751,7 +1102,7 @@ class TinyClawConsole {
         }
     }
 
-    addMessage(content, role, images = []) {
+    addMessage(content, role, images = [], scroll = true) {
         const messagesDiv = document.getElementById('chatMessages');
         const div = document.createElement('div');
         div.className = `message ${role}`;
@@ -778,7 +1129,9 @@ class TinyClawConsole {
         
         div.innerHTML = html;
         messagesDiv.appendChild(div);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        if (scroll) {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
     }
 
     // ==================== Channels ====================

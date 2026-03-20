@@ -41,20 +41,21 @@ public final class AgentConstants {
 
     /**
      * 触发摘要的消息数量阈值（仅统计 user/assistant 消息）。
-     * 设为 40 条，避免工具调用密集场景下频繁触发摘要。
+     * 设为 200 条，避免普通会话频繁触发摘要导致历史丢失。
      */
-    public static final int SUMMARIZE_MESSAGE_THRESHOLD = 40;
+    public static final int SUMMARIZE_MESSAGE_THRESHOLD = 200;
 
     /**
      * 触发摘要的 token 占比阈值（相对于上下文窗口）。
-     * 75% 是业界常见值，在上下文窗口被正确初始化后可合理触发。
+     * 调高至 90%，尽量保留完整历史，仅在接近上下文窗口极限时才压缩。
      */
-    public static final int SUMMARIZE_TOKEN_PERCENTAGE = 75;
+    public static final int SUMMARIZE_TOKEN_PERCENTAGE = 90;
 
     /**
      * 摘要后保留的最近消息条数，保持对话连贯性。
+     * 调高至 40 条，保留更多近期上下文。
      */
-    public static final int RECENT_MESSAGES_TO_KEEP = 6;
+    public static final int RECENT_MESSAGES_TO_KEEP = 40;
 
     /**
      * 触发分批摘要的消息数量阈值。

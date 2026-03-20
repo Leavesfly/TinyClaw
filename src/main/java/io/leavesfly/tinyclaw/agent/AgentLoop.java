@@ -122,22 +122,37 @@ public class AgentLoop {
     /**
      * 根据当前 config 中的 provider/model 配置热重载 LLM Provider，无需重启即可生效。
      *
-     * 从 config.getAgent() 读取最新的 provider 名称，查找对应的 ProviderConfig，
-     * 构建新的 HTTPProvider 实例后调用 setProvider() 完成线程安全的热更新。
+     * 优先从 ModelsConfig 中通过 model 名称反查对应的 provider，保证 api_base 与 model
+     * 始终来自同一个绑定关系，避免 AgentConfig.provider 与 model 手动错配的问题。
+     * 若 model 未在 ModelsConfig 中定义，则 fallback 到 AgentConfig.provider。
      *
      * @return true 表示重载成功，false 表示 provider 未配置或无效
      */
     public boolean reloadModel() {
-        String providerName = config.getAgent().getProvider();
+        String modelName = config.getAgent().getModel();
+
+        // 优先从 ModelsConfig 中通过 model 反查 provider，保证 api_base 与 model 一致
+        ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(modelName);
+        String providerName;
+        if (modelDef != null) {
+            providerName = modelDef.getProvider();
+        } else {
+            // model 未在 ModelsConfig 中定义时，fallback 到 AgentConfig.provider
+            providerName = config.getAgent().getProvider();
+            logger.warn("reloadModel: model not found in ModelsConfig, falling back to agent config provider",
+                    Map.of("model", modelName, "fallback_provider", providerName != null ? providerName : ""));
+        }
+
         if (providerName == null || providerName.isEmpty()) {
-            logger.warn("reloadModel skipped: provider name not set in agent config");
+            logger.warn("reloadModel skipped: provider name could not be resolved",
+                    Map.of("model", modelName));
             return false;
         }
 
         ProvidersConfig.ProviderConfig providerConfig = resolveProviderConfig(providerName);
         if (providerConfig == null || !providerConfig.isValid()) {
             logger.warn("reloadModel skipped: provider not configured or invalid",
-                    Map.of("provider", providerName));
+                    Map.of("provider", providerName, "model", modelName));
             return false;
         }
 
@@ -151,7 +166,7 @@ public class AgentLoop {
         setProvider(newProvider);
 
         logger.info("Model reloaded successfully",
-                Map.of("provider", providerName, "model", config.getAgent().getModel()));
+                Map.of("provider", providerName, "model", modelName));
         return true;
     }
 

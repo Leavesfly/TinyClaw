@@ -6,8 +6,6 @@
     <title>TinyClaw Console</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
     <link rel="stylesheet" href="/css/style.css">
-    <!-- Markdown 渲染 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <div class="app">
@@ -483,6 +481,8 @@
         </div>
     </div>
     
-    <script src="/js/app.js"></script>
+    <!-- Markdown 渲染：放在 app.js 之前确保同步加载顺序 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/js/app.js?v=20260321"></script>
 </body>
 </html>
