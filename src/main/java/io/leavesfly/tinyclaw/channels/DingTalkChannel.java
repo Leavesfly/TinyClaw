@@ -388,6 +388,20 @@ public class DingTalkChannel extends BaseChannel {
     }
 
     /**
+     * 向指定会话发送"思考中"占位消息，在 LLM 开始处理前立即告知用户请求已收到。
+     * 发送失败时仅记录警告，不影响主流程。
+     */
+    private void sendThinkingPlaceholder(String chatId) {
+        try {
+            String webhook = resolveWebhook(chatId);
+            sendMarkdownMessage(webhook, "TinyClaw", "⏳思考中...");
+            logger.debug("钉钉思考中占位消息已发送", Map.of("chat_id", chatId));
+        } catch (Exception e) {
+            logger.warn("钉钉思考中占位消息发送失败", Map.of("chat_id", chatId, "error", e.getMessage()));
+        }
+    }
+
+    /**
      * 根据 chatId 解析对应的 Webhook 地址。
      * 优先使用 session_webhook，其次使用配置的静态 Webhook。
      */
@@ -464,7 +478,11 @@ public class DingTalkChannel extends BaseChannel {
             if (inboundMsg == null) {
                 return "{\"msgtype\":\"text\",\"text\":{\"content\":\"权限不足\"}}";
             }
-            
+
+            // 消息已进入处理队列，立即回复占位消息，告知用户正在思考
+            // 避免用户等待 LLM 响应期间无任何反馈
+            sendThinkingPlaceholder(chatId);
+
             // 返回空响应，消息将通过消息总线异步回复
             return "{\"msgtype\":\"text\",\"text\":{\"content\":\"\"}}";
             
