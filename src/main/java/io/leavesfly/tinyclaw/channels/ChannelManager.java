@@ -46,7 +46,7 @@ public class ChannelManager {
     private final MessageBus bus;
     private final Config config;
     private volatile boolean dispatchRunning = false;
-    private Thread dispatchThread;
+    private final List<Thread> dispatchThreads = new ArrayList<>();
     
     public ChannelManager(Config config, MessageBus bus) {
         this.config = config;
@@ -202,11 +202,17 @@ public class ChannelManager {
         
         logger.info("Starting all channels");
         
-        // 启动出站调度器
+        // 为每个通道启动独立的出站调度线程，各通道消费者只消费自己通道的消息
         dispatchRunning = true;
-        dispatchThread = new Thread(this::dispatchOutbound, "channel-dispatcher");
-        dispatchThread.setDaemon(true);
-        dispatchThread.start();
+        for (String channelName : channels.keySet()) {
+            Thread dispatchThread = new Thread(
+                () -> dispatchOutboundForChannel(channelName),
+                "channel-dispatcher-" + channelName
+            );
+            dispatchThread.setDaemon(true);
+            dispatchThread.start();
+            dispatchThreads.add(dispatchThread);
+        }
         
         // 启动所有通道
         for (Map.Entry<String, Channel> entry : channels.entrySet()) {
@@ -242,9 +248,10 @@ public class ChannelManager {
         logger.info("Stopping all channels");
         
         dispatchRunning = false;
-        if (dispatchThread != null) {
+        for (Thread dispatchThread : dispatchThreads) {
             dispatchThread.interrupt();
         }
+        dispatchThreads.clear();
         
         for (Map.Entry<String, Channel> entry : channels.entrySet()) {
             String channelName = entry.getKey();
@@ -265,37 +272,33 @@ public class ChannelManager {
     }
     
     /**
-     * 调度出站消息
-     * 
-     * 在独立线程中运行的消息分发循环：
-     * 1. 从消息总线订阅出站消息
-     * 2. 根据消息的目标通道查找对应的通道实例
-     * 3. 将消息发送到目标通道（支持重试）
-     * 4. 处理未知通道的情况
-     * 
-     * 此方法在守护线程中运行，当dispatchRunning标志被设置为false时退出。
-     * 使用while循环持续处理消息，通过InterruptedException处理线程中断。
+     * 指定通道的出站消息调度循环
+     *
+     * 每个通道独立运行此方法，只消费属于自己通道的出站消息，互不干扰。
+     * 当 dispatchRunning 为 false 或总线关闭时退出循环。
+     *
+     * @param channelName 负责调度的通道名称
      */
-    private void dispatchOutbound() {
-        logger.info("Outbound dispatcher started");
-        
+    private void dispatchOutboundForChannel(String channelName) {
+        logger.info("Outbound dispatcher started", Map.of("channel", channelName));
+
+        Channel channel = channels.get(channelName);
+        if (channel == null) {
+            logger.warn("Dispatcher started for unknown channel, exiting", Map.of("channel", channelName));
+            return;
+        }
+
         while (dispatchRunning) {
             try {
-                OutboundMessage msg = bus.subscribeOutbound();
-                if (msg == null) continue;
-                
-                Channel channel = channels.get(msg.getChannel());
-                if (channel == null) {
-                    logger.warn("Unknown channel for outbound message", Map.of(
-                            "channel", msg.getChannel()
-                    ));
+                OutboundMessage msg = bus.subscribeOutbound(channelName, 1, java.util.concurrent.TimeUnit.SECONDS);
+                if (msg == null) {
                     continue;
                 }
-                
+
                 // 消息发送重试逻辑
                 boolean sendSuccess = false;
                 Exception lastException = null;
-                
+
                 for (int retry = 0; retry <= MAX_SEND_RETRIES; retry++) {
                     try {
                         channel.send(msg);
@@ -313,10 +316,10 @@ public class ChannelManager {
                         }
                     }
                 }
-                
+
                 if (!sendSuccess) {
                     logger.error("Failed to send message after retries", Map.of(
-                            "channel", msg.getChannel(),
+                            "channel", channelName,
                             "chat_id", msg.getChatId(),
                             "retries", String.valueOf(MAX_SEND_RETRIES),
                             "error", lastException != null ? lastException.getMessage() : "unknown"
@@ -325,12 +328,18 @@ public class ChannelManager {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
+            } catch (io.leavesfly.tinyclaw.bus.BusClosedException e) {
+                logger.info("MessageBus closed, stopping dispatcher", Map.of("channel", channelName));
+                break;
             } catch (Exception e) {
-                logger.error("Error sending message to channel", Map.of("error", e.getMessage()));
+                logger.error("Error dispatching outbound message", Map.of(
+                        "channel", channelName,
+                        "error", e.getMessage()
+                ));
             }
         }
-        
-        logger.info("Outbound dispatcher stopped");
+
+        logger.info("Outbound dispatcher stopped", Map.of("channel", channelName));
     }
     
     /**

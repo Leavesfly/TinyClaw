@@ -86,12 +86,12 @@ class MessageBusTest {
     @Timeout(value = 2, unit = TimeUnit.SECONDS)
     void publishOutbound_ValidMessage_CanBeSubscribed() throws InterruptedException {
         OutboundMessage msg = new OutboundMessage("discord", "chat789", "Response");
-        
+
         bus.publishOutbound(msg);
-        
-        assertEquals(1, bus.getOutboundSize(), "出站队列大小应为1");
-        
-        OutboundMessage subscribed = bus.subscribeOutbound(1, TimeUnit.SECONDS);
+
+        assertEquals(1, bus.getOutboundSize("discord"), "discord 出站队列大小应为1");
+
+        OutboundMessage subscribed = bus.subscribeOutbound("discord", 1, TimeUnit.SECONDS);
         assertNotNull(subscribed);
         assertEquals("discord", subscribed.getChannel());
         assertEquals("chat789", subscribed.getChatId());
@@ -102,27 +102,8 @@ class MessageBusTest {
     @DisplayName("subscribeOutbound: 超时返回 null")
     @Timeout(value = 2, unit = TimeUnit.SECONDS)
     void subscribeOutbound_Timeout_ReturnsNull() throws InterruptedException {
-        OutboundMessage msg = bus.subscribeOutbound(100, TimeUnit.MILLISECONDS);
+        OutboundMessage msg = bus.subscribeOutbound("discord", 100, TimeUnit.MILLISECONDS);
         assertNull(msg, "超时后应返回null");
-    }
-
-    // ==================== Handler 注册测试 ====================
-
-    @Test
-    @DisplayName("registerHandler: 可以注册和获取处理器")
-    void registerHandler_ValidHandler_CanBeRetrieved() {
-        AtomicInteger counter = new AtomicInteger(0);
-        bus.registerHandler("test-channel", msg -> {
-            counter.incrementAndGet();
-            return null;
-        });
-        
-        assertNotNull(bus.getHandler("test-channel"));
-        assertNull(bus.getHandler("unknown-channel"));
-        
-        // 验证处理器可以被调用
-        bus.getHandler("test-channel").apply(new InboundMessage("test-channel", "u", "c", "test"));
-        assertEquals(1, counter.get());
     }
 
     // ==================== clear / close 测试 ====================
@@ -132,14 +113,14 @@ class MessageBusTest {
     void clear_ClearsAllQueues() {
         bus.publishInbound(new InboundMessage("ch", "u", "c", "msg1"));
         bus.publishOutbound(new OutboundMessage("ch", "c", "resp1"));
-        
+
         assertEquals(1, bus.getInboundSize());
-        assertEquals(1, bus.getOutboundSize());
-        
+        assertEquals(1, bus.getOutboundSize("ch"));
+
         bus.clear();
-        
+
         assertEquals(0, bus.getInboundSize());
-        assertEquals(0, bus.getOutboundSize());
+        assertEquals(0, bus.getOutboundSize("ch"));
         assertFalse(bus.hasInbound());
     }
 

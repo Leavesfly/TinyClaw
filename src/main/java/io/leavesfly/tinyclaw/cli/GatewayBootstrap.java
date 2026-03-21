@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 网关服务启动器，负责编排和管理所有服务的生命周期。
@@ -208,13 +209,27 @@ public class GatewayBootstrap {
 
         logger.info("Stopping gateway services");
 
-        // 按相反顺序停止服务
+        // 1. 先停止入口层，不再接收新消息
         stopService("Web Console", () -> webConsoleServer.stop(), webConsoleServer != null);
         stopService("Webhook Server", () -> webhookServer.stop(), webhookServer != null);
         stopService("Heartbeat", () -> heartbeatService.stop(), heartbeatService != null);
         stopService("Cron", () -> cronService.stop(), cronService != null);
-        stopService("Channels", () -> channelManager.stopAll(), channelManager != null);
+
+        // 2. 停止 Agent，不再产生新的出站消息
         stopService("Agent Loop", () -> agentLoop.stop(), agentLoop != null);
+
+        // 3. 等待出站队列排空后关闭总线（最多等待 5 秒），确保已生成的回复都能发出去
+        if (bus != null) {
+            try {
+                bus.drainAndClose(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                bus.close();
+            }
+        }
+
+        // 4. 最后停止通道（此时出站队列已排空，通道可以安全关闭）
+        stopService("Channels", () -> channelManager.stopAll(), channelManager != null);
 
         shutdownLatch.countDown();
         started = false;

@@ -12,8 +12,11 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -56,7 +59,7 @@ public class SkillsSearcher {
     private final String githubToken;
     private final boolean allowGlobalSearch;
     private final List<SkillRegistry> registries;
-    private volatile boolean lastSearchRateLimited = false;
+    private boolean lastSearchRateLimited = false;
 
     /**
      * 创建技能搜索器（使用默认配置）
@@ -119,10 +122,8 @@ public class SkillsSearcher {
             }
         }
 
-        String token = skillsConfig.getGithubToken();
-        if (token != null && token.isEmpty()) {
-            token = null;
-        }
+        String rawToken = skillsConfig.getGithubToken();
+        String token = (rawToken != null && !rawToken.isEmpty()) ? rawToken : null;
 
         return new SkillsSearcher(token, skillsConfig.isAllowGlobalSearch(), customRegistries);
     }
@@ -146,27 +147,28 @@ public class SkillsSearcher {
 
         int limit = maxResults > 0 && maxResults <= 10 ? maxResults : DEFAULT_MAX_RESULTS;
         List<SkillSearchResult> results = new ArrayList<>();
+        // 用 Set 跟踪已添加的技能（repo#subdir），避免 O(n²) 的线性去重
+        Set<String> seenSkillKeys = new HashSet<>();
         boolean rateLimited = false;
 
         // 阶段 1：从可信技能市场搜索
         for (SkillRegistry registry : registries) {
-            if (!registry.isEnabled() || results.size() >= limit) {
+            if (!registry.isEnabled()) {
+                continue;
+            }
+            if (results.size() >= limit || rateLimited) {
                 break;
             }
 
-            // 如果已经检测到限流，跳过后续 registry 源，避免浪费请求
-            if (rateLimited) {
-                logger.info("Skipping registry due to rate limit", Map.of(
-                        "registry", registry.getName()
-                ));
-                continue;
-            }
-
             try {
-                List<SkillSearchResult> registryResults = searchFromRegistry(registry, query, limit - results.size());
+                // 优先从 registry.json 索引搜索，没有则扫描目录
+                List<SkillSearchResult> registryResults = searchFromRegistryIndex(registry, query, limit - results.size());
+                if (registryResults.isEmpty()) {
+                    registryResults = searchFromRepoDirectory(registry, query, limit - results.size());
+                }
                 for (SkillSearchResult registryResult : registryResults) {
-                    if (results.stream().noneMatch(r -> r.getFullName().equals(registryResult.getFullName())
-                            && equalSubdir(r.getSkillSubdir(), registryResult.getSkillSubdir()))) {
+                    String skillKey = registryResult.getFullName() + "#" + registryResult.getSkillSubdir();
+                    if (seenSkillKeys.add(skillKey)) {
                         results.add(registryResult);
                     }
                 }
@@ -194,7 +196,8 @@ public class SkillsSearcher {
             try {
                 List<SkillSearchResult> globalResults = searchGitHubGlobal(query, limit - results.size());
                 for (SkillSearchResult globalResult : globalResults) {
-                    if (results.stream().noneMatch(r -> r.getFullName().equals(globalResult.getFullName()))) {
+                    String skillKey = globalResult.getFullName() + "#" + globalResult.getSkillSubdir();
+                    if (seenSkillKeys.add(skillKey)) {
                         globalResult.setTrusted(false);
                         results.add(globalResult);
                     }
@@ -211,45 +214,16 @@ public class SkillsSearcher {
             }
         }
 
-        // 限制最终结果数量
+        // 限制最终结果数量（正常情况下不会超，但作为安全兜底）
         if (results.size() > limit) {
             results = new ArrayList<>(results.subList(0, limit));
         }
 
-        // 如果因限流导致无结果，设置标记以便 formatResults 给出准确提示
-        if (results.isEmpty() && rateLimited) {
-            this.lastSearchRateLimited = true;
-        } else {
-            this.lastSearchRateLimited = false;
-        }
+        // 记录限流状态，供 formatResults 给出准确提示
+        this.lastSearchRateLimited = results.isEmpty() && rateLimited;
 
         return results;
     }
-
-    /**
-     * 从单个可信技能市场搜索
-     * 
-     * 搜索策略：
-     * 1. 尝试加载 registry.json 索引文件并匹配关键词
-     * 2. 如果没有 registry.json，扫描仓库根目录查找包含 SKILL.md 的子目录
-     */
-    private List<SkillSearchResult> searchFromRegistry(SkillRegistry registry, String query, int limit) throws Exception {
-        List<SkillSearchResult> results = new ArrayList<>();
-
-        // 尝试加载 registry.json
-        List<SkillSearchResult> indexResults = searchFromRegistryIndex(registry, query, limit);
-        if (!indexResults.isEmpty()) {
-            results.addAll(indexResults);
-            return results;
-        }
-
-        // 没有 registry.json，扫描仓库目录
-        List<SkillSearchResult> dirResults = searchFromRepoDirectory(registry, query, limit);
-        results.addAll(dirResults);
-
-        return results;
-    }
-
 
 
     /**
@@ -642,9 +616,7 @@ public class SkillsSearcher {
     }
 
     private boolean equalSubdir(String subdir1, String subdir2) {
-        if (subdir1 == null && subdir2 == null) return true;
-        if (subdir1 == null || subdir2 == null) return false;
-        return subdir1.equals(subdir2);
+        return Objects.equals(subdir1, subdir2);
     }
 
     /**
@@ -831,31 +803,17 @@ public class SkillsSearcher {
                 if (query == null || query.isEmpty()) {
                     return true;
                 }
-                String lowerQuery = query.toLowerCase();
-                String[] keywords = lowerQuery.split("\\s+");
+                String[] keywords = query.toLowerCase().split("\\s+");
 
+                // 所有关键词都必须命中（AND 语义），每个关键词在名称/描述/标签/作者中任一匹配即可
                 for (String keyword : keywords) {
-                    boolean found = false;
+                    boolean foundInName = name != null && name.toLowerCase().contains(keyword);
+                    boolean foundInDescription = description != null && description.toLowerCase().contains(keyword);
+                    boolean foundInTags = tags != null && tags.stream()
+                            .anyMatch(tag -> tag.toLowerCase().contains(keyword));
+                    boolean foundInAuthor = author != null && author.toLowerCase().contains(keyword);
 
-                    if (name != null && name.toLowerCase().contains(keyword)) {
-                        found = true;
-                    }
-                    if (!found && description != null && description.toLowerCase().contains(keyword)) {
-                        found = true;
-                    }
-                    if (!found && tags != null) {
-                        for (String tag : tags) {
-                            if (tag.toLowerCase().contains(keyword)) {
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!found && author != null && author.toLowerCase().contains(keyword)) {
-                        found = true;
-                    }
-
-                    if (!found) {
+                    if (!foundInName && !foundInDescription && !foundInTags && !foundInAuthor) {
                         return false;
                     }
                 }
