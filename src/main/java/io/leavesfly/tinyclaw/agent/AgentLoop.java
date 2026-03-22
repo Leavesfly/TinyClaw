@@ -17,10 +17,8 @@ import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
-import io.leavesfly.tinyclaw.tools.CollaborateTool;
 import io.leavesfly.tinyclaw.tools.Tool;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
-import io.leavesfly.tinyclaw.tools.TokenUsageTool;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
@@ -54,20 +52,14 @@ public class AgentLoop {
     private final Config config;
 
     /* ---------- 可热更新组件（volatile 保证线程可见性） ---------- */
-    private volatile LLMExecutor llmExecutor;
-    private volatile SessionSummarizer summarizer;
-    private volatile MemoryEvolver memoryEvolver;
     private volatile LLMProvider provider;
     private volatile MCPManager mcpManager;
-    
-    /* ---------- 进化组件（可选，配置启用后初始化） ---------- */
-    private volatile FeedbackStore feedbackStore;
-    private volatile FeedbackCollector feedbackCollector;
-    private volatile PromptStore promptStore;
-    private volatile PromptOptimizer promptOptimizer;
-    
-    /* ---------- 协同组件（可选，配置启用后初始化） ---------- */
-    private volatile AgentOrchestrator orchestrator;
+
+    /**
+     * Provider 切换时一次性替换的组件集合，通过 {@link ProviderComponents} 聚合，
+     * 避免多个 volatile 字段在并发场景下出现部分更新的中间状态。
+     */
+    private volatile ProviderComponents components;
 
     /* ---------- 通道管理器（可选，由 GatewayBootstrap 注入） ---------- */
     private volatile ChannelManager channelManager;
@@ -122,26 +114,15 @@ public class AgentLoop {
     /**
      * 根据当前 config 中的 provider/model 配置热重载 LLM Provider，无需重启即可生效。
      *
-     * 优先从 ModelsConfig 中通过 model 名称反查对应的 provider，保证 api_base 与 model
+     * <p>优先从 ModelsConfig 中通过 model 名称反查对应的 provider，保证 api_base 与 model
      * 始终来自同一个绑定关系，避免 AgentConfig.provider 与 model 手动错配的问题。
-     * 若 model 未在 ModelsConfig 中定义，则 fallback 到 AgentConfig.provider。
+     * 若 model 未在 ModelsConfig 中定义，则 fallback 到 AgentConfig.provider。</p>
      *
      * @return true 表示重载成功，false 表示 provider 未配置或无效
      */
     public boolean reloadModel() {
         String modelName = config.getAgent().getModel();
-
-        // 优先从 ModelsConfig 中通过 model 反查 provider，保证 api_base 与 model 一致
-        ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(modelName);
-        String providerName;
-        if (modelDef != null) {
-            providerName = modelDef.getProvider();
-        } else {
-            // model 未在 ModelsConfig 中定义时，fallback 到 AgentConfig.provider
-            providerName = config.getAgent().getProvider();
-            logger.warn("reloadModel: model not found in ModelsConfig, falling back to agent config provider",
-                    Map.of("model", modelName, "fallback_provider", providerName != null ? providerName : ""));
-        }
+        String providerName = resolveProviderName(modelName);
 
         if (providerName == null || providerName.isEmpty()) {
             logger.warn("reloadModel skipped: provider name could not be resolved",
@@ -149,42 +130,33 @@ public class AgentLoop {
             return false;
         }
 
-        ProvidersConfig.ProviderConfig providerConfig = resolveProviderConfig(providerName);
+        ProvidersConfig.ProviderConfig providerConfig = config.getProviders().getByName(providerName);
         if (providerConfig == null || !providerConfig.isValid()) {
             logger.warn("reloadModel skipped: provider not configured or invalid",
                     Map.of("provider", providerName, "model", modelName));
             return false;
         }
 
-        String apiKey = providerConfig.getApiKey();
-        String apiBase = providerConfig.getApiBase();
-        if (apiBase == null || apiBase.isEmpty()) {
-            apiBase = ProvidersConfig.getDefaultApiBase(providerName);
-        }
+        String apiBase = providerConfig.getApiBaseOrDefault(ProvidersConfig.getDefaultApiBase(providerName));
+        setProvider(new HTTPProvider(providerConfig.getApiKey(), apiBase));
 
-        LLMProvider newProvider = new HTTPProvider(apiKey, apiBase);
-        setProvider(newProvider);
-
-        logger.info("Model reloaded successfully",
-                Map.of("provider", providerName, "model", modelName));
+        logger.info("Model reloaded successfully", Map.of("provider", providerName, "model", modelName));
         return true;
     }
 
     /**
-     * 根据 provider 名称从 config 中查找对应的 ProviderConfig。
+     * 从 ModelsConfig 中反查 model 对应的 provider 名称。
+     * 若 model 未在 ModelsConfig 中定义，则 fallback 到 AgentConfig.provider。
      */
-    private ProvidersConfig.ProviderConfig resolveProviderConfig(String providerName) {
-        ProvidersConfig pc = config.getProviders();
-        return switch (providerName) {
-            case "openrouter"  -> pc.getOpenrouter();
-            case "openai"      -> pc.getOpenai();
-            case "anthropic"   -> pc.getAnthropic();
-            case "zhipu"       -> pc.getZhipu();
-            case "dashscope"   -> pc.getDashscope();
-            case "gemini"      -> pc.getGemini();
-            case "ollama"      -> pc.getOllama();
-            default -> null;
-        };
+    private String resolveProviderName(String modelName) {
+        ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(modelName);
+        if (modelDef != null) {
+            return modelDef.getProvider();
+        }
+        String fallback = config.getAgent().getProvider();
+        logger.warn("reloadModel: model not found in ModelsConfig, falling back to agent config provider",
+                Map.of("model", modelName, "fallback_provider", fallback != null ? fallback : ""));
+        return fallback;
     }
 
     public boolean isProviderConfigured() {
@@ -228,108 +200,80 @@ public class AgentLoop {
      */
     private void applyProvider(LLMProvider newProvider) {
         this.provider = newProvider;
+
         String model = config.getAgent().getModel();
         int maxIterations = config.getAgent().getMaxToolIterations();
         int contextWindow = resolveContextWindow(model);
-        String providerName = config.getModels().getDefinitions().containsKey(model)
-                ? config.getModels().getDefinitions().get(model).getProvider()
-                : "unknown";
-        this.llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
+        String providerName = resolveProviderName(model);
 
-        // 注入 Token 消耗存储，用于统计每次 LLM 调用的 token 数据
-        TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
-        this.llmExecutor.setTokenUsageStore(tokenUsageStore);
-
-        // 注册 Token 消耗查询工具，供大模型通过 function calling 查询 token 使用情况
-        tools.register(new TokenUsageTool(tokenUsageStore));
-        contextBuilder.setTools(tools);
-
-        // 创建记忆进化引擎
-        MemoryStore memoryStore = contextBuilder.getMemoryStore();
-        this.memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
-
-        // 将上下文窗口传递给 ContextBuilder，用于计算记忆 token 预算
+        // 同步上下文窗口到 ContextBuilder，用于计算记忆 token 预算
         contextBuilder.setContextWindow(contextWindow);
 
-        this.summarizer = new SessionSummarizer(sessions, newProvider, model, contextWindow,
-                memoryStore, memoryEvolver);
+        MemoryStore memoryStore = contextBuilder.getMemoryStore();
+        MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
+
+        TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
+        LLMExecutor llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
+        llmExecutor.setTokenUsageStore(tokenUsageStore);
+
+        SessionSummarizer summarizer = new SessionSummarizer(
+                sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);
+
+        this.components = buildOptionalComponents(
+                newProvider, model, maxIterations, llmExecutor, summarizer, memoryEvolver, tokenUsageStore);
+
         this.providerConfigured = true;
-        
-        // 初始化进化组件（如果启用）
-        initializeEvolutionComponents(newProvider, model);
-        
-        // 初始化多Agent协同组件（如果启用）
-        initializeCollaborationComponents(newProvider, model, maxIterations);
     }
-    
+
     /**
-     * 初始化进化组件（反馈收集、Prompt 优化）。
-     * 
-     * 仅在配置启用时初始化，不影响现有功能。
+     * 构建完整的 {@link ProviderComponents}，包含核心组件与可选的进化/协同组件。
+     *
+     * <p>将各可选功能的初始化逻辑收敛在此处，使 {@link #applyProvider} 保持高层编排视角，
+     * 不感知各组件的构造细节。</p>
      */
-    private void initializeEvolutionComponents(LLMProvider newProvider, String model) {
+    private ProviderComponents buildOptionalComponents(
+            LLMProvider newProvider, String model, int maxIterations,
+            LLMExecutor llmExecutor, SessionSummarizer summarizer,
+            MemoryEvolver memoryEvolver, TokenUsageStore tokenUsageStore) {
+
+        FeedbackStore feedbackStore = null;
+        FeedbackCollector feedbackCollector = null;
+        PromptStore promptStore = null;
+        PromptOptimizer promptOptimizer = null;
+        AgentOrchestrator orchestrator = null;
+
+        // 进化组件（反馈收集 + Prompt 优化）
         EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
-        if (evolutionConfig == null || !evolutionConfig.isAnyEvolutionEnabled()) {
-            logger.debug("Evolution features disabled");
-            return;
-        }
-        
-        try {
-           // 初始化反馈存储和收集器
+        if (evolutionConfig != null && evolutionConfig.isAnyEvolutionEnabled()) {
             if (evolutionConfig.isFeedbackEnabled()) {
-                this.feedbackStore = new FeedbackStore(workspace, evolutionConfig.getFeedbackRetentionDays());
-                this.feedbackCollector = new FeedbackCollector(feedbackStore);
-                
-                // 将反馈收集器注入到 LLMExecutor，用于记录工具执行结果
-                if (llmExecutor != null) {
-                    llmExecutor.setFeedbackCollector(feedbackCollector);
-                }
+                feedbackStore = new FeedbackStore(workspace, evolutionConfig.getFeedbackRetentionDays());
+                feedbackCollector = new FeedbackCollector(feedbackStore);
+                llmExecutor.setFeedbackCollector(feedbackCollector);
                 logger.info("Feedback collection enabled");
             }
-            
-            // 初始化 Prompt 优化器
             if (evolutionConfig.isPromptOptimizationEnabled() && feedbackCollector != null) {
-                this.promptStore = new PromptStore(workspace, evolutionConfig.getMaxHistoryVersions());
-                this.promptOptimizer = new PromptOptimizer(
+                promptStore = new PromptStore(workspace, evolutionConfig.getMaxHistoryVersions());
+                promptOptimizer = new PromptOptimizer(
                         newProvider, model, promptStore, feedbackCollector, evolutionConfig);
-                
-                // 将优化器设置到 ContextBuilder
                 contextBuilder.setPromptOptimizer(promptOptimizer);
-                logger.info("Prompt optimization enabled", Map.of(
-                        "strategy", evolutionConfig.getStrategy().name()));
+                logger.info("Prompt optimization enabled",
+                        Map.of("strategy", evolutionConfig.getStrategy().name()));
             }
-        } catch (Exception e) {
-            logger.error("Failed to initialize evolution components", Map.of("error", e.getMessage()));
+        } else {
+            logger.debug("Evolution features disabled");
         }
-    }
-    
-    /**
-     * 初始化多Agent协同组件。
-     * 
-     * 仅在配置启用时初始化，不影响现有功能。
-     */
-    private void initializeCollaborationComponents(LLMProvider newProvider, String model, int maxIterations) {
-        if (!config.getAgent().isCollaborationEnabled()) {
+
+        // 协同组件（多 Agent 编排）
+        if (config.getAgent().isCollaborationEnabled()) {
+            orchestrator = new AgentOrchestrator(newProvider, tools, workspace, model, maxIterations);
+            logger.info("Collaboration features enabled",
+                    Map.of("supportedModes", "debate,team,roleplay,consensus,hierarchy"));
+        } else {
             logger.debug("Collaboration features disabled");
-            return;
         }
-        
-        try {
-            // 创建协同编排器
-            this.orchestrator = new AgentOrchestrator(
-                    newProvider, tools, workspace, model, maxIterations);
-            
-            // 创建并注册协同工具（生命周期由 ToolRegistry 托管，无需成员变量持有）
-            CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
-            collaborateTool.setLLMContext(newProvider, model);
-            tools.register(collaborateTool);
-            contextBuilder.setTools(tools);
-            
-            logger.info("Collaboration features enabled", Map.of(
-                    "supportedModes", "debate,team,roleplay,consensus,hierarchy"));
-        } catch (Exception e) {
-            logger.error("Failed to initialize collaboration components", Map.of("error", e.getMessage()));
-        }
+
+        return new ProviderComponents(llmExecutor, summarizer, memoryEvolver, tokenUsageStore,
+                feedbackStore, feedbackCollector, promptStore, promptOptimizer, orchestrator);
     }
 
     // ==================== 生命周期 ====================
@@ -394,75 +338,97 @@ public class AgentLoop {
 
     /** 获取记忆进化引擎，供外部组件（如心跳服务）触发记忆进化 */
     public MemoryEvolver getMemoryEvolver() {
-        return memoryEvolver;
+        return components != null ? components.memoryEvolver : null;
     }
-    
-    /** 获取反馈收集器，供外部组件记录反馈 */
+
+    /** 获取 Token 消耗存储，供外部组件（如 TokenUsageTool）使用 */
     public TokenUsageStore getTokenUsageStore() {
-        if (llmExecutor == null) {
-            return null;
-        }
-        return new TokenUsageStore(workspace);
+        return components != null ? components.tokenUsageStore : null;
+    }
+
+    /** 获取协同编排器，供外部组件（如 CollaborateTool）使用 */
+    public AgentOrchestrator getOrchestrator() {
+        return components != null ? components.orchestrator : null;
     }
 
     public FeedbackCollector getFeedbackCollector() {
-        return feedbackCollector;
+        return components != null ? components.feedbackCollector : null;
     }
-    
+
     /** 获取 Prompt 优化器，供外部组件触发优化 */
     public PromptOptimizer getPromptOptimizer() {
-        return promptOptimizer;
+        return components != null ? components.promptOptimizer : null;
     }
     
     /**
      * 执行进化周期（供心跳服务调用）。
-     * 
-     * 包含记忆进化和可选的 Prompt 优化。
+     *
+     * <p>包含：基于反馈的记忆进化、常规记忆进化、Prompt 优化、会话清理。
+     * 各步骤独立容错，单步失败不影响后续步骤执行。</p>
      */
     public void runEvolutionCycle() {
-        // 1. 基于反馈的智能记忆进化（如果启用）
+        if (components == null) {
+            return;
+        }
+
+        FeedbackCollector feedbackCollector = components.feedbackCollector;
+        MemoryEvolver memoryEvolver = components.memoryEvolver;
+        PromptOptimizer promptOptimizer = components.promptOptimizer;
+
+        // 1. 基于反馈的智能记忆进化
         if (feedbackCollector != null && memoryEvolver != null) {
-            try {
-                // 获取最近一天的聚合反馈
+            safeRun("feedback-based memory evolution", () -> {
                 List<EvaluationFeedback> recentFeedbacks = feedbackCollector.getRecentAggregatedFeedbacks(1);
                 for (EvaluationFeedback feedback : recentFeedbacks) {
                     memoryEvolver.evolveWithFeedback(feedback);
                 }
                 if (!recentFeedbacks.isEmpty()) {
-                    logger.debug("Processed feedback-based memory evolution", Map.of(
-                            "feedback_count", recentFeedbacks.size()));
+                    logger.debug("Processed feedback-based memory evolution",
+                            Map.of("feedback_count", recentFeedbacks.size()));
                 }
-            } catch (Exception e) {
-                logger.error("Feedback-based memory evolution failed", Map.of("error", e.getMessage()));
-            }
+            });
         }
-        
+
         // 2. 常规记忆进化
         if (memoryEvolver != null) {
-            try {
-                memoryEvolver.evolve();
-            } catch (Exception e) {
-                logger.error("Memory evolution failed", Map.of("error", e.getMessage()));
-            }
+            safeRun("memory evolution", memoryEvolver::evolve);
         }
-        
+
         // 3. Prompt 优化（如果启用）
         if (promptOptimizer != null && config.getAgent().isPromptOptimizationEnabled()) {
-            try {
-                String currentPrompt = contextBuilder.getPromptOptimizer() != null 
-                        ? contextBuilder.getPromptOptimizer().getActiveOptimization()
-                        : null;
-                // 传入基础 prompt 进行优化检查
+            safeRun("prompt optimization", () -> {
+                PromptOptimizer activeOptimizer = contextBuilder.getPromptOptimizer();
+                String currentPrompt = activeOptimizer != null
+                        ? activeOptimizer.getActiveOptimization()
+                        : "";
                 promptOptimizer.maybeOptimize(currentPrompt != null ? currentPrompt : "");
-            } catch (Exception e) {
-                logger.error("Prompt optimization failed", Map.of("error", e.getMessage()));
-            }
+            });
         }
-        
+
         // 4. 清理已结束会话的跟踪数据
         if (feedbackCollector != null) {
             feedbackCollector.cleanupEndedSessions();
         }
+    }
+
+    /**
+     * 安全执行一个可能抛出异常的任务，失败时记录错误日志但不中断调用方。
+     *
+     * @param taskName 任务名称，用于错误日志定位
+     * @param task     要执行的任务
+     */
+    private void safeRun(String taskName, ThrowingRunnable task) {
+        try {
+            task.run();
+        } catch (Exception e) {
+            logger.error(taskName + " failed", Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** 可抛出受检异常的 Runnable，供 {@link #safeRun} 使用。 */
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     // ==================== 公开入口（CLI / 外部调用） ====================
@@ -502,7 +468,7 @@ public class AgentLoop {
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
-                llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
+                components.llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
 
         persistAndSummarize(sessionKey, response);
         return response;
@@ -585,8 +551,8 @@ public class AgentLoop {
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         // 记录消息交互（进化组件启用时）
-        if (feedbackCollector != null) {
-            feedbackCollector.recordMessageExchange(sessionKey);
+        if (components != null && components.feedbackCollector != null) {
+            components.feedbackCollector.recordMessageExchange(sessionKey);
         }
 
         boolean usedStreaming = isStreamingChannel(msg);
@@ -629,7 +595,7 @@ public class AgentLoop {
                                                    String sessionKey,
                                                    boolean usedStreaming) throws Exception {
         if (!usedStreaming) {
-            return llmExecutor.execute(messages, sessionKey);
+            return components.llmExecutor.execute(messages, sessionKey);
         }
 
         Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
@@ -637,7 +603,7 @@ public class AgentLoop {
 
         logger.info("Using streaming output for channel", Map.of("channel", msg.getChannel()));
         // callback 仅负责发送"思考中"占位消息，最终完整回复由外层 processUserMessage 统一发送
-        return llmExecutor.executeStream(messages, sessionKey, streamingCallback);
+        return components.llmExecutor.executeStream(messages, sessionKey, streamingCallback);
     }
 
     /**
@@ -672,7 +638,7 @@ public class AgentLoop {
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         String response = ensureNonBlank(
-                llmExecutor.execute(messages, sessionKey), "Background task completed.");
+                components.llmExecutor.execute(messages, sessionKey), "Background task completed.");
 
         persistAndSummarize(sessionKey, response); // 保存 assistant 回复并触发摘要
         bus.publishOutbound(new OutboundMessage(originChannel, originChatId, response));
@@ -700,7 +666,7 @@ public class AgentLoop {
     private void persistAndSummarize(String sessionKey, String response) {
         sessions.addMessage(sessionKey, "assistant", response);
         sessions.save(sessions.getOrCreate(sessionKey));
-        summarizer.maybeSummarize(sessionKey);
+        components.summarizer.maybeSummarize(sessionKey);
     }
 
     // ==================== 启动信息 ====================
@@ -801,6 +767,7 @@ public class AgentLoop {
 
     private void logIncoming(String channel, String sessionKey, String content,
                              String chatId, String senderId) {
+        // 用 Map.of 无法处理可选字段（不允许 null 值），改用 HashMap 构建可选字段
         Map<String, Object> fields = new HashMap<>();
         fields.put("channel", channel);
         fields.put("session_key", sessionKey);

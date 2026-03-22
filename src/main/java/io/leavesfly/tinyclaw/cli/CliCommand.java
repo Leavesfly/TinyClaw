@@ -13,7 +13,9 @@ import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
 
+import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.tools.*;
+import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 
 import java.io.File;
 import java.nio.file.Paths;
@@ -303,6 +305,20 @@ public abstract class CliCommand {
                     config.getSocialNetwork().getAgentId(),
                     config.getSocialNetwork().getApiKey()
             ));
+        }
+
+        // Token 消耗查询工具
+        TokenUsageStore tokenUsageStore = agentLoop.getTokenUsageStore();
+        if (tokenUsageStore != null) {
+            agentLoop.registerTool(new TokenUsageTool(tokenUsageStore));
+        }
+
+        // 多 Agent 协同工具（仅在协同功能启用时注册）
+        AgentOrchestrator orchestrator = agentLoop.getOrchestrator();
+        if (orchestrator != null) {
+            CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
+            collaborateTool.setLLMContext(provider, config.getAgent().getModel());
+            agentLoop.registerTool(collaborateTool);
         }
     }
 

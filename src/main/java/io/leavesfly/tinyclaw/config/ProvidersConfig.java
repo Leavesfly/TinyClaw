@@ -151,6 +151,32 @@ public class ProvidersConfig {
     }
 
     /**
+     * 根据 provider 名称查找对应的 ProviderConfig。
+     *
+     * <p>将 provider 名称到配置对象的映射收敛在此处，避免调用方（如 AgentLoop）
+     * 需要感知具体的 provider 枚举，降低耦合。</p>
+     *
+     * @param providerName provider 名称，如 "openai"、"anthropic" 等
+     * @return 对应的 ProviderConfig，未找到时返回 null
+     */
+    @JsonIgnore
+    public ProviderConfig getByName(String providerName) {
+        if (providerName == null) {
+            return null;
+        }
+        return switch (providerName) {
+            case "openrouter" -> openrouter;
+            case "openai"     -> openai;
+            case "anthropic"  -> anthropic;
+            case "zhipu"      -> zhipu;
+            case "dashscope"  -> dashscope;
+            case "gemini"     -> gemini;
+            case "ollama"     -> ollama;
+            default           -> null;
+        };
+    }
+
+    /**
      * 获取 Provider 对应的名称，用于获取默认 API Base
      */
     public String getProviderName(ProviderConfig provider) {
