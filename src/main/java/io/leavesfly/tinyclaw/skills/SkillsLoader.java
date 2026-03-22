@@ -46,7 +46,7 @@ public class SkillsLoader {
      * 内置技能名称列表（从 classpath 加载）
      */
     private static final List<String> BUILTIN_SKILL_NAMES = Arrays.asList(
-            "weather", "github", "summarize", "skill-creator", "tmux"
+            "weather", "github", "skill-creator", "tmux"
     );
 
     /**
