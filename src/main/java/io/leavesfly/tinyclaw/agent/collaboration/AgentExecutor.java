@@ -121,43 +121,51 @@ public class AgentExecutor {
     private List<Message> buildMessages(SharedContext context) {
         return buildMessages(context, null);
     }
-    
+
     /**
      * 构建消息列表（包含系统提示、共享上下文历史和可选的自定义提示）
      */
     private List<Message> buildMessages(SharedContext context, String customPrompt) {
         List<Message> messages = new ArrayList<>();
-        
-        // 系统提示
-        StringBuilder systemPrompt = new StringBuilder();
-        systemPrompt.append(role.getSystemPrompt());
-        
-        if (customPrompt != null && !customPrompt.isEmpty()) {
-            systemPrompt.append("\n\n").append(customPrompt);
+
+        String systemPromptText = buildSystemPrompt(customPrompt);
+        messages.add(new Message("system", systemPromptText));
+
+        String userContent = buildUserContent(context);
+        messages.add(new Message("user", userContent));
+
+        return messages;
+    }
+
+    /**
+     * 构建系统提示词，可选追加自定义提示
+     */
+    private String buildSystemPrompt(String customPrompt) {
+        if (customPrompt == null || customPrompt.isEmpty()) {
+            return role.getSystemPrompt();
         }
-        
-        messages.add(new Message("system", systemPrompt.toString()));
-        
-        // 添加协同主题和历史
-        StringBuilder userContent = new StringBuilder();
-        userContent.append("【协同主题】").append(context.getTopic()).append("\n\n");
-        
-        // 添加用户原始输入
-        if (context.getUserInput() != null && !context.getUserInput().isEmpty()) {
-            userContent.append("【用户需求】").append(context.getUserInput()).append("\n\n");
+        return role.getSystemPrompt() + "\n\n" + customPrompt;
+    }
+
+    /**
+     * 构建用户侧消息内容：协同主题 + 用户需求 + 对话历史 + 发言引导
+     */
+    private String buildUserContent(SharedContext context) {
+        StringBuilder content = new StringBuilder();
+        content.append("【协同主题】").append(context.getTopic()).append("\n\n");
+
+        String userInput = context.getUserInput();
+        if (userInput != null && !userInput.isEmpty()) {
+            content.append("【用户需求】").append(userInput).append("\n\n");
         }
-        
-        // 添加对话历史
+
         String historyText = context.buildHistoryText();
         if (!historyText.isEmpty()) {
-            userContent.append(historyText).append("\n");
+            content.append(historyText).append("\n");
         }
-        
-        userContent.append("请基于以上信息，以【").append(role.getRoleName()).append("】的角色给出你的观点或回复。");
-        
-        messages.add(new Message("user", userContent.toString()));
-        
-        return messages;
+
+        content.append("请基于以上信息，以【").append(role.getRoleName()).append("】的角色给出你的观点或回复。");
+        return content.toString();
     }
     
     // Getters

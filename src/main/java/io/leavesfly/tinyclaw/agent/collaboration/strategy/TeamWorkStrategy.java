@@ -9,11 +9,13 @@ import java.util.stream.Collectors;
 
 /**
  * 团队协作策略
- * 智能混合执行模式：分析任务依赖图，无依赖任务并行执行，有依赖任务串行执行
+ * 智能混合执行模式：分析任务依赖图，无依赖任务并行执行，有依赖任务串行执行。
  */
 public class TeamWorkStrategy implements CollaborationStrategy {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("collaboration");
+
+    private static final int TASK_TIMEOUT_MINUTES = 5;
 
     /** 公共线程池（由 AgentOrchestrator 统一管理生命周期） */
     private final ExecutorService executor;
@@ -135,7 +137,7 @@ public class TeamWorkStrategy implements CollaborationStrategy {
         // 等待所有任务完成
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                    .get(5, TimeUnit.MINUTES);
+                    .get(TASK_TIMEOUT_MINUTES, TimeUnit.MINUTES);
         } catch (Exception e) {
             logger.error("任务执行超时或异常", Map.of("error", e.getMessage()));
         }

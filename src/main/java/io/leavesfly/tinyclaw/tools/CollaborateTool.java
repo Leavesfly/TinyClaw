@@ -1,7 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
 import io.leavesfly.tinyclaw.agent.collaboration.*;
-import io.leavesfly.tinyclaw.agent.collaboration.HierarchyConfig.HierarchyLevel;
+
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowDefinition;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowGenerator;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowNode;
@@ -317,28 +317,25 @@ public class CollaborateTool implements Tool {
     /**
      * 解析分层决策配置
      */
+    /**
+     * 解析分层决策配置
+     * levels 数组按索引顺序对应层级（index=0 为底层），每项包含 agents 和可选的 aggregationPrompt
+     */
     @SuppressWarnings("unchecked")
     private HierarchyConfig parseHierarchy(Map<String, Object> data) {
         HierarchyConfig config = new HierarchyConfig();
-        
+
         List<Map<String, Object>> levelsData = (List<Map<String, Object>>) data.get("levels");
         if (levelsData == null) {
             return config;
         }
-        
+
+        // 按数组顺序追加层级（index=0 为底层，与 HierarchyConfig 约定一致）
         for (Map<String, Object> levelData : levelsData) {
-            int level = levelData.get("level") != null ? 
-                    ((Number) levelData.get("level")).intValue() : 0;
-            
-            HierarchyLevel hierarchyLevel = new HierarchyLevel(level);
-            
-            // 解析汇总提示
             String aggregationPrompt = (String) levelData.get("aggregationPrompt");
-            if (aggregationPrompt != null) {
-                hierarchyLevel.setAggregationPrompt(aggregationPrompt);
-            }
-            
-            // 解析该层的Agent（支持 allowed_tools 工具白名单）
+
+            // 解析该层的 Agent 列表（支持 allowed_tools 工具白名单）
+            List<AgentRole> levelRoles = new ArrayList<>();
             List<Map<String, Object>> agentsData = (List<Map<String, Object>>) levelData.get("agents");
             if (agentsData != null) {
                 for (Map<String, Object> agentData : agentsData) {
@@ -350,14 +347,14 @@ public class CollaborateTool implements Tool {
                         if (allowedTools != null) {
                             allowedTools.forEach(role::addAllowedTool);
                         }
-                        hierarchyLevel.addAgent(role);
+                        levelRoles.add(role);
                     }
                 }
             }
-            
-            config.addLevel(hierarchyLevel);
+
+            config.addLevel(levelRoles, aggregationPrompt);
         }
-        
+
         return config;
     }
     
