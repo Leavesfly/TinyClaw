@@ -532,18 +532,25 @@ public class ContextBuilder {
     }
     
     /**
-     * 处理历史消息中的图片路径，将相对路径转换为完整路径。
+     * 处理历史消息中的图片：去除图片数据，只保留文字内容。
+     *
+     * 图片 Base64 数据体积巨大（1MB 原图 ≈ 35K tokens），若将历史消息中的图片
+     * 随每轮对话重复发送，会导致上下文窗口迅速膨胀。
+     * 因此历史消息中的图片一律丢弃——模型在当轮已经看过图片，后续轮次无需重复传入。
      */
     private List<Message> processHistoryImages(List<Message> history) {
         List<Message> processed = new ArrayList<>();
         for (Message msg : history) {
             if (msg.hasImages()) {
-                // 创建新的消息对象，避免修改原始对象
-                Message newMsg = new Message(msg.getRole(), msg.getContent());
-                newMsg.setImages(resolveImagePaths(msg.getImages()));
-                newMsg.setToolCalls(msg.getToolCalls());
-                newMsg.setToolCallId(msg.getToolCallId());
-                processed.add(newMsg);
+                // 创建不含图片的副本，保留文字内容和工具调用信息
+                Message textOnlyMsg = new Message(msg.getRole(), msg.getContent());
+                textOnlyMsg.setToolCalls(msg.getToolCalls());
+                textOnlyMsg.setToolCallId(msg.getToolCallId());
+                processed.add(textOnlyMsg);
+                logger.debug("Dropped images from history message to reduce context size", Map.of(
+                        "role", msg.getRole(),
+                        "image_count", msg.getImages().size()
+                ));
             } else {
                 processed.add(msg);
             }

@@ -11,6 +11,7 @@ import okhttp3.*;
 import okio.BufferedSource;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -452,14 +453,14 @@ public class HTTPProvider implements LLMProvider {
             Path path = Paths.get(imagePath);
             
             // 检查文件是否存在
-            if (!java.nio.file.Files.exists(path)) {
+            if (!Files.exists(path)) {
                 logger.error("Image file not found", Map.of(
                         "path", imagePath,
                         "absolute_path", path.toAbsolutePath().toString()));
                 return null;
             }
             
-            byte[] imageBytes = java.nio.file.Files.readAllBytes(path);
+            byte[] imageBytes =Files.readAllBytes(path);
             String base64 = Base64.getEncoder().encodeToString(imageBytes);
             
             // 根据文件扩展名确定 MIME 类型

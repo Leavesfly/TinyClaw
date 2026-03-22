@@ -379,7 +379,8 @@ class TinyClawConsole {
     }
 
     /**
-     * 处理图片文件，转换为 Base64 并添加到待上传列表
+     * 处理图片文件，压缩后转换为 Base64 并添加到待上传列表。
+     * 压缩策略：长边限制在 1024px 以内，JPEG 质量 0.82，可大幅降低 token 消耗。
      */
     async processImageFiles(files) {
         for (const file of files) {
@@ -389,7 +390,7 @@ class TinyClawConsole {
             }
 
             try {
-                const base64 = await this.fileToBase64(file);
+                const base64 = await this.compressImage(file);
                 this.pendingImages.push({
                     data: base64,
                     name: file.name
@@ -402,14 +403,58 @@ class TinyClawConsole {
     }
 
     /**
-     * 文件转 Base64
+     * 使用 Canvas 压缩图片，将长边限制在 maxSidePx 以内并以 JPEG 格式输出。
+     * 对于本身较小的图片（压缩后反而更大），回退到原始 Base64。
+     *
+     * @param {File} file - 图片文件
+     * @param {number} maxSidePx - 长边最大像素，默认 1024
+     * @param {number} quality - JPEG 压缩质量 0~1，默认 0.82
+     * @returns {Promise<string>} Base64 Data URI
      */
-    fileToBase64(file) {
+    compressImage(file, maxSidePx = 1024, quality = 0.82) {
         return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
+            const originalUrl = URL.createObjectURL(file);
+            const img = new Image();
+
+            img.onload = () => {
+                URL.revokeObjectURL(originalUrl);
+
+                let { width, height } = img;
+                if (width > maxSidePx || height > maxSidePx) {
+                    if (width >= height) {
+                        height = Math.round(height * maxSidePx / width);
+                        width = maxSidePx;
+                    } else {
+                        width = Math.round(width * maxSidePx / height);
+                        height = maxSidePx;
+                    }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+                const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+
+                // 若压缩后反而更大（如原图已是小 PNG），回退到原始编码
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const originalDataUrl = reader.result;
+                    resolve(compressedDataUrl.length <= originalDataUrl.length
+                        ? compressedDataUrl
+                        : originalDataUrl);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            };
+
+            img.onerror = () => {
+                URL.revokeObjectURL(originalUrl);
+                reject(new Error('Failed to load image'));
+            };
+
+            img.src = originalUrl;
         });
     }
 
@@ -1397,22 +1442,22 @@ class TinyClawConsole {
             });
         });
         
-        // 分页
-        document.getElementById('prevPage').addEventListener('click', () => {
+        // 分页（使用 onclick 赋值避免重复绑定导致页码跳跃）
+        document.getElementById('prevPage').onclick = () => {
             if (this.currentSessionPage > 1) {
                 this.currentSessionPage--;
                 this.renderSessionsTable();
             }
-        });
+        };
         
-        document.getElementById('nextPage').addEventListener('click', () => {
+        document.getElementById('nextPage').onclick = () => {
             const pageSize = 10;
             const totalPages = Math.ceil(this.allSessions.length / pageSize);
             if (this.currentSessionPage < totalPages) {
                 this.currentSessionPage++;
                 this.renderSessionsTable();
             }
-        });
+        };
     }
     
     async viewSessionDetail(key) {
