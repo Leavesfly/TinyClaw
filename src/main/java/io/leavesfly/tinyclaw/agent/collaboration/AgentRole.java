@@ -1,5 +1,8 @@
 package io.leavesfly.tinyclaw.agent.collaboration;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Agent角色定义
  * 定义参与协同的Agent的角色信息和行为配置
@@ -20,8 +23,17 @@ public class AgentRole {
     
     /** 可选：角色描述 */
     private String description;
-    
-    public AgentRole() {}
+
+    /**
+     * 工具名称白名单（可选）。
+     * 非空时，该角色的 AgentExecutor 只能使用列表中的工具；
+     * 为空时不限制，使用全量工具集。
+     */
+    private List<String> allowedTools;
+
+    public AgentRole() {
+        this.allowedTools = new ArrayList<>();
+    }
     
     public AgentRole(String roleId, String roleName, String systemPrompt) {
         this.roleId = roleId;
@@ -77,7 +89,32 @@ public class AgentRole {
     public void setDescription(String description) {
         this.description = description;
     }
-    
+
+    public List<String> getAllowedTools() {
+        return allowedTools;
+    }
+
+    public void setAllowedTools(List<String> allowedTools) {
+        this.allowedTools = allowedTools != null ? allowedTools : new ArrayList<>();
+    }
+
+    /**
+     * 添加单个允许使用的工具名称
+     */
+    public AgentRole addAllowedTool(String toolName) {
+        if (toolName != null && !toolName.isBlank()) {
+            this.allowedTools.add(toolName);
+        }
+        return this;
+    }
+
+    /**
+     * 判断该角色是否有工具限制
+     */
+    public boolean hasToolRestrictions() {
+        return allowedTools != null && !allowedTools.isEmpty();
+    }
+
     @Override
     public String toString() {
         return "AgentRole{" +

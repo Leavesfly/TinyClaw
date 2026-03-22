@@ -40,7 +40,14 @@ public class WorkflowGenerator {
     }
     
     /**
-     * 根据任务描述生成 Workflow
+     * 根据任务描述生成 Workflow。
+     *
+     * <p>生成策略：
+     * <ol>
+     *   <li>首先使用完整 prompt 调用 LLM 生成工作流；</li>
+     *   <li>若失败，使用简化 prompt 重试一次（降低 LLM 理解难度）；</li>
+     *   <li>两次均失败时，才降级为单节点兜底工作流，并明确记录失败原因。</li>
+     * </ol>
      *
      * @param taskDescription 任务描述
      * @param rolesData       用户预定义的角色列表，每个元素包含 name 和 prompt 字段；为 null 时由 LLM 自行设计角色
@@ -50,42 +57,72 @@ public class WorkflowGenerator {
                 "taskLength", taskDescription.length(),
                 "predefinedRoles", rolesData != null ? rolesData.size() : 0
         ));
-        
+
+        // 第一次尝试：完整 prompt
         try {
-            // 构建生成提示
-            String prompt = buildGenerationPrompt(taskDescription, rolesData);
-            
-            // 调用 LLM
-            List<Message> messages = new ArrayList<>();
-            messages.add(new Message("system", getSystemPrompt()));
-            messages.add(new Message("user", prompt));
-            
-            LLMResponse response = provider.chat(messages, null, model, null);
-            String content = response.getContent();
-            
-            // 解析 JSON
-            WorkflowDefinition workflow = parseWorkflowFromResponse(content);
-            
-            // 验证
-            WorkflowDefinition.ValidationResult validation = workflow.validate();
-            if (!validation.isValid()) {
-                logger.warn("生成的 Workflow 验证失败", Map.of(
-                        "errors", validation.getErrors().toString()
-                ));
-            }
-            
-            logger.info("Workflow 生成成功", Map.of(
+            WorkflowDefinition workflow = attemptGenerate(
+                    buildGenerationPrompt(taskDescription, rolesData), taskDescription);
+            logger.info("Workflow 生成成功（首次）", Map.of(
                     "name", workflow.getName() != null ? workflow.getName() : "unnamed",
                     "nodeCount", workflow.getNodes().size()
             ));
-            
             return workflow;
-            
-        } catch (Exception e) {
-            logger.error("Workflow 生成失败", Map.of("error", e.getMessage()));
-            // 返回一个简单的默认工作流
-            return createFallbackWorkflow(taskDescription);
+        } catch (Exception firstError) {
+            logger.warn("Workflow 首次生成失败，尝试简化 prompt 重试", Map.of(
+                    "error", firstError.getMessage()
+            ));
         }
+
+        // 第二次尝试：简化 prompt（去掉角色约束，让 LLM 自由发挥）
+        try {
+            WorkflowDefinition workflow = attemptGenerate(
+                    buildSimplifiedPrompt(taskDescription), taskDescription);
+            logger.info("Workflow 生成成功（重试）", Map.of(
+                    "name", workflow.getName() != null ? workflow.getName() : "unnamed",
+                    "nodeCount", workflow.getNodes().size()
+            ));
+            return workflow;
+        } catch (Exception retryError) {
+            logger.error("Workflow 重试生成仍失败，降级为单节点兜底工作流", Map.of(
+                    "error", retryError.getMessage()
+            ));
+        }
+
+        // 两次均失败：降级兜底，明确告知调用方
+        return createFallbackWorkflow(taskDescription);
+    }
+
+    /**
+     * 执行一次 LLM 生成并解析，验证通过后返回工作流。
+     * 验证失败时抛出异常，由调用方决定是否重试。
+     */
+    private WorkflowDefinition attemptGenerate(String prompt, String taskDescription) {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message("system", getSystemPrompt()));
+        messages.add(new Message("user", prompt));
+
+        LLMResponse response = provider.chat(messages, null, model, null);
+        WorkflowDefinition workflow = parseWorkflowFromResponse(response.getContent());
+
+        WorkflowDefinition.ValidationResult validation = workflow.validate();
+        if (!validation.isValid()) {
+            throw new IllegalStateException("生成的 Workflow 验证失败: " + validation.getErrors());
+        }
+
+        return workflow;
+    }
+
+    /**
+     * 构建简化版生成提示（重试时使用）。
+     * 去掉角色约束，缩短描述，降低 LLM 理解难度。
+     */
+    private String buildSimplifiedPrompt(String taskDescription) {
+        // 截断过长的任务描述，避免 LLM 因上下文过长而输出混乱
+        String truncated = taskDescription.length() > 500
+                ? taskDescription.substring(0, 500) + "..."
+                : taskDescription;
+        return "请为以下任务设计一个简单的多 Agent 工作流（2-3 个节点即可）：\n\n" + truncated
+                + "\n\n只需返回合法的 JSON，不要有任何解释文字。";
     }
     
     /**
@@ -288,21 +325,38 @@ public class WorkflowGenerator {
     }
     
     /**
-     * 创建降级工作流（当生成失败时使用）
+     * 创建兜底工作流（两次 LLM 生成均失败时使用）。
+     *
+     * <p>与原来的静默降级不同，此处创建一个包含两个节点的工作流：
+     * 第一个节点负责分析任务，第二个节点基于分析结果给出最终建议，
+     * 保留了基本的多步骤语义，同时在工作流描述中明确标注为兜底模式，
+     * 方便调用方感知并在日志中追踪。
      */
     private WorkflowDefinition createFallbackWorkflow(String taskDescription) {
-        WorkflowDefinition workflow = new WorkflowDefinition("默认工作流");
-        workflow.setDescription("自动生成失败，使用默认单 Agent 工作流");
-        
-        // 创建单个分析节点
+        logger.warn("使用兜底工作流", Map.of(
+                "taskDescriptionLength", taskDescription.length()
+        ));
+
+        WorkflowDefinition workflow = new WorkflowDefinition("兜底工作流");
+        workflow.setDescription("[FALLBACK] LLM 工作流生成失败（已重试一次），使用兜底双节点工作流");
+
+        // 节点1：任务分析
         WorkflowNode analyzeNode = new WorkflowNode("analyze", WorkflowNode.NodeType.SINGLE);
         analyzeNode.setName("任务分析");
-        analyzeNode.addAgent(AgentRole.of("分析师", 
-                "你是一个任务分析专家。请分析用户的任务需求，给出详细的分析和建议。"));
+        analyzeNode.addAgent(AgentRole.of("分析师",
+                "你是一个任务分析专家。请仔细分析用户的任务需求，拆解关键问题，给出结构化的分析报告。"));
         workflow.addNode(analyzeNode);
-        
-        workflow.setOutputExpression("${analyze.result}");
-        
+
+        // 节点2：综合建议（依赖分析节点）
+        WorkflowNode adviceNode = new WorkflowNode("advice", WorkflowNode.NodeType.SINGLE);
+        adviceNode.setName("综合建议");
+        adviceNode.addAgent(AgentRole.of("顾问",
+                "你是一个资深顾问。请基于前置分析结果，给出具体可执行的建议和行动方案。"));
+        adviceNode.dependsOn("analyze");
+        workflow.addNode(adviceNode);
+
+        workflow.setOutputExpression("${advice.result}");
+
         return workflow;
     }
     

@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
-import io.leavesfly.tinyclaw.agent.evolution.FeedbackCollector;
+import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -38,8 +38,8 @@ public class LLMExecutor {
     /** Token 消耗存储（可选，注入后自动记录每次 LLM 调用的 token 数据） */
     private volatile TokenUsageStore tokenUsageStore;
 
-    /** 反馈收集器（可选，用于进化模块） */
-    private volatile FeedbackCollector feedbackCollector;
+    /** 反馈管理器（可选，用于进化模块） */
+    private volatile FeedbackManager feedbackManager;
     
     /** 当前会话标识（用于反馈记录） */
     private String currentSessionKey;
@@ -67,12 +67,12 @@ public class LLMExecutor {
     }
 
     /**
-     * 设置反馈收集器（可选，用于进化模块）。
-     * 
-     * @param feedbackCollector 反馈收集器实例
+     * 设置反馈管理器（可选，用于进化模块）。
+     *
+     * @param feedbackManager 反馈管理器实例
      */
-    public void setFeedbackCollector(FeedbackCollector feedbackCollector) {
-        this.feedbackCollector = feedbackCollector;
+    public void setFeedbackManager(FeedbackManager feedbackManager) {
+        this.feedbackManager = feedbackManager;
     }
     
     /**
@@ -504,9 +504,9 @@ public class LLMExecutor {
             result = "Error: " + e.getMessage();
         }
         
-        // 记录工具执行结果到反馈收集器
-        if (feedbackCollector != null && currentSessionKey != null) {
-            feedbackCollector.recordToolResult(currentSessionKey, toolName, success);
+        // 记录工具执行结果到反馈管理器
+        if (feedbackManager != null && currentSessionKey != null) {
+            feedbackManager.recordToolResult(currentSessionKey, toolName, success);
         }
         
         return result;
@@ -536,9 +536,9 @@ public class LLMExecutor {
             result = "Error: " + e.getMessage();
         }
         
-        // 记录工具执行结果到反馈收集器
-        if (feedbackCollector != null && currentSessionKey != null) {
-            feedbackCollector.recordToolResult(currentSessionKey, toolName, success);
+        // 记录工具执行结果到反馈管理器
+        if (feedbackManager != null && currentSessionKey != null) {
+            feedbackManager.recordToolResult(currentSessionKey, toolName, success);
         }
         
         return result;

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.agent.AgentLoop;
-import io.leavesfly.tinyclaw.agent.evolution.FeedbackCollector;
+import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackType;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -84,8 +84,8 @@ public class FeedbackHandler {
         String corsOrigin = config.getGateway().getCorsOrigin();
         
         // 检查进化功能是否启用
-        FeedbackCollector feedbackCollector = agentLoop.getFeedbackCollector();
-        if (feedbackCollector == null) {
+        FeedbackManager feedbackManager = agentLoop.getFeedbackManager();
+        if (feedbackManager == null) {
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("success", false);
             result.put("message", "反馈功能未启用，请在配置中开启 evolution.feedbackEnabled");
@@ -149,7 +149,7 @@ public class FeedbackHandler {
                 effectiveComment = (comment != null ? comment + " " : "") + "[评分:" + value + "/5]";
             }
             
-            feedbackCollector.recordExplicitFeedback(sessionId, messageId, feedbackType, effectiveComment);
+            feedbackManager.recordExplicitFeedback(sessionId, messageId, feedbackType, effectiveComment);
             
             logger.info("User feedback recorded", Map.of(
                     "sessionId", sessionId,
@@ -175,7 +175,7 @@ public class FeedbackHandler {
     private void handleGetStatus(HttpExchange exchange) throws IOException {
         String corsOrigin = config.getGateway().getCorsOrigin();
         
-        boolean feedbackEnabled = agentLoop.getFeedbackCollector() != null;
+        boolean feedbackEnabled = agentLoop.getFeedbackManager() != null;
         boolean promptOptEnabled = agentLoop.getPromptOptimizer() != null;
         
         ObjectNode result = WebUtils.MAPPER.createObjectNode();

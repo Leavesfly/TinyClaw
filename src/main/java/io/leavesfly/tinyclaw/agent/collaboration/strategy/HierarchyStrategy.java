@@ -3,58 +3,27 @@ package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 import io.leavesfly.tinyclaw.agent.collaboration.*;
 import io.leavesfly.tinyclaw.agent.collaboration.HierarchyConfig.HierarchyLevel;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import io.leavesfly.tinyclaw.providers.LLMProvider;
-import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 /**
  * 分层决策策略（层级汇报型）
- * 多层金字塔式决策结构，底层Agent分析，逐层汇报，顶层决策
+ * 多层金字塔式决策结构，底层 Agent 分析，逐层汇报，顶层决策
  */
 public class HierarchyStrategy implements CollaborationStrategy {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("collaboration");
-    
-    /** 线程池用于并行执行同层任务 */
+
+    /** 公共线程池（由 AgentOrchestrator 统一管理生命周期） */
     private final ExecutorService executor;
-    
-    /** LLM Provider用于创建层级Agent */
-    private LLMProvider provider;
-    
-    /** 工具注册表 */
-    private ToolRegistry tools;
-    
-    /** 工作空间路径 */
-    private String workspace;
-    
-    /** 默认模型 */
-    private String model;
-    
-    /** 最大迭代次数 */
-    private int maxIterations;
-    
-    public HierarchyStrategy() {
-        this.executor = Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r);
-            t.setDaemon(true);
-            t.setName("hierarchy-pool-" + t.getId());
-            return t;
-        });
-    }
-    
-    /**
-     * 设置执行环境（在execute前调用）
-     */
-    public void setExecutionContext(LLMProvider provider, ToolRegistry tools, 
-                                     String workspace, String model, int maxIterations) {
-        this.provider = provider;
-        this.tools = tools;
-        this.workspace = workspace;
-        this.model = model;
-        this.maxIterations = maxIterations;
+
+    /** 执行上下文（用于创建层级 Agent） */
+    private final ExecutionContext executionContext;
+
+    public HierarchyStrategy(ExecutionContext executionContext, CollaborationExecutorPool executorPool) {
+        this.executionContext = executionContext;
+        this.executor = executorPool.getExecutor();
     }
     
     @Override
@@ -122,12 +91,17 @@ public class HierarchyStrategy implements CollaborationStrategy {
     }
     
     /**
-     * 为指定层级创建Agent执行器
+     * 为指定层级创建 Agent 执行器
      */
     private List<AgentExecutor> createLevelAgents(List<AgentRole> roles) {
         List<AgentExecutor> agents = new ArrayList<>();
         for (AgentRole role : roles) {
-            agents.add(new AgentExecutor(role, provider, tools, workspace, model, maxIterations));
+            agents.add(new AgentExecutor(role,
+                    executionContext.getProvider(),
+                    executionContext.getTools(),
+                    executionContext.getSharedSessionManager(),
+                    executionContext.getModel(),
+                    executionContext.getMaxIterations()));
         }
         return agents;
     }
@@ -262,35 +236,14 @@ public class HierarchyStrategy implements CollaborationStrategy {
         // 分层决策按层级执行，不使用轮次控制
         return false;
     }
-    
-    @Override
-    public AgentExecutor getNextSpeaker(SharedContext context, List<AgentExecutor> agents) {
-        // 分层决策不使用轮流发言机制
-        return null;
-    }
-    
+
     @Override
     public String getName() {
         return "Hierarchy";
     }
-    
+
     @Override
     public String getDescription() {
         return "分层决策策略：金字塔式层级结构，底层分析，逐层汇报，顶层决策";
-    }
-    
-    /**
-     * 关闭线程池
-     */
-    public void shutdown() {
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
     }
 }

@@ -68,9 +68,9 @@ public class OptimizationResult {
     private String textualGradient;
 
     /**
-     * 使用的优化策略
+     * 使用的优化策略名称
      */
-    private OptimizationStrategy strategy;
+    private String strategy;
 
     /**
      * 输入的反馈数量
@@ -131,7 +131,7 @@ public class OptimizationResult {
      * @return 优化结果
      */
     public static OptimizationResult success(String original, String optimized,
-                                              String gradient, OptimizationStrategy strategy) {
+                                              String gradient, String strategy) {
         OptimizationResult result = new OptimizationResult();
         result.setStatus(Status.SUCCESS);
         result.setOriginalPrompt(original);
@@ -250,11 +250,11 @@ public class OptimizationResult {
         this.textualGradient = textualGradient;
     }
 
-    public OptimizationStrategy getStrategy() {
+    public String getStrategy() {
         return strategy;
     }
 
-    public void setStrategy(OptimizationStrategy strategy) {
+    public void setStrategy(String strategy) {
         this.strategy = strategy;
     }
 

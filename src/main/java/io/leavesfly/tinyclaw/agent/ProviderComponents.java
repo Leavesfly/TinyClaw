@@ -1,11 +1,9 @@
 package io.leavesfly.tinyclaw.agent;
 
-import io.leavesfly.tinyclaw.agent.evolution.FeedbackCollector;
-import io.leavesfly.tinyclaw.agent.evolution.FeedbackStore;
+import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.agent.evolution.MemoryEvolver;
 import io.leavesfly.tinyclaw.agent.evolution.MemoryStore;
 import io.leavesfly.tinyclaw.agent.evolution.PromptOptimizer;
-import io.leavesfly.tinyclaw.agent.evolution.PromptStore;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 
@@ -24,9 +22,7 @@ class ProviderComponents {
     final TokenUsageStore tokenUsageStore;
 
     /* ---------- 进化组件（可选） ---------- */
-    final FeedbackStore feedbackStore;
-    final FeedbackCollector feedbackCollector;
-    final PromptStore promptStore;
+    final FeedbackManager feedbackManager;
     final PromptOptimizer promptOptimizer;
 
     /* ---------- 协同组件（可选） ---------- */
@@ -37,18 +33,14 @@ class ProviderComponents {
             SessionSummarizer summarizer,
             MemoryEvolver memoryEvolver,
             TokenUsageStore tokenUsageStore,
-            FeedbackStore feedbackStore,
-            FeedbackCollector feedbackCollector,
-            PromptStore promptStore,
+            FeedbackManager feedbackManager,
             PromptOptimizer promptOptimizer,
             AgentOrchestrator orchestrator) {
         this.llmExecutor = llmExecutor;
         this.summarizer = summarizer;
         this.memoryEvolver = memoryEvolver;
         this.tokenUsageStore = tokenUsageStore;
-        this.feedbackStore = feedbackStore;
-        this.feedbackCollector = feedbackCollector;
-        this.promptStore = promptStore;
+        this.feedbackManager = feedbackManager;
         this.promptOptimizer = promptOptimizer;
         this.orchestrator = orchestrator;
     }

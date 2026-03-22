@@ -111,6 +111,41 @@ public class WorkflowContext {
         }
         return false;
     }
+
+    /**
+     * 检查当前节点是否应被条件分支跳过。
+     *
+     * <p>遍历当前节点的所有前置依赖，若某个前置节点是 CONDITIONAL 节点且配置了多分支路由，
+     * 则检查该条件节点激活的目标节点是否包含当前节点。
+     * 若当前节点不在任何激活分支的目标中，则应被跳过。
+     *
+     * @param node     待检查的节点
+     * @param allNodes Workflow 中所有节点的映射（nodeId → WorkflowNode）
+     * @return true 表示当前节点应被跳过（未被激活的条件分支）
+     */
+    public boolean isNodeBranchSkipped(WorkflowNode node, Map<String, WorkflowNode> allNodes) {
+        for (String depId : node.getDependsOn()) {
+            WorkflowNode depNode = allNodes.get(depId);
+            if (depNode == null || depNode.getType() != WorkflowNode.NodeType.CONDITIONAL) {
+                continue;
+            }
+            // 该前置节点是 CONDITIONAL 且有多分支路由
+            if (depNode.getBranches().isEmpty()) {
+                continue;
+            }
+            // 读取该条件节点激活的目标节点 ID
+            Object activatedTarget = variables.get("_branch_" + depId);
+            if (activatedTarget == null) {
+                // 条件节点尚未执行或未激活任何分支，跳过当前节点
+                return true;
+            }
+            // 当前节点不是被激活的目标，应跳过
+            if (!node.getId().equals(activatedTarget.toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
     
     /**
      * 解析表达式

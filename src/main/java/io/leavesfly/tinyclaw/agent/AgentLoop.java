@@ -236,9 +236,7 @@ public class AgentLoop {
             LLMExecutor llmExecutor, SessionSummarizer summarizer,
             MemoryEvolver memoryEvolver, TokenUsageStore tokenUsageStore) {
 
-        FeedbackStore feedbackStore = null;
-        FeedbackCollector feedbackCollector = null;
-        PromptStore promptStore = null;
+        FeedbackManager feedbackManager = null;
         PromptOptimizer promptOptimizer = null;
         AgentOrchestrator orchestrator = null;
 
@@ -246,18 +244,15 @@ public class AgentLoop {
         EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
         if (evolutionConfig != null && evolutionConfig.isAnyEvolutionEnabled()) {
             if (evolutionConfig.isFeedbackEnabled()) {
-                feedbackStore = new FeedbackStore(workspace, evolutionConfig.getFeedbackRetentionDays());
-                feedbackCollector = new FeedbackCollector(feedbackStore);
-                llmExecutor.setFeedbackCollector(feedbackCollector);
+                feedbackManager = new FeedbackManager(workspace, evolutionConfig);
+                llmExecutor.setFeedbackManager(feedbackManager);
                 logger.info("Feedback collection enabled");
             }
-            if (evolutionConfig.isPromptOptimizationEnabled() && feedbackCollector != null) {
-                promptStore = new PromptStore(workspace, evolutionConfig.getMaxHistoryVersions());
+            if (evolutionConfig.isPromptOptimizationEnabled() && feedbackManager != null) {
                 promptOptimizer = new PromptOptimizer(
-                        newProvider, model, promptStore, feedbackCollector, evolutionConfig);
+                        newProvider, model, workspace, feedbackManager, evolutionConfig);
                 contextBuilder.setPromptOptimizer(promptOptimizer);
-                logger.info("Prompt optimization enabled",
-                        Map.of("strategy", evolutionConfig.getStrategy().name()));
+                logger.info("Prompt optimization enabled");
             }
         } else {
             logger.debug("Evolution features disabled");
@@ -273,7 +268,7 @@ public class AgentLoop {
         }
 
         return new ProviderComponents(llmExecutor, summarizer, memoryEvolver, tokenUsageStore,
-                feedbackStore, feedbackCollector, promptStore, promptOptimizer, orchestrator);
+                feedbackManager, promptOptimizer, orchestrator);
     }
 
     // ==================== 生命周期 ====================
@@ -351,8 +346,8 @@ public class AgentLoop {
         return components != null ? components.orchestrator : null;
     }
 
-    public FeedbackCollector getFeedbackCollector() {
-        return components != null ? components.feedbackCollector : null;
+    public FeedbackManager getFeedbackManager() {
+        return components != null ? components.feedbackManager : null;
     }
 
     /** 获取 Prompt 优化器，供外部组件触发优化 */
@@ -371,14 +366,14 @@ public class AgentLoop {
             return;
         }
 
-        FeedbackCollector feedbackCollector = components.feedbackCollector;
+        FeedbackManager feedbackManager = components.feedbackManager;
         MemoryEvolver memoryEvolver = components.memoryEvolver;
         PromptOptimizer promptOptimizer = components.promptOptimizer;
 
         // 1. 基于反馈的智能记忆进化
-        if (feedbackCollector != null && memoryEvolver != null) {
+        if (feedbackManager != null && memoryEvolver != null) {
             safeRun("feedback-based memory evolution", () -> {
-                List<EvaluationFeedback> recentFeedbacks = feedbackCollector.getRecentAggregatedFeedbacks(1);
+                List<EvaluationFeedback> recentFeedbacks = feedbackManager.getRecentAggregatedFeedbacks(1);
                 for (EvaluationFeedback feedback : recentFeedbacks) {
                     memoryEvolver.evolveWithFeedback(feedback);
                 }
@@ -406,8 +401,8 @@ public class AgentLoop {
         }
 
         // 4. 清理已结束会话的跟踪数据
-        if (feedbackCollector != null) {
-            feedbackCollector.cleanupEndedSessions();
+        if (feedbackManager != null) {
+            feedbackManager.cleanupEndedSessions();
         }
     }
 
@@ -551,8 +546,8 @@ public class AgentLoop {
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         // 记录消息交互（进化组件启用时）
-        if (components != null && components.feedbackCollector != null) {
-            components.feedbackCollector.recordMessageExchange(sessionKey);
+        if (components != null && components.feedbackManager != null) {
+            components.feedbackManager.recordMessageExchange(sessionKey);
         }
 
         boolean usedStreaming = isStreamingChannel(msg);

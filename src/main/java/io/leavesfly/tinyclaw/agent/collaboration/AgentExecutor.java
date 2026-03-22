@@ -6,10 +6,10 @@ import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+
 
 /**
  * 单个Agent执行器
@@ -34,21 +34,36 @@ public class AgentExecutor {
     /** 会话键 */
     private final String sessionKey;
     
-    public AgentExecutor(AgentRole role, LLMProvider provider, ToolRegistry tools, 
-                         String workspace, String model, int maxIterations) {
+    /**
+     * 构造 AgentExecutor，使用外部传入的共享 SessionManager。
+     *
+     * <p>协同场景下所有 AgentExecutor 共享同一个 SessionManager 实例（由 ExecutionContext 持有），
+     * 避免每个 AgentExecutor 独立初始化 SessionManager 带来的重复磁盘 IO 开销。
+     *
+     * @param role           Agent 角色定义
+     * @param provider       LLM 服务提供者
+     * @param tools          工具注册表
+     * @param sharedSessions 共享会话管理器（由调用方统一创建）
+     * @param model          默认模型名称
+     * @param maxIterations  最大迭代次数
+     */
+    public AgentExecutor(AgentRole role, LLMProvider provider, ToolRegistry tools,
+                         SessionManager sharedSessions, String model, int maxIterations) {
         this.agentId = "agent-" + ID_COUNTER.getAndIncrement();
         this.role = role;
-        
-        // 为该Agent创建独立的会话管理器
-        String sessionPath = Paths.get(workspace, "sessions", "collaboration").toString();
-        this.sessionManager = new SessionManager(sessionPath);
+        this.sessionManager = sharedSessions;
         this.sessionKey = "collab:" + agentId;
-        
+
         // 使用角色指定的模型，如果没有则使用默认模型
-        String effectiveModel = (role.getModel() != null && !role.getModel().isEmpty()) 
+        String effectiveModel = (role.getModel() != null && !role.getModel().isEmpty())
                 ? role.getModel() : model;
-        
-        this.llmExecutor = new LLMExecutor(provider, tools, sessionManager,
+
+        // 按角色的工具白名单过滤工具集，实现差异化工具权限
+        ToolRegistry effectiveTools = role.hasToolRestrictions()
+                ? tools.filter(role.getAllowedTools())
+                : tools;
+
+        this.llmExecutor = new LLMExecutor(provider, effectiveTools, sessionManager,
                 effectiveModel, null, maxIterations);
     }
     

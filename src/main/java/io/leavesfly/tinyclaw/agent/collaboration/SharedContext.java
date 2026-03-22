@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -40,7 +41,7 @@ public class SharedContext {
     private volatile LLMProvider.EnhancedStreamCallback streamCallback;
     
     public SharedContext() {
-        this.history = new ArrayList<>();
+        this.history = new CopyOnWriteArrayList<>();
         this.metadata = new HashMap<>();
         this.currentRound = 0;
         this.startTime = System.currentTimeMillis();
@@ -53,23 +54,31 @@ public class SharedContext {
     }
     
     /**
-     * 添加一条Agent发言到历史
+     * 添加一条 Agent 发言到历史，并触发流式回调。
+     *
+     * <p>使用 {@link CopyOnWriteArrayList} 保证并发写入安全。
+     * 流式回调在 add 完成后触发，避免回调内读取 history 时出现可见性问题。
      */
     public void addMessage(AgentMessage message) {
+        if (message == null) {
+            return;
+        }
         history.add(message);
-        
-        // 通过流式回调输出 Agent 发言事件
-        if (streamCallback != null && message != null) {
-            String agentName = message.getAgentRole() != null ? message.getAgentRole() : message.getAgentId();
-            streamCallback.onEvent(StreamEvent.collaborateAgent(agentName, message.getContent()));
+
+        // 在 add 完成后再触发回调，避免回调内读 history 时看到不完整状态
+        LLMProvider.EnhancedStreamCallback cb = streamCallback;
+        if (cb != null) {
+            String agentName = message.getAgentRole() != null
+                    ? message.getAgentRole() : message.getAgentId();
+            cb.onEvent(StreamEvent.collaborateAgent(agentName, message.getContent()));
         }
     }
-    
+
     /**
-     * 添加一条Agent发言（便捷方法）
+     * 添加一条 Agent 发言（便捷方法）
      */
     public void addMessage(String agentId, String agentRole, String content) {
-        history.add(new AgentMessage(agentId, agentRole, content));
+        addMessage(new AgentMessage(agentId, agentRole, content));
     }
     
     /**

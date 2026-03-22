@@ -12,19 +12,14 @@ import java.util.stream.Collectors;
  * 智能混合执行模式：分析任务依赖图，无依赖任务并行执行，有依赖任务串行执行
  */
 public class TeamWorkStrategy implements CollaborationStrategy {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("collaboration");
-    
-    /** 线程池用于并行执行任务 */
+
+    /** 公共线程池（由 AgentOrchestrator 统一管理生命周期） */
     private final ExecutorService executor;
-    
-    public TeamWorkStrategy() {
-        this.executor = Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r);
-            t.setDaemon(true);
-            t.setName("teamwork-pool-" + t.getId());
-            return t;
-        });
+
+    public TeamWorkStrategy(CollaborationExecutorPool executorPool) {
+        this.executor = executorPool.getExecutor();
     }
     
     @Override
@@ -261,35 +256,14 @@ public class TeamWorkStrategy implements CollaborationStrategy {
         // 团队协作不使用轮次控制，依靠任务完成状态判断
         return false;
     }
-    
-    @Override
-    public AgentExecutor getNextSpeaker(SharedContext context, List<AgentExecutor> agents) {
-        // 团队协作不使用轮流发言机制
-        return null;
-    }
-    
+
     @Override
     public String getName() {
         return "TeamWork";
     }
-    
+
     @Override
     public String getDescription() {
         return "团队协作策略：智能混合执行模式，分析任务依赖图，无依赖任务并行执行";
-    }
-    
-    /**
-     * 关闭线程池
-     */
-    public void shutdown() {
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
     }
 }

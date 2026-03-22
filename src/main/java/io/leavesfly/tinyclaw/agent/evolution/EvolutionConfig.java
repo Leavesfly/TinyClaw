@@ -13,7 +13,6 @@ package io.leavesfly.tinyclaw.agent.evolution;
  *     promptOptimizationEnabled: true
  *     optimizationIntervalHours: 24
  *     adoptionThreshold: 0.7
- *     strategy: TEXT_GRADIENT
  *     feedbackRetentionDays: 30
  *     minFeedbacksForOptimization: 10
  * </pre>
@@ -36,6 +35,23 @@ public class EvolutionConfig {
      * 是否收集隐式反馈（工具成功率等）
      */
     private boolean implicitFeedbackEnabled = true;
+
+    // ==================== 隐式反馈权重配置 ====================
+
+    /**
+     * 工具调用成功率对评分的影响权重
+     */
+    private double toolSuccessWeight = 0.3;
+
+    /**
+     * 用户重试次数对评分的惩罚权重
+     */
+    private double retryPenaltyWeight = 0.2;
+
+    /**
+     * 会话消息长度对评分的影响权重
+     */
+    private double sessionLengthWeight = 0.1;
 
     // ==================== Prompt 优化配置 ====================
 
@@ -60,11 +76,6 @@ public class EvolutionConfig {
      */
     private int minFeedbacksForOptimization = 10;
 
-    /**
-     * 优化策略
-     */
-    private OptimizationStrategy strategy = OptimizationStrategy.TEXT_GRADIENT;
-
     // ==================== 高级配置 ====================
 
     /**
@@ -81,11 +92,6 @@ public class EvolutionConfig {
      * 优化时的最大 token 数
      */
     private int optimizationMaxTokens = 2048;
-
-    /**
-     * 是否保留优化历史
-     */
-    private boolean keepOptimizationHistory = true;
 
     /**
      * 最大保留的优化历史版本数
@@ -150,12 +156,28 @@ public class EvolutionConfig {
         this.minFeedbacksForOptimization = minFeedbacksForOptimization;
     }
 
-    public OptimizationStrategy getStrategy() {
-        return strategy;
+    public double getToolSuccessWeight() {
+        return toolSuccessWeight;
     }
 
-    public void setStrategy(OptimizationStrategy strategy) {
-        this.strategy = strategy;
+    public void setToolSuccessWeight(double toolSuccessWeight) {
+        this.toolSuccessWeight = toolSuccessWeight;
+    }
+
+    public double getRetryPenaltyWeight() {
+        return retryPenaltyWeight;
+    }
+
+    public void setRetryPenaltyWeight(double retryPenaltyWeight) {
+        this.retryPenaltyWeight = retryPenaltyWeight;
+    }
+
+    public double getSessionLengthWeight() {
+        return sessionLengthWeight;
+    }
+
+    public void setSessionLengthWeight(double sessionLengthWeight) {
+        this.sessionLengthWeight = sessionLengthWeight;
     }
 
     public boolean isAutoApplyOptimization() {
@@ -180,14 +202,6 @@ public class EvolutionConfig {
 
     public void setOptimizationMaxTokens(int optimizationMaxTokens) {
         this.optimizationMaxTokens = optimizationMaxTokens;
-    }
-
-    public boolean isKeepOptimizationHistory() {
-        return keepOptimizationHistory;
-    }
-
-    public void setKeepOptimizationHistory(boolean keepOptimizationHistory) {
-        this.keepOptimizationHistory = keepOptimizationHistory;
     }
 
     public int getMaxHistoryVersions() {
@@ -220,7 +234,7 @@ public class EvolutionConfig {
 
     @Override
     public String toString() {
-        return String.format("EvolutionConfig{feedback=%s, promptOpt=%s, strategy=%s, interval=%dh}",
-                feedbackEnabled, promptOptimizationEnabled, strategy, optimizationIntervalHours);
+        return String.format("EvolutionConfig{feedback=%s, promptOpt=%s, interval=%dh}",
+                feedbackEnabled, promptOptimizationEnabled, optimizationIntervalHours);
     }
 }

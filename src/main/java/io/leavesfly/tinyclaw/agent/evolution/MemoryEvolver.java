@@ -104,18 +104,12 @@ public class MemoryEvolver {
                             "hours_since_last", (now - lastEvolutionTime) / 3600000.0));
         }
 
-        // 阶段一、二：提炼 + 整合（仅在冷却到期且有新增记忆时执行）
+        // 阶段一+二：提炼 + 整合（合并为一次 LLM 调用，仅在冷却到期且有新增记忆时执行）
         if (shouldRunFullEvolution) {
             try {
-                extractFromDailyNotes();
+                extractAndConsolidate();
             } catch (Exception e) {
-                logger.error("Extract phase failed", Map.of("error", e.getMessage()));
-            }
-
-            try {
-                consolidateIfNeeded();
-            } catch (Exception e) {
-                logger.error("Consolidation phase failed", Map.of("error", e.getMessage()));
+                logger.error("Extract and consolidate phase failed", Map.of("error", e.getMessage()));
             }
 
             // 原子更新冷却状态
@@ -135,28 +129,31 @@ public class MemoryEvolver {
                         "stats", memoryStore.getStats()));
     }
 
-    // ==================== 阶段一：提炼 ====================
+    // ==================== 阶段一+二：提炼与整合（合并为一次 LLM 调用） ====================
 
     /**
-     * 从最近的每日笔记中提取高价值信息，生成结构化记忆条目。
+     * 从最近的每日笔记中提取高价值信息，并在记忆数量超过阈值时同步整合现有记忆。
      *
-     * 使用 LLM 分析每日笔记内容，识别出值得长期记住的关键信息，
-     * 并为每条信息评估重要性和分配标签。
+     * 将原来的两次独立 LLM 调用合并为一次，减少 50% 的 LLM 开销：
+     * - 若记忆数量未超过整合阈值：仅执行提炼，从日记中提取新记忆
+     * - 若记忆数量超过整合阈值：同时执行提炼 + 整合，一次调用完成两项工作
      */
-    private void extractFromDailyNotes() {
+    private void extractAndConsolidate() {
         String recentNotes = memoryStore.getRecentDailyNotes(EXTRACT_LOOKBACK_DAYS);
-        if (StringUtils.isBlank(recentNotes)) {
-            logger.debug("No recent daily notes to extract from");
+        List<MemoryEntry> currentEntries = memoryStore.getEntries();
+        boolean needsConsolidation = currentEntries.size() >= CONSOLIDATION_THRESHOLD;
+
+        if (StringUtils.isBlank(recentNotes) && !needsConsolidation) {
+            logger.debug("No recent daily notes and no consolidation needed, skipping LLM call");
             return;
         }
 
-        // 获取现有记忆摘要，避免提取重复内容
         String existingMemorySummary = buildExistingMemorySummary();
-
-        String extractionPrompt = buildExtractionPrompt(recentNotes, existingMemorySummary);
+        String combinedPrompt = buildCombinedPrompt(recentNotes, existingMemorySummary,
+                currentEntries, needsConsolidation);
 
         try {
-            List<Message> messages = List.of(Message.user(extractionPrompt));
+            List<Message> messages = List.of(Message.user(combinedPrompt));
             Map<String, Object> options = Map.of(
                     "max_tokens", EVOLUTION_MAX_TOKENS,
                     "temperature", EVOLUTION_TEMPERATURE
@@ -164,66 +161,122 @@ public class MemoryEvolver {
             LLMResponse response = provider.chat(messages, null, model, options);
             String result = response.getContent();
 
-            if (StringUtils.isNotBlank(result)) {
-                List<MemoryEntry> extracted = parseExtractedEntries(result);
-                for (MemoryEntry entry : extracted) {
-                    memoryStore.addEntry(entry.getContent(), entry.getImportance(),
-                            entry.getTags(), "evolution_extract");
+            if (StringUtils.isBlank(result)) {
+                return;
+            }
+
+            List<MemoryEntry> newEntries = parseMemoryLines(result, "NEW_MEMORY", "evolution_extract");
+            for (MemoryEntry entry : newEntries) {
+                memoryStore.addEntry(entry.getContent(), entry.getImportance(),
+                        entry.getTags(), "evolution_extract");
+            }
+            if (!newEntries.isEmpty()) {
+                logger.info("Extracted memories from daily notes", Map.of("count", newEntries.size()));
+            }
+
+            if (needsConsolidation) {
+                List<MemoryEntry> consolidated = parseMemoryLines(result, "MEMORY", "evolution_consolidate");
+                if (!consolidated.isEmpty() && consolidated.size() < currentEntries.size()) {
+                    int maxAccessCount = currentEntries.stream()
+                            .mapToInt(MemoryEntry::getAccessCount)
+                            .max().orElse(0);
+                    for (MemoryEntry entry : consolidated) {
+                        // 继承部分访问历史，避免新整合的记忆立即被衰减
+                        entry.setAccessCount(Math.max(1, maxAccessCount / 2));
+                    }
+                    memoryStore.replaceEntries(consolidated);
+                    logger.info("Memories consolidated",
+                            Map.of("before", currentEntries.size(), "after", consolidated.size()));
                 }
-                logger.info("Extracted memories from daily notes",
-                        Map.of("count", extracted.size()));
             }
         } catch (Exception e) {
-            logger.error("Failed to extract from daily notes", Map.of("error", e.getMessage()));
+            logger.error("Failed to extract and consolidate memories", Map.of("error", e.getMessage()));
         }
     }
 
     /**
-     * 构建提炼提示词。
+     * 构建合并的提炼+整合提示词。
+     *
+     * 当需要整合时，提示词同时包含两个任务：
+     * - 从日记中提取新记忆（输出 NEW_MEMORY 行）
+     * - 整合现有记忆（输出 MEMORY 行）
+     *
+     * 当不需要整合时，仅包含提炼任务（输出 NEW_MEMORY 行）。
      */
-    private String buildExtractionPrompt(String recentNotes, String existingMemorySummary) {
+    private String buildCombinedPrompt(String recentNotes, String existingMemorySummary,
+                                        List<MemoryEntry> currentEntries, boolean needsConsolidation) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("Analyze the following daily notes and extract key information worth remembering long-term.\n\n");
-        prompt.append("For each piece of information, output it in this exact format (one per line):\n");
-        prompt.append("MEMORY|importance_score|tag1,tag2|content\n\n");
-        prompt.append("Rules:\n");
-        prompt.append("- importance_score: 0.0 to 1.0 (1.0 = critical, 0.5 = moderate, 0.1 = minor)\n");
-        prompt.append("- Tags: 1-3 short descriptive tags separated by commas\n");
-        prompt.append("- Content: concise, self-contained statement (one sentence)\n");
-        prompt.append("- Only extract genuinely important information: user preferences, key decisions, ");
-        prompt.append("learned facts, recurring patterns, important events\n");
-        prompt.append("- Skip trivial greetings, routine operations, and temporary information\n");
-        prompt.append("- Do NOT extract information that already exists in the current memories\n\n");
 
-        if (StringUtils.isNotBlank(existingMemorySummary)) {
-            prompt.append("## Current Memories (DO NOT duplicate these)\n\n");
-            prompt.append(existingMemorySummary);
-            prompt.append("\n\n");
+        if (needsConsolidation) {
+            prompt.append("You are a memory management system. Complete TWO tasks in one response:\n\n");
+
+            prompt.append("## TASK 1: Extract new memories from daily notes\n");
+            prompt.append("Analyze the daily notes below and extract key information worth remembering long-term.\n");
+            prompt.append("Output each new memory as: NEW_MEMORY|importance_score|tag1,tag2|content\n");
+            prompt.append("- importance_score: 0.0 to 1.0\n");
+            prompt.append("- Do NOT duplicate information already in current memories\n");
+            prompt.append("- If nothing new is worth extracting, output: NEW_MEMORY_NONE\n\n");
+
+            prompt.append("## TASK 2: Consolidate existing memories\n");
+            prompt.append("Review the current memories and consolidate by merging duplicates, ");
+            prompt.append("resolving contradictions, and removing obsolete information.\n");
+            prompt.append("Output each consolidated memory as: MEMORY|importance_score|tag1,tag2|content\n");
+            prompt.append("Preserve all unique and important information.\n\n");
+
+            if (StringUtils.isNotBlank(existingMemorySummary)) {
+                prompt.append("## Current Memories (for deduplication reference in Task 1)\n\n");
+                prompt.append(existingMemorySummary).append("\n\n");
+            }
+
+            prompt.append("## All Current Memories (for Task 2 consolidation)\n\n");
+            for (int i = 0; i < currentEntries.size(); i++) {
+                MemoryEntry entry = currentEntries.get(i);
+                prompt.append(String.format("%d. [importance=%.1f, tags=%s, score=%.3f] %s\n",
+                        i + 1, entry.getImportance(), entry.getTags(),
+                        entry.computeScore(), entry.getContent()));
+            }
+            prompt.append("\n");
+        } else {
+            prompt.append("Analyze the following daily notes and extract key information worth remembering long-term.\n\n");
+            prompt.append("Output each memory as: NEW_MEMORY|importance_score|tag1,tag2|content\n");
+            prompt.append("- importance_score: 0.0 to 1.0 (1.0 = critical, 0.5 = moderate, 0.1 = minor)\n");
+            prompt.append("- Tags: 1-3 short descriptive tags separated by commas\n");
+            prompt.append("- Content: concise, self-contained statement (one sentence)\n");
+            prompt.append("- Only extract: user preferences, key decisions, learned facts, recurring patterns\n");
+            prompt.append("- Skip trivial greetings, routine operations, and temporary information\n");
+            prompt.append("- Do NOT duplicate information already in current memories\n");
+            prompt.append("- If nothing is worth extracting, output: NEW_MEMORY_NONE\n\n");
+
+            if (StringUtils.isNotBlank(existingMemorySummary)) {
+                prompt.append("## Current Memories (DO NOT duplicate these)\n\n");
+                prompt.append(existingMemorySummary).append("\n\n");
+            }
         }
 
-        prompt.append("## Daily Notes to Analyze\n\n");
-        prompt.append(recentNotes);
-        prompt.append("\n\nOutput only MEMORY lines, nothing else. If nothing is worth extracting, output: NONE");
+        if (StringUtils.isNotBlank(recentNotes)) {
+            prompt.append("## Daily Notes to Analyze\n\n");
+            prompt.append(recentNotes).append("\n");
+        }
 
         return prompt.toString();
     }
 
     /**
-     * 解析 LLM 返回的提取结果。
+     * 解析 LLM 输出中指定前缀的记忆行。
      *
-     * 期望格式：MEMORY|importance|tag1,tag2|content
+     * 期望格式：{prefix}|importance|tag1,tag2|content
+     *
+     * @param llmOutput LLM 输出文本
+     * @param prefix    行前缀（如 "MEMORY" 或 "NEW_MEMORY"）
+     * @param source    记忆来源标识
      */
-    private List<MemoryEntry> parseExtractedEntries(String llmOutput) {
+    private List<MemoryEntry> parseMemoryLines(String llmOutput, String prefix, String source) {
         List<MemoryEntry> entries = new ArrayList<>();
-
-        if (llmOutput.trim().equals("NONE")) {
-            return entries;
-        }
-
         String[] lines = llmOutput.split("\n");
+
         for (String line : lines) {
             line = line.trim();
-            if (!line.startsWith("MEMORY|")) {
+            if (!line.startsWith(prefix + "|")) {
                 continue;
             }
 
@@ -241,94 +294,15 @@ public class MemoryEvolver {
                 String content = parts[3].trim();
 
                 if (StringUtils.isNotBlank(content)) {
-                    MemoryEntry entry = new MemoryEntry(content, importance, tags, "evolution_extract");
+                    MemoryEntry entry = new MemoryEntry(content, importance, tags, source);
                     entries.add(entry);
                 }
             } catch (NumberFormatException e) {
-                // 跳过格式错误的行
-                logger.debug("Skipped malformed extraction line: " + line);
+                logger.debug("Skipped malformed memory line: " + line);
             }
         }
 
         return entries;
-    }
-
-    // ==================== 阶段二：整合 ====================
-
-    /**
-     * 当记忆条目数量超过阈值时，触发整合。
-     *
-     * 整合过程使用 LLM 识别重复和可合并的记忆，
-     * 将多条相关记忆合并为更精炼的版本。
-     */
-    private void consolidateIfNeeded() {
-        List<MemoryEntry> currentEntries = memoryStore.getEntries();
-        if (currentEntries.size() < CONSOLIDATION_THRESHOLD) {
-            return;
-        }
-
-        logger.info("Consolidating memories", Map.of("current_count", currentEntries.size()));
-
-        String consolidationPrompt = buildConsolidationPrompt(currentEntries);
-
-        try {
-            List<Message> messages = List.of(Message.user(consolidationPrompt));
-            Map<String, Object> options = Map.of(
-                    "max_tokens", EVOLUTION_MAX_TOKENS,
-                    "temperature", EVOLUTION_TEMPERATURE
-            );
-            LLMResponse response = provider.chat(messages, null, model, options);
-            String result = response.getContent();
-
-            if (StringUtils.isNotBlank(result)) {
-                List<MemoryEntry> consolidated = parseExtractedEntries(result);
-                if (!consolidated.isEmpty() && consolidated.size() < currentEntries.size()) {
-                    // 保留被整合后的新条目，继承最高的访问计数
-                    int maxAccessCount = currentEntries.stream()
-                            .mapToInt(MemoryEntry::getAccessCount)
-                            .max().orElse(0);
-                    for (MemoryEntry entry : consolidated) {
-                        entry.setSource("evolution_consolidate");
-                        // 继承部分访问历史，避免新整合的记忆立即被衰减
-                        entry.setAccessCount(Math.max(1, maxAccessCount / 2));
-                    }
-
-                    memoryStore.replaceEntries(consolidated);
-                    logger.info("Memories consolidated",
-                            Map.of("before", currentEntries.size(), "after", consolidated.size()));
-                }
-            }
-        } catch (Exception e) {
-            logger.error("Failed to consolidate memories", Map.of("error", e.getMessage()));
-        }
-    }
-
-    /**
-     * 构建整合提示词。
-     */
-    private String buildConsolidationPrompt(List<MemoryEntry> currentEntries) {
-        StringBuilder prompt = new StringBuilder();
-        prompt.append("You are a memory consolidation system. Review the following memory entries ");
-        prompt.append("and consolidate them by:\n");
-        prompt.append("1. Merging duplicate or highly similar memories into one\n");
-        prompt.append("2. Resolving contradictions (keep the most recent/accurate version)\n");
-        prompt.append("3. Combining related facts into concise summaries\n");
-        prompt.append("4. Removing obsolete or no-longer-relevant information\n");
-        prompt.append("5. Preserving all unique and important information\n\n");
-        prompt.append("Output each consolidated memory in this exact format (one per line):\n");
-        prompt.append("MEMORY|importance_score|tag1,tag2|content\n\n");
-        prompt.append("## Current Memories\n\n");
-
-        for (int i = 0; i < currentEntries.size(); i++) {
-            MemoryEntry entry = currentEntries.get(i);
-            prompt.append(String.format("%d. [importance=%.1f, tags=%s, score=%.3f] %s\n",
-                    i + 1, entry.getImportance(), entry.getTags(), entry.computeScore(),
-                    entry.getContent()));
-        }
-
-        prompt.append("\nOutput only MEMORY lines. Aim to reduce the total count while preserving all key information.");
-
-        return prompt.toString();
     }
 
     // ==================== 阶段三：衰减与归档 ====================

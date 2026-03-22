@@ -9,62 +9,43 @@ import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import java.util.*;
 
 /**
- * 多Agent协同编排器
- * 负责协调多个Agent的协同工作，支持多种协同模式
+ * 多 Agent 协同编排器
+ * 负责协调多个 Agent 的协同工作，支持多种协同模式
  */
 public class AgentOrchestrator {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("collaboration");
-    
-    /** LLM Provider */
-    private final LLMProvider provider;
-    
-    /** 工具注册表 */
-    private final ToolRegistry tools;
-    
-    /** 工作空间路径 */
-    private final String workspace;
-    
-    /** 默认模型 */
-    private final String model;
-    
-    /** 最大迭代次数 */
-    private final int maxIterations;
-    
+
+    /** 执行上下文（封装 LLM 调用所需基础依赖） */
+    private final ExecutionContext executionContext;
+
+    /** 公共线程池（统一管理所有策略的并发执行） */
+    private final CollaborationExecutorPool executorPool;
+
     /** 策略映射 */
     private final Map<CollaborationConfig.Mode, CollaborationStrategy> strategies;
-    
+
     public AgentOrchestrator(LLMProvider provider, ToolRegistry tools, String workspace,
                               String model, int maxIterations) {
-        this.provider = provider;
-        this.tools = tools;
-        this.workspace = workspace;
-        this.model = model;
-        this.maxIterations = maxIterations;
-        
-        // 初始化策略
+        this.executionContext = new ExecutionContext(provider, tools, workspace, model, maxIterations);
+        this.executorPool = new CollaborationExecutorPool();
         this.strategies = new EnumMap<>(CollaborationConfig.Mode.class);
         initStrategies();
     }
-    
+
     /**
      * 初始化所有协同策略
+     * 所有策略通过构造函数注入依赖，无需额外的 setXxx 调用
      */
     private void initStrategies() {
-        strategies.put(CollaborationConfig.Mode.DEBATE, new DebateStrategy());
-        strategies.put(CollaborationConfig.Mode.TEAM, new TeamWorkStrategy());
-        strategies.put(CollaborationConfig.Mode.ROLEPLAY, new RolePlayStrategy());
-        strategies.put(CollaborationConfig.Mode.CONSENSUS, new ConsensusStrategy());
-        
-        // 分层策略需要额外的执行上下文
-        HierarchyStrategy hierarchyStrategy = new HierarchyStrategy();
-        hierarchyStrategy.setExecutionContext(provider, tools, workspace, model, maxIterations);
-        strategies.put(CollaborationConfig.Mode.HIERARCHY, hierarchyStrategy);
-        
-        // 通用工作流策略
-        WorkflowStrategy workflowStrategy = new WorkflowStrategy();
-        workflowStrategy.setExecutionContext(provider, tools, workspace, model, maxIterations);
-        strategies.put(CollaborationConfig.Mode.WORKFLOW, workflowStrategy);
+        DiscussionStrategy discussionStrategy = new DiscussionStrategy();
+        strategies.put(CollaborationConfig.Mode.DEBATE, discussionStrategy);
+        strategies.put(CollaborationConfig.Mode.ROLEPLAY, discussionStrategy);
+        strategies.put(CollaborationConfig.Mode.CONSENSUS, discussionStrategy);
+
+        strategies.put(CollaborationConfig.Mode.TEAM, new TeamWorkStrategy(executorPool));
+        strategies.put(CollaborationConfig.Mode.HIERARCHY, new HierarchyStrategy(executionContext, executorPool));
+        strategies.put(CollaborationConfig.Mode.WORKFLOW, new WorkflowStrategy(executionContext, executorPool));
     }
     
     /**
@@ -119,21 +100,30 @@ public class AgentOrchestrator {
             return "不支持的协同模式: " + config.getMode();
         }
         
-        // 4. 执行协同流程
+        // 4. 全局超时前置检查：在策略执行前拦截已超时的请求
+        if (config.getTimeoutMs() > 0 && context.getElapsedTime() > config.getTimeoutMs()) {
+            logger.warn("协同启动前已超时，跳过执行", Map.of("mode", modeStr));
+            return "协同超时，未能执行";
+        }
+
+        // 5. 执行协同流程
         try {
             String result = strategy.execute(context, agents, config);
-            
+
+            // 后置终止状态检查：记录策略是否认为应该终止（用于监控和调试）
+            boolean terminated = strategy.shouldTerminate(context, config);
             logger.info("协同完成", Map.of(
                     "mode", config.getMode().name(),
                     "totalMessages", context.getHistory().size(),
-                    "elapsedTime", context.getElapsedTime()
+                    "elapsedTime", context.getElapsedTime(),
+                    "strategyTerminated", terminated
             ));
-            
+
             // 通过回调输出协同结束事件
             if (callback != null) {
                 callback.onEvent(StreamEvent.collaborateEnd(modeStr, result));
             }
-            
+
             return result;
         } catch (Exception e) {
             logger.error("协同执行失败", Map.of(
@@ -160,10 +150,14 @@ public class AgentOrchestrator {
         }
         
         for (AgentRole role : roles) {
-            AgentExecutor executor = new AgentExecutor(role, provider, tools, 
-                    workspace, model, maxIterations);
+            AgentExecutor executor = new AgentExecutor(role,
+                    executionContext.getProvider(),
+                    executionContext.getTools(),
+                    executionContext.getSharedSessionManager(),
+                    executionContext.getModel(),
+                    executionContext.getMaxIterations());
             agents.add(executor);
-            
+
             logger.debug("创建Agent", Map.of(
                     "roleId", role.getRoleId(),
                     "roleName", role.getRoleName()
@@ -183,7 +177,7 @@ public class AgentOrchestrator {
         }
         return orchestrate(config, topic);
     }
-    
+
     /**
      * 便捷方法：启动团队协作
      */
@@ -198,7 +192,7 @@ public class AgentOrchestrator {
         }
         return orchestrate(config, goal);
     }
-    
+
     /**
      * 便捷方法：启动分层决策
      */
@@ -206,7 +200,7 @@ public class AgentOrchestrator {
         CollaborationConfig config = CollaborationConfig.hierarchy(topic, hierarchy);
         return orchestrate(config, topic);
     }
-    
+
     /**
      * 便捷方法：启动共识决策
      */
@@ -217,7 +211,7 @@ public class AgentOrchestrator {
         }
         return orchestrate(config, topic);
     }
-    
+
     /**
      * 获取支持的协同模式列表
      */
@@ -226,20 +220,13 @@ public class AgentOrchestrator {
                 .map(Enum::name)
                 .toList();
     }
-    
+
     /**
      * 关闭编排器（释放资源）
+     * 统一关闭公共线程池，无需逐个策略处理
      */
     public void shutdown() {
-        for (CollaborationStrategy strategy : strategies.values()) {
-            if (strategy instanceof TeamWorkStrategy) {
-                ((TeamWorkStrategy) strategy).shutdown();
-            } else if (strategy instanceof HierarchyStrategy) {
-                ((HierarchyStrategy) strategy).shutdown();
-            } else if (strategy instanceof WorkflowStrategy) {
-                ((WorkflowStrategy) strategy).shutdown();
-            }
-        }
+        executorPool.shutdown();
         logger.info("AgentOrchestrator已关闭");
     }
 }

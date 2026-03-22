@@ -191,4 +191,33 @@ public class ToolRegistry {
         tools.clear();
         logger.debug("All tools cleared");
     }
+
+    /**
+     * 创建一个只包含指定工具名称的受限工具注册表。
+     *
+     * <p>用于为不同 Agent 角色配置差异化的工具权限：
+     * 只有在 {@code allowedToolNames} 中且已注册的工具才会出现在返回的注册表中。
+     * 若 {@code allowedToolNames} 为空，则返回当前注册表的完整副本。
+     *
+     * @param allowedToolNames 允许使用的工具名称白名单
+     * @return 受限工具注册表
+     */
+    public ToolRegistry filter(List<String> allowedToolNames) {
+        if (allowedToolNames == null || allowedToolNames.isEmpty()) {
+            ToolRegistry copy = new ToolRegistry();
+            tools.values().forEach(copy::register);
+            return copy;
+        }
+
+        ToolRegistry restricted = new ToolRegistry();
+        for (String name : allowedToolNames) {
+            Tool tool = tools.get(name);
+            if (tool != null) {
+                restricted.register(tool);
+            } else {
+                logger.warn("allowedTools 中指定的工具未注册，已忽略: " + name);
+            }
+        }
+        return restricted;
+    }
 }

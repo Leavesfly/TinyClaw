@@ -57,14 +57,22 @@ public class WorkflowNode {
     
     /** 最大重试次数 */
     private int maxRetries;
-    
-    /** 超时时间（毫秒） */
+
+    /** 超时时间（毫秒），0 表示不限制 */
     private long timeoutMs;
+
+    /**
+     * 多分支路由表（CONDITIONAL 节点使用）
+     * key: 条件值（如 "approve"、"reject"、"default"）
+     * value: 目标节点 ID（该分支激活时，其他分支的后续节点将被跳过）
+     */
+    private Map<String, String> branches;
     
     public WorkflowNode() {
         this.agents = new ArrayList<>();
         this.dependsOn = new ArrayList<>();
         this.config = new HashMap<>();
+        this.branches = new HashMap<>();
         this.maxRetries = 0;
         this.timeoutMs = 0;
     }
@@ -231,11 +239,30 @@ public class WorkflowNode {
     public long getTimeoutMs() {
         return timeoutMs;
     }
-    
+
     public void setTimeoutMs(long timeoutMs) {
         this.timeoutMs = timeoutMs;
     }
-    
+
+    public Map<String, String> getBranches() {
+        return branches;
+    }
+
+    public void setBranches(Map<String, String> branches) {
+        this.branches = branches;
+    }
+
+    /**
+     * 添加分支路由（CONDITIONAL 节点使用）
+     *
+     * @param conditionValue 条件值
+     * @param targetNodeId   目标节点 ID
+     */
+    public WorkflowNode addBranch(String conditionValue, String targetNodeId) {
+        this.branches.put(conditionValue, targetNodeId);
+        return this;
+    }
+
     @Override
     public String toString() {
         return "WorkflowNode{" +
