@@ -4,7 +4,6 @@ import io.leavesfly.tinyclaw.config.ToolsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.skills.SkillInfo;
 import io.leavesfly.tinyclaw.skills.SkillRegistry;
-import io.leavesfly.tinyclaw.skills.SkillSearchResult;
 import io.leavesfly.tinyclaw.skills.SkillsInstaller;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.skills.SkillsSearcher;
@@ -357,7 +356,7 @@ public class SkillsTool implements Tool {
 
         logger.info("Searching skill registries", Map.of("query", query));
 
-        List<SkillSearchResult> results = skillsSearcher.search(query, 5);
+        List<SkillsSearcher.SkillSearchResult> results = skillsSearcher.search(query, 5);
 
         String enabledRegistryNames = skillsSearcher.getRegistries().stream()
                 .filter(SkillRegistry::isEnabled)
