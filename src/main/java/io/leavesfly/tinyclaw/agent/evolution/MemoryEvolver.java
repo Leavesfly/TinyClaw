@@ -208,53 +208,52 @@ public class MemoryEvolver {
         StringBuilder prompt = new StringBuilder();
 
         if (needsConsolidation) {
-            prompt.append("You are a memory management system. Complete TWO tasks in one response:\n\n");
+            prompt.append("你是一个记忆管理系统。请在一次回复中完成以下两个任务：\n\n");
 
-            prompt.append("## TASK 1: Extract new memories from daily notes\n");
-            prompt.append("Analyze the daily notes below and extract key information worth remembering long-term.\n");
-            prompt.append("Output each new memory as: NEW_MEMORY|importance_score|tag1,tag2|content\n");
-            prompt.append("- importance_score: 0.0 to 1.0\n");
-            prompt.append("- Do NOT duplicate information already in current memories\n");
-            prompt.append("- If nothing new is worth extracting, output: NEW_MEMORY_NONE\n\n");
+            prompt.append("## 任务一：从每日笔记中提取新记忆\n");
+            prompt.append("分析下方的每日笔记，提取值得长期记住的关键信息。\n");
+            prompt.append("每条新记忆按以下格式输出：NEW_MEMORY|重要性评分|标签1,标签2|内容\n");
+            prompt.append("- 重要性评分：0.0 到 1.0\n");
+            prompt.append("- 不要重复已有记忆中已包含的信息\n");
+            prompt.append("- 如果没有值得提取的新信息，输出：NEW_MEMORY_NONE\n\n");
 
-            prompt.append("## TASK 2: Consolidate existing memories\n");
-            prompt.append("Review the current memories and consolidate by merging duplicates, ");
-            prompt.append("resolving contradictions, and removing obsolete information.\n");
-            prompt.append("Output each consolidated memory as: MEMORY|importance_score|tag1,tag2|content\n");
-            prompt.append("Preserve all unique and important information.\n\n");
+            prompt.append("## 任务二：整合现有记忆\n");
+            prompt.append("审查当前所有记忆，通过合并重复项、解决矛盾信息、移除过时内容来进行整合。\n");
+            prompt.append("每条整合后的记忆按以下格式输出：MEMORY|重要性评分|标签1,标签2|内容\n");
+            prompt.append("请保留所有独特且重要的信息。\n\n");
 
             if (StringUtils.isNotBlank(existingMemorySummary)) {
-                prompt.append("## Current Memories (for deduplication reference in Task 1)\n\n");
+                prompt.append("## 当前记忆（任务一去重参考）\n\n");
                 prompt.append(existingMemorySummary).append("\n\n");
             }
 
-            prompt.append("## All Current Memories (for Task 2 consolidation)\n\n");
+            prompt.append("## 全部当前记忆（用于任务二整合）\n\n");
             for (int i = 0; i < currentEntries.size(); i++) {
                 MemoryEntry entry = currentEntries.get(i);
-                prompt.append(String.format("%d. [importance=%.1f, tags=%s, score=%.3f] %s\n",
+                prompt.append(String.format("%d. [重要性=%.1f, 标签=%s, 综合得分=%.3f] %s\n",
                         i + 1, entry.getImportance(), entry.getTags(),
                         entry.computeScore(), entry.getContent()));
             }
             prompt.append("\n");
         } else {
-            prompt.append("Analyze the following daily notes and extract key information worth remembering long-term.\n\n");
-            prompt.append("Output each memory as: NEW_MEMORY|importance_score|tag1,tag2|content\n");
-            prompt.append("- importance_score: 0.0 to 1.0 (1.0 = critical, 0.5 = moderate, 0.1 = minor)\n");
-            prompt.append("- Tags: 1-3 short descriptive tags separated by commas\n");
-            prompt.append("- Content: concise, self-contained statement (one sentence)\n");
-            prompt.append("- Only extract: user preferences, key decisions, learned facts, recurring patterns\n");
-            prompt.append("- Skip trivial greetings, routine operations, and temporary information\n");
-            prompt.append("- Do NOT duplicate information already in current memories\n");
-            prompt.append("- If nothing is worth extracting, output: NEW_MEMORY_NONE\n\n");
+            prompt.append("分析以下每日笔记，提取值得长期记住的关键信息。\n\n");
+            prompt.append("每条记忆按以下格式输出：NEW_MEMORY|重要性评分|标签1,标签2|内容\n");
+            prompt.append("- 重要性评分：0.0 到 1.0（1.0 = 关键信息，0.5 = 中等重要，0.1 = 次要信息）\n");
+            prompt.append("- 标签：1~3 个简短的描述性标签，用逗号分隔\n");
+            prompt.append("- 内容：简洁、自包含的陈述（一句话）\n");
+            prompt.append("- 仅提取：用户偏好、关键决策、学到的事实、反复出现的模式\n");
+            prompt.append("- 跳过：日常寒暄、常规操作、临时性信息\n");
+            prompt.append("- 不要重复已有记忆中已包含的信息\n");
+            prompt.append("- 如果没有值得提取的信息，输出：NEW_MEMORY_NONE\n\n");
 
             if (StringUtils.isNotBlank(existingMemorySummary)) {
-                prompt.append("## Current Memories (DO NOT duplicate these)\n\n");
+                prompt.append("## 当前记忆（请勿重复以下内容）\n\n");
                 prompt.append(existingMemorySummary).append("\n\n");
             }
         }
 
         if (StringUtils.isNotBlank(recentNotes)) {
-            prompt.append("## Daily Notes to Analyze\n\n");
+            prompt.append("## 待分析的每日笔记\n\n");
             prompt.append(recentNotes).append("\n");
         }
 
