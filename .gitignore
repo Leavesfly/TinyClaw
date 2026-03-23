@@ -38,6 +38,7 @@ build/
 .vscode/
 .qoder/
 **/.jimi/config.yml
+.aone_copilot/
 
 
 ### Mac OS ###

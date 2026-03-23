@@ -261,6 +261,15 @@ public class AgentLoop {
         // 协同组件（多 Agent 编排）
         if (config.getAgent().isCollaborationEnabled()) {
             orchestrator = new AgentOrchestrator(newProvider, tools, workspace, model, maxIterations);
+
+            // 注入会话管理器，使协同结论可回流到主会话历史
+            orchestrator.setCallerSessionManager(sessions);
+
+            // 注入反馈管理器（如果已启用），使协同结果可驱动 Agent 自我进化
+            if (feedbackManager != null) {
+                orchestrator.setFeedbackManager(feedbackManager);
+            }
+
             logger.info("Collaboration features enabled",
                     Map.of("supportedModes", "debate,team,roleplay,consensus,hierarchy"));
         } else {

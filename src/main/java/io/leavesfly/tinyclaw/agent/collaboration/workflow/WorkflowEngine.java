@@ -5,6 +5,8 @@ import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.CollaborationExecutorPool;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
+import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowNode.NodeType;
+import io.leavesfly.tinyclaw.agent.collaboration.workflow.executor.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 
 import java.util.*;
@@ -27,8 +29,26 @@ public class WorkflowEngine {
     /** 公共线程池（由 AgentOrchestrator 统一管理生命周期） */
     private final ExecutorService executor;
 
+    /** 节点执行器策略映射 */
+    private final Map<NodeType, NodeExecutor> nodeExecutors;
+
     public WorkflowEngine(CollaborationExecutorPool executorPool) {
         this.executor = executorPool.getExecutor();
+        this.nodeExecutors = initializeNodeExecutors();
+    }
+
+    /**
+     * 初始化节点执行器策略映射
+     */
+    private Map<NodeType, NodeExecutor> initializeNodeExecutors() {
+        Map<NodeType, NodeExecutor> executors = new EnumMap<>(NodeType.class);
+        executors.put(NodeType.SINGLE, new SingleNodeExecutor());
+        executors.put(NodeType.PARALLEL, new ParallelNodeExecutor(executor));
+        executors.put(NodeType.SEQUENTIAL, new SequentialNodeExecutor());
+        executors.put(NodeType.CONDITIONAL, new ConditionalNodeExecutor());
+        executors.put(NodeType.LOOP, new LoopNodeExecutor());
+        executors.put(NodeType.AGGREGATE, new AggregateNodeExecutor());
+        return executors;
     }
 
     /**
@@ -284,298 +304,17 @@ public class WorkflowEngine {
      */
     private void dispatchNodeType(WorkflowNode node, NodeResult result,
                                    WorkflowContext context, ExecutionContext executionContext) {
-        switch (node.getType()) {
-            case SINGLE -> executeSingleNode(node, result, context, executionContext);
-            case PARALLEL -> executeParallelNode(node, result, context, executionContext);
-            case SEQUENTIAL -> executeSequentialNode(node, result, context, executionContext);
-            case CONDITIONAL -> executeConditionalNode(node, result, context, executionContext);
-            case LOOP -> executeLoopNode(node, result, context, executionContext);
-            case AGGREGATE -> executeAggregateNode(node, result, context, executionContext);
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // 各类型节点执行逻辑
-    // -------------------------------------------------------------------------
-
-    /**
-     * 执行单 Agent 节点
-     */
-    private void executeSingleNode(WorkflowNode node, NodeResult result, WorkflowContext context,
-                                    ExecutionContext executionContext) {
-        if (node.getAgents().isEmpty()) {
-            result.markFailed("SINGLE节点未配置Agent");
-            return;
-        }
-
-        AgentRole role = node.getAgents().get(0);
-        AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-
-        String input = buildNodeInput(node, context);
-        String response = agentExecutor.answer(input);
-
-        result.addAgentResult(role.getRoleName(), response);
-        result.markCompleted(response);
-    }
-
-    /**
-     * 执行并行节点（多 Agent 同时执行）
-     */
-    private void executeParallelNode(WorkflowNode node, NodeResult result, WorkflowContext context,
-                                      ExecutionContext executionContext) {
-        if (node.getAgents().isEmpty()) {
-            result.markFailed("PARALLEL节点未配置Agent");
-            return;
-        }
-
-        String input = buildNodeInput(node, context);
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-        for (AgentRole role : node.getAgents()) {
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-                String response = agentExecutor.answer(input);
-                synchronized (result) {
-                    result.addAgentResult(role.getRoleName(), response);
-                }
-            }, executor);
-            futures.add(future);
-        }
-
-        // 优先使用节点级超时，否则退化为层级默认超时
-        long parallelTimeoutMs = node.getTimeoutMs() > 0
-                ? node.getTimeoutMs()
-                : DEFAULT_LAYER_TIMEOUT_MINUTES * 60 * 1000;
-
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                    .get(parallelTimeoutMs, TimeUnit.MILLISECONDS);
-
-            // 汇总结果
-            StringBuilder combined = new StringBuilder();
-            for (Map.Entry<String, String> entry : result.getAgentResults().entrySet()) {
-                combined.append("【").append(entry.getKey()).append("】\n");
-                combined.append(entry.getValue()).append("\n\n");
-            }
-            result.markCompleted(combined.toString().trim());
-
-        } catch (Exception e) {
-            result.markFailed("并行执行超时或失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 执行顺序节点（多 Agent 依次执行，前一个输出作为下一个输入）
-     */
-    private void executeSequentialNode(WorkflowNode node, NodeResult result, WorkflowContext context,
-                                        ExecutionContext executionContext) {
-        if (node.getAgents().isEmpty()) {
-            result.markFailed("SEQUENTIAL节点未配置Agent");
-            return;
-        }
-
-        String input = buildNodeInput(node, context);
-        StringBuilder accumulated = new StringBuilder(input);
-
-        for (AgentRole role : node.getAgents()) {
-            AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-            String response = agentExecutor.answer(accumulated.toString());
-
-            result.addAgentResult(role.getRoleName(), response);
-
-            accumulated.append("\n\n【").append(role.getRoleName()).append("的输出】\n");
-            accumulated.append(response);
-        }
-
-        String lastAgentName = node.getAgents().get(node.getAgents().size() - 1).getRoleName();
-        result.markCompleted(result.getAgentResults().get(lastAgentName));
-    }
-
-    /**
-     * 执行条件节点，支持多分支路由。
-     *
-     * <p>当节点配置了 {@code branches} 时，引擎将条件解析结果与分支 key 匹配，
-     * 并在 WorkflowContext 中记录激活的目标节点 ID（变量名 {@code _branch_<nodeId>}），
-     * 未匹配到任何分支时尝试匹配 "default" 分支，仍无匹配则跳过。
-     *
-     * <p>当节点未配置 {@code branches} 时，退化为简单的二值判断（向后兼容）。
-     */
-    private void executeConditionalNode(WorkflowNode node, NodeResult result, WorkflowContext context,
-                                         ExecutionContext executionContext) {
-        String condition = node.getCondition();
-        if (condition == null || condition.isEmpty()) {
-            result.markFailed("CONDITIONAL节点未配置条件表达式");
-            return;
-        }
-
-        String resolvedValue = context.resolveExpression(condition).trim();
-        Map<String, String> branches = node.getBranches();
-
-        if (!branches.isEmpty()) {
-            // 多分支路由模式
-            String matchedBranch = branches.containsKey(resolvedValue)
-                    ? resolvedValue
-                    : (branches.containsKey("default") ? "default" : null);
-
-            if (matchedBranch == null) {
-                result.markSkipped("条件值 [" + resolvedValue + "] 未匹配任何分支");
-                return;
-            }
-
-            String targetNodeId = branches.get(matchedBranch);
-            // 将激活的分支目标写入上下文，供后续节点判断是否跳过
-            context.setVariable("_branch_" + node.getId(), targetNodeId);
-
-            logger.info("条件分支路由", Map.of(
-                    "nodeId", node.getId(),
-                    "conditionValue", resolvedValue,
-                    "matchedBranch", matchedBranch,
-                    "targetNode", targetNodeId
-            ));
-
-            result.markCompleted("条件路由至: " + targetNodeId);
+        NodeExecutor executor = nodeExecutors.get(node.getType());
+        if (executor != null) {
+            executor.execute(node, result, context, executionContext);
         } else {
-            // 简单二值判断模式（向后兼容）
-            boolean conditionMet = !resolvedValue.isEmpty()
-                    && !"false".equalsIgnoreCase(resolvedValue)
-                    && !"0".equals(resolvedValue);
-
-            if (conditionMet && !node.getAgents().isEmpty()) {
-                executeSingleNode(node, result, context, executionContext);
-            } else {
-                result.markSkipped("条件不满足: " + condition);
-            }
+            result.markFailed("不支持的节点类型: " + node.getType());
         }
     }
 
-    /**
-     * 执行循环节点，支持结构化 JSON 退出条件。
-     *
-     * <p>退出条件优先解析 LLM 返回的 JSON 格式 {@code {"continue": false}}，
-     * 同时兼容旧的字面量 "true"/"done" 格式。
-     */
-    private void executeLoopNode(WorkflowNode node, NodeResult result, WorkflowContext context,
-                                  ExecutionContext executionContext) {
-        String condition = node.getCondition();
-        int maxLoops = node.getConfig().containsKey("maxLoops")
-                ? ((Number) node.getConfig().get("maxLoops")).intValue()
-                : 5;
-
-        int loopCount = 0;
-        StringBuilder loopResults = new StringBuilder();
-
-        while (loopCount < maxLoops) {
-            loopCount++;
-
-            if (!node.getAgents().isEmpty()) {
-                AgentRole role = node.getAgents().get(0);
-                AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-                String loopPrompt = buildNodeInput(node, context)
-                        + "\n\n当前循环次数: " + loopCount + " / " + maxLoops
-                        + "\n\n如果任务已完成，请在回复末尾附上 JSON: {\"continue\": false, \"reason\": \"完成原因\"}";
-                String response = agentExecutor.answer(loopPrompt);
-
-                loopResults.append("【循环").append(loopCount).append("】\n");
-                loopResults.append(response).append("\n\n");
-
-                context.setVariable("_loop_result", response);
-
-                // 优先解析结构化 JSON 退出信号
-                if (shouldExitLoop(response, condition, context)) {
-                    logger.info("循环节点退出", Map.of(
-                            "nodeId", node.getId(),
-                            "loopCount", loopCount
-                    ));
-                    break;
-                }
-            } else {
-                // 无 Agent 时仅检查条件表达式
-                if (condition != null) {
-                    String resolved = context.resolveExpression(condition);
-                    if (isLoopExitSignal(resolved)) break;
-                }
-            }
-        }
-
-        result.markCompleted(loopResults.toString().trim());
-    }
-
-    /**
-     * 判断是否应退出循环。
-     * 优先解析 JSON {"continue": false}，兼容字面量 "true"/"done"。
-     */
-    private boolean shouldExitLoop(String response, String condition, WorkflowContext context) {
-        // 1. 解析结构化 JSON 退出信号（从响应末尾查找最后一个 JSON 块）
-        if (response != null) {
-            int jsonStart = response.lastIndexOf('{');
-            int jsonEnd = response.lastIndexOf('}');
-            if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                String jsonPart = response.substring(jsonStart, jsonEnd + 1);
-                if (jsonPart.contains("\"continue\"") &&
-                        (jsonPart.contains("\"continue\": false") ||
-                         jsonPart.contains("\"continue\":false"))) {
-                    return true;
-                }
-            }
-        }
-
-        // 2. 兼容旧的字面量条件
-        if (condition != null) {
-            String resolved = context.resolveExpression(condition);
-            return isLoopExitSignal(resolved);
-        }
-
-        return false;
-    }
-
-    private boolean isLoopExitSignal(String value) {
-        return "true".equalsIgnoreCase(value) || "done".equalsIgnoreCase(value);
-    }
-
-    /**
-     * 执行聚合节点。
-     *
-     * <p>当节点配置了 Agent 时，使用 LLM 对所有依赖节点的结果进行智能语义聚合（Reducer 模式）；
-     * 否则退化为简单的文本拼接。
-     */
-    private void executeAggregateNode(WorkflowNode node, NodeResult result,
-                                       WorkflowContext context, ExecutionContext executionContext) {
-        // 收集所有依赖节点的结果
-        StringBuilder rawResults = new StringBuilder();
-        rawResults.append("=== 待聚合的各节点结果 ===\n\n");
-
-        for (String depId : node.getDependsOn()) {
-            NodeResult depResult = context.getNodeResult(depId);
-            if (depResult != null && depResult.isSuccess()) {
-                rawResults.append("【").append(depId).append("】\n");
-                rawResults.append(depResult.getResult()).append("\n\n");
-            }
-        }
-
-        if (node.getAgents().isEmpty()) {
-            // 无 Agent：简单拼接
-            result.markCompleted(rawResults.toString().trim());
-            return;
-        }
-
-        // 有 Agent：LLM 智能聚合（Reducer 模式）
-        AgentRole aggregatorRole = node.getAgents().get(0);
-        AgentExecutor aggregator = createAgentExecutor(aggregatorRole, executionContext);
-
-        String aggregationPrompt = buildNodeInput(node, context)
-                + "\n\n" + rawResults
-                + "\n请对以上各方结果进行综合分析，去除重复内容，提炼关键信息，给出统一的最终结论。";
-
-        String aggregatedResult = aggregator.answer(aggregationPrompt);
-
-        result.addAgentResult(aggregatorRole.getRoleName(), aggregatedResult);
-        result.markCompleted(aggregatedResult);
-
-        logger.info("聚合节点完成（LLM 智能聚合）", Map.of(
-                "nodeId", node.getId(),
-                "dependencyCount", node.getDependsOn().size()
-        ));
-    }
+    // -------------------------------------------------------------------------
+    // 各类型节点执行逻辑（已迁移到 NodeExecutor 实现类）
+    // -------------------------------------------------------------------------
 
     // -------------------------------------------------------------------------
     // 辅助方法
@@ -633,14 +372,9 @@ public class WorkflowEngine {
     }
 
     /**
-     * 创建 Agent 执行器，使用 ExecutionContext 中的共享 SessionManager
+     * 创建 Agent 执行器，统一使用 ExecutionContext 的工厂方法
      */
     private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
-        return new AgentExecutor(role,
-                executionContext.getProvider(),
-                executionContext.getTools(),
-                executionContext.getSharedSessionManager(),
-                executionContext.getModel(),
-                executionContext.getMaxIterations());
+        return executionContext.createAgentExecutor(role);
     }
 }

@@ -87,12 +87,8 @@ public class HierarchyStrategy implements CollaborationStrategy {
     private List<AgentExecutor> createLevelAgents(List<AgentRole> roles) {
         List<AgentExecutor> agents = new ArrayList<>();
         for (AgentRole role : roles) {
-            agents.add(new AgentExecutor(role,
-                    executionContext.getProvider(),
-                    executionContext.getTools(),
-                    executionContext.getSharedSessionManager(),
-                    executionContext.getModel(),
-                    executionContext.getMaxIterations()));
+            // 使用 ExecutionContext 的工厂方法统一创建 AgentExecutor
+            agents.add(executionContext.createAgentExecutor(role));
         }
         return agents;
     }

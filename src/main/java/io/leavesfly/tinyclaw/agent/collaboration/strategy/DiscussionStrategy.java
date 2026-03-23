@@ -39,8 +39,7 @@ public class DiscussionStrategy implements CollaborationStrategy {
                 "maxRounds", config.getMaxRounds()
         ));
 
-        boolean consensusReached = false;
-
+        // 统一由 shouldTerminate 控制循环终止，不在循环体内 break
         while (!shouldTerminate(context, config)) {
             context.nextRound();
 
@@ -61,32 +60,26 @@ public class DiscussionStrategy implements CollaborationStrategy {
                         "responseLength", response.length()
                 ));
 
-                // 角色扮演模式：检测主动结束标记
+                // 角色扮演模式：检测主动结束标记，写入类型安全字段
                 if (isRolePlayMode(config) && isConversationEnded(response)) {
-                    context.setMeta("ended_by", speaker.getRoleName());
+                    context.markEndedBy(speaker.getRoleName());
                     break;
                 }
             }
 
-            // 角色扮演模式：被主动结束则退出循环
-            if (isRolePlayMode(config) && context.getMeta("ended_by") != null) {
-                break;
-            }
-
             // 共识模式：每轮结束后收集投票，检查是否达成共识
-            if (isConsensusMode(config)) {
+            if (isConsensusMode(config) && !context.isEndedByRole()) {
                 Map<String, List<String>> votes = collectVotes(agents, context);
-                context.setMeta("votes_round_" + context.getCurrentRound(), votes);
-                consensusReached = checkConsensus(votes, agents.size(), config.getConsensusThreshold());
-                if (consensusReached) {
-                    context.setMeta("consensus_option", getMajorityOption(votes));
-                    logger.info("达成共识", Map.of("option", getMajorityOption(votes)));
-                    break;
+                context.setVotes(context.getCurrentRound(), votes);
+                if (checkConsensus(votes, agents.size(), config.getConsensusThreshold())) {
+                    String majorityOption = getMajorityOption(votes);
+                    context.markConsensusReached(majorityOption);
+                    logger.info("达成共识", Map.of("option", majorityOption));
                 }
             }
         }
 
-        String conclusion = buildConclusion(context, agents, config, consensusReached);
+        String conclusion = buildConclusion(context, agents, config);
         context.setFinalConclusion(conclusion);
 
         logger.info("讨论结束", Map.of(
@@ -141,11 +134,11 @@ public class DiscussionStrategy implements CollaborationStrategy {
     // -------------------------------------------------------------------------
 
     private String buildConclusion(SharedContext context, List<AgentExecutor> agents,
-                                   CollaborationConfig config, boolean consensusReached) {
+                                   CollaborationConfig config) {
         return switch (config.getMode()) {
             case DEBATE -> buildDebateConclusion(context, agents);
             case ROLEPLAY -> buildRolePlayConclusion(context);
-            case CONSENSUS -> buildConsensusConclusion(context, agents.size(), consensusReached);
+            case CONSENSUS -> buildConsensusConclusion(context, agents.size());
             default -> "讨论完成。";
         };
     }
@@ -173,28 +166,25 @@ public class DiscussionStrategy implements CollaborationStrategy {
         }
         conclusion.append("---\n共 ").append(context.getCurrentRound()).append(" 轮对话，");
         conclusion.append(context.getHistory().size()).append(" 条消息。");
-        String endedBy = context.getMeta("ended_by");
-        if (endedBy != null) {
-            conclusion.append("\n由【").append(endedBy).append("】主动结束对话。");
+        if (context.isEndedByRole()) {
+            conclusion.append("\n由【").append(context.getEndedByRole()).append("】主动结束对话。");
         }
         return conclusion.toString();
     }
 
-    private String buildConsensusConclusion(SharedContext context, int totalVoters, boolean consensusReached) {
+    private String buildConsensusConclusion(SharedContext context, int totalVoters) {
         StringBuilder conclusion = new StringBuilder("=== 共识决策结果 ===\n\n");
         conclusion.append("议题：").append(context.getTopic()).append("\n");
         conclusion.append("参与人数：").append(totalVoters).append("\n");
         conclusion.append("讨论轮次：").append(context.getCurrentRound()).append("\n\n");
 
-        if (consensusReached) {
-            String consensusOption = context.getMeta("consensus_option");
-            conclusion.append("【结论】达成共识\n共识选项：").append(consensusOption).append("\n");
+        if (context.isConsensusReached()) {
+            conclusion.append("【结论】达成共识\n共识选项：").append(context.getConsensusOption()).append("\n");
         } else {
             conclusion.append("【结论】未达成共识\n");
         }
 
-        @SuppressWarnings("unchecked")
-        Map<String, List<String>> lastVotes = context.getMeta("votes_round_" + context.getCurrentRound());
+        Map<String, List<String>> lastVotes = context.getLatestVotes();
         if (lastVotes != null && !lastVotes.isEmpty()) {
             conclusion.append("\n最终投票分布：\n");
             for (Map.Entry<String, List<String>> entry : lastVotes.entrySet()) {
@@ -281,7 +271,11 @@ public class DiscussionStrategy implements CollaborationStrategy {
             return true;
         }
         // 角色扮演：被主动结束
-        if (isRolePlayMode(config) && context.getMeta("ended_by") != null) {
+        if (isRolePlayMode(config) && context.isEndedByRole()) {
+            return true;
+        }
+        // 共识模式：已达成共识
+        if (isConsensusMode(config) && context.isConsensusReached()) {
             return true;
         }
         return false;

@@ -6,6 +6,7 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
+import java.util.Set;
 
 /**
  * 团队协作策略
@@ -47,12 +48,30 @@ public class TeamWorkStrategy implements CollaborationStrategy {
         
         // 按依赖关系分层执行
         while (hasUnfinishedTasks(tasks)) {
-            // 找出所有可执行的任务（依赖已满足的待执行任务）
             List<TeamTask> executableTasks = findExecutableTasks(tasks, taskMap);
             
             if (executableTasks.isEmpty()) {
-                // 可能存在循环依赖
-                logger.error("检测到循环依赖或无法继续执行的任务");
+                // 存在循环依赖或依赖的任务已失败，将所有阻塞的任务标记为失败
+                List<TeamTask> blockedTasks = tasks.stream()
+                        .filter(t -> t.getStatus() == TeamTask.TaskStatus.PENDING)
+                        .collect(Collectors.toList());
+
+                List<String> blockedTaskIds = blockedTasks.stream()
+                        .map(TeamTask::getTaskId)
+                        .collect(Collectors.toList());
+
+                String failureReason = detectCyclicDependency(blockedTasks, taskMap)
+                        ? "循环依赖导致无法执行，涉及任务: " + blockedTaskIds
+                        : "前置依赖任务失败导致无法执行";
+
+                for (TeamTask blocked : blockedTasks) {
+                    blocked.markFailed(failureReason);
+                }
+
+                logger.error("任务调度阻塞", Map.of(
+                        "blockedTasks", blockedTaskIds,
+                        "reason", failureReason
+                ));
                 break;
             }
             
@@ -120,6 +139,30 @@ public class TeamWorkStrategy implements CollaborationStrategy {
         return true;
     }
     
+    /**
+     * 检测待执行任务之间是否存在循环依赖
+     */
+    private boolean detectCyclicDependency(List<TeamTask> pendingTasks, Map<String, TeamTask> taskMap) {
+        Set<String> pendingIds = pendingTasks.stream()
+                .map(TeamTask::getTaskId)
+                .collect(Collectors.toSet());
+
+        // 如果某个 pending 任务的所有依赖都在 pending 集合中，说明存在循环
+        for (TeamTask task : pendingTasks) {
+            if (task.hasDependencies()) {
+                boolean allDepsArePending = task.getDependsOn().stream()
+                        .allMatch(depId -> {
+                            TeamTask dep = taskMap.get(depId);
+                            return dep != null && pendingIds.contains(dep.getTaskId());
+                        });
+                if (allDepsArePending) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /**
      * 并行执行任务
      */

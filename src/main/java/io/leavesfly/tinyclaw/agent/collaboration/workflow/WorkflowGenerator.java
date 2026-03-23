@@ -89,7 +89,7 @@ public class WorkflowGenerator {
         }
 
         // 两次均失败：降级兜底，明确告知调用方
-        return createFallbackWorkflow(taskDescription);
+        return createFallbackWorkflow(taskDescription, rolesData);
     }
 
     /**
@@ -225,7 +225,16 @@ public class WorkflowGenerator {
             
             return workflow;
         } catch (Exception e) {
-            throw new RuntimeException("解析 Workflow JSON 失败: " + e.getMessage(), e);
+            // 提取原始响应的前 200 个字符用于错误信息
+            String responsePreview = response != null && response.length() > 200
+                    ? response.substring(0, 200) + "..."
+                    : (response != null ? response : "null");
+            
+            throw new RuntimeException(
+                    String.format("解析 Workflow JSON 失败: %s。原始响应预览: %s",
+                            e.getMessage(), responsePreview),
+                    e
+            );
         }
     }
     
@@ -244,7 +253,15 @@ public class WorkflowGenerator {
         }
         if (nodeJson.has("type")) {
             String typeStr = nodeJson.get("type").asText();
-            node.setType(WorkflowNode.NodeType.valueOf(typeStr.toUpperCase()));
+            try {
+                node.setType(WorkflowNode.NodeType.valueOf(typeStr.toUpperCase()));
+            } catch (IllegalArgumentException e) {
+                logger.warn("未知的节点类型，降级为 SINGLE", Map.of(
+                        "type", typeStr,
+                        "nodeId", nodeJson.has("id") ? nodeJson.get("id").asText() : "unknown"
+                ));
+                node.setType(WorkflowNode.NodeType.SINGLE);
+            }
         }
         if (nodeJson.has("inputExpression")) {
             node.setInputExpression(nodeJson.get("inputExpression").asText());
@@ -331,29 +348,70 @@ public class WorkflowGenerator {
      * 第一个节点负责分析任务，第二个节点基于分析结果给出最终建议，
      * 保留了基本的多步骤语义，同时在工作流描述中明确标注为兜底模式，
      * 方便调用方感知并在日志中追踪。
+     *
+     * @param taskDescription 任务描述
+     * @param rolesData       用户预定义的角色列表，每个元素包含 name 和 prompt 字段；为 null 时使用默认角色
      */
-    private WorkflowDefinition createFallbackWorkflow(String taskDescription) {
+    private WorkflowDefinition createFallbackWorkflow(String taskDescription, List<Map<String, Object>> rolesData) {
         logger.warn("使用兜底工作流", Map.of(
-                "taskDescriptionLength", taskDescription.length()
+                "taskDescriptionLength", taskDescription.length(),
+                "predefinedRoles", rolesData != null ? rolesData.size() : 0
         ));
 
         WorkflowDefinition workflow = new WorkflowDefinition("兜底工作流");
         workflow.setDescription("[FALLBACK] LLM 工作流生成失败（已重试一次），使用兜底双节点工作流");
 
-        // 节点1：任务分析
-        WorkflowNode analyzeNode = new WorkflowNode("analyze", WorkflowNode.NodeType.SINGLE);
-        analyzeNode.setName("任务分析");
-        analyzeNode.addAgent(AgentRole.of("分析师",
-                "你是一个任务分析专家。请仔细分析用户的任务需求，拆解关键问题，给出结构化的分析报告。"));
-        workflow.addNode(analyzeNode);
+        // 如果用户提供了角色定义，复用这些角色
+        if (rolesData != null && !rolesData.isEmpty()) {
+            // 节点1：使用用户预定义的第一个角色进行任务分析
+            Map<String, Object> firstRole = rolesData.get(0);
+            String roleName = (String) firstRole.get("name");
+            String rolePrompt = (String) firstRole.get("prompt");
+            
+            WorkflowNode analyzeNode = new WorkflowNode("analyze", WorkflowNode.NodeType.SINGLE);
+            analyzeNode.setName("任务分析");
+            analyzeNode.addAgent(AgentRole.of(
+                    roleName != null ? roleName : "分析师",
+                    rolePrompt != null ? rolePrompt : "你是一个任务分析专家。请仔细分析用户的任务需求，拆解关键问题，给出结构化的分析报告。"
+            ));
+            workflow.addNode(analyzeNode);
 
-        // 节点2：综合建议（依赖分析节点）
-        WorkflowNode adviceNode = new WorkflowNode("advice", WorkflowNode.NodeType.SINGLE);
-        adviceNode.setName("综合建议");
-        adviceNode.addAgent(AgentRole.of("顾问",
-                "你是一个资深顾问。请基于前置分析结果，给出具体可执行的建议和行动方案。"));
-        adviceNode.dependsOn("analyze");
-        workflow.addNode(adviceNode);
+            // 节点2：如果有第二个角色则使用，否则使用默认顾问角色
+            WorkflowNode adviceNode = new WorkflowNode("advice", WorkflowNode.NodeType.SINGLE);
+            adviceNode.setName("综合建议");
+            
+            if (rolesData.size() > 1) {
+                Map<String, Object> secondRole = rolesData.get(1);
+                String secondRoleName = (String) secondRole.get("name");
+                String secondRolePrompt = (String) secondRole.get("prompt");
+                adviceNode.addAgent(AgentRole.of(
+                        secondRoleName != null ? secondRoleName : "顾问",
+                        secondRolePrompt != null ? secondRolePrompt : "你是一个资深顾问。请基于前置分析结果，给出具体可执行的建议和行动方案。"
+                ));
+            } else {
+                adviceNode.addAgent(AgentRole.of("顾问",
+                        "你是一个资深顾问。请基于前置分析结果，给出具体可执行的建议和行动方案。"));
+            }
+            
+            adviceNode.dependsOn("analyze");
+            workflow.addNode(adviceNode);
+        } else {
+            // 没有预定义角色时，使用默认角色
+            // 节点1：任务分析
+            WorkflowNode analyzeNode = new WorkflowNode("analyze", WorkflowNode.NodeType.SINGLE);
+            analyzeNode.setName("任务分析");
+            analyzeNode.addAgent(AgentRole.of("分析师",
+                    "你是一个任务分析专家。请仔细分析用户的任务需求，拆解关键问题，给出结构化的分析报告。"));
+            workflow.addNode(analyzeNode);
+
+            // 节点2：综合建议（依赖分析节点）
+            WorkflowNode adviceNode = new WorkflowNode("advice", WorkflowNode.NodeType.SINGLE);
+            adviceNode.setName("综合建议");
+            adviceNode.addAgent(AgentRole.of("顾问",
+                    "你是一个资深顾问。请基于前置分析结果，给出具体可执行的建议和行动方案。"));
+            adviceNode.dependsOn("analyze");
+            workflow.addNode(adviceNode);
+        }
 
         workflow.setOutputExpression("${advice.result}");
 

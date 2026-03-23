@@ -8,8 +8,6 @@ import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-
 
 /**
  * 单个Agent执行器
@@ -17,9 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class AgentExecutor {
     
-    private static final AtomicInteger ID_COUNTER = new AtomicInteger(1);
-    
-    /** Agent唯一标识 */
+    /** Agent唯一标识（格式：collab-<sessionId>-<sequence>） */
     private final String agentId;
     
     /** Agent角色 */
@@ -34,6 +30,9 @@ public class AgentExecutor {
     /** 会话键 */
     private final String sessionKey;
     
+    /** 基础系统提示词（可选，继承自主 Agent 的核心身份信息） */
+    private final String baseSystemPrompt;
+    
     /**
      * 构造 AgentExecutor，使用外部传入的共享 SessionManager。
      *
@@ -46,13 +45,18 @@ public class AgentExecutor {
      * @param sharedSessions 共享会话管理器（由调用方统一创建）
      * @param model          默认模型名称
      * @param maxIterations  最大迭代次数
+     * @param sessionId      协同会话 ID（用于日志关联和调试）
+     * @param sequence       Agent 序号（在协同会话内唯一）
+     * @param baseSystemPrompt 基础系统提示词（可选，继承自主 Agent 的核心身份信息）
      */
     public AgentExecutor(AgentRole role, LLMProvider provider, ToolRegistry tools,
-                         SessionManager sharedSessions, String model, int maxIterations) {
-        this.agentId = "agent-" + ID_COUNTER.getAndIncrement();
+                         SessionManager sharedSessions, String model, int maxIterations,
+                         String sessionId, int sequence, String baseSystemPrompt) {
+        this.agentId = "collab-" + sessionId + "-" + sequence;
         this.role = role;
         this.sessionManager = sharedSessions;
         this.sessionKey = "collab:" + agentId;
+        this.baseSystemPrompt = baseSystemPrompt;
 
         // 使用角色指定的模型，如果没有则使用默认模型
         String effectiveModel = (role.getModel() != null && !role.getModel().isEmpty())
@@ -106,7 +110,7 @@ public class AgentExecutor {
      */
     public String answer(String userMessage) {
         List<Message> messages = new ArrayList<>();
-        messages.add(new Message("system", role.getSystemPrompt()));
+        messages.add(new Message("system", buildSystemPrompt(null)));
         messages.add(new Message("user", userMessage));
         try {
             return llmExecutor.execute(messages, sessionKey);
@@ -138,13 +142,27 @@ public class AgentExecutor {
     }
 
     /**
-     * 构建系统提示词，可选追加自定义提示
+     * 构建系统提示词
+     * 优先使用 baseSystemPrompt 作为前缀，然后追加角色提示和自定义提示
      */
     private String buildSystemPrompt(String customPrompt) {
-        if (customPrompt == null || customPrompt.isEmpty()) {
-            return role.getSystemPrompt();
+        StringBuilder promptBuilder = new StringBuilder();
+        
+        // 添加基础系统提示词（如果存在）
+        if (baseSystemPrompt != null && !baseSystemPrompt.isEmpty()) {
+            promptBuilder.append(baseSystemPrompt);
+            promptBuilder.append("\n\n");
         }
-        return role.getSystemPrompt() + "\n\n" + customPrompt;
+        
+        // 添加角色系统提示词
+        promptBuilder.append(role.getSystemPrompt());
+        
+        // 追加自定义提示（如果存在）
+        if (customPrompt != null && !customPrompt.isEmpty()) {
+            promptBuilder.append("\n\n").append(customPrompt);
+        }
+        
+        return promptBuilder.toString();
     }
 
     /**

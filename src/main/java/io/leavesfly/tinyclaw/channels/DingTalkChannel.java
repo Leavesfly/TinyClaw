@@ -477,7 +477,6 @@ public class DingTalkChannel extends BaseChannel {
             }
 
             // 消息已进入处理队列，立即回复占位消息，告知用户正在思考
-            // 避免用户等待 LLM 响应期间无任何反馈
             sendThinkingPlaceholder(chatId);
 
             // 返回空响应，消息将通过消息总线异步回复
