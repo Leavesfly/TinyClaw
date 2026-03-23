@@ -25,9 +25,11 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * TinyClaw 核心执行引擎，协调消息路由、上下文构建、会话管理与 LLM 交互。
@@ -405,7 +407,19 @@ public class AgentLoop {
                 String currentPrompt = activeOptimizer != null
                         ? activeOptimizer.getActiveOptimization()
                         : "";
-                promptOptimizer.maybeOptimize(currentPrompt != null ? currentPrompt : "");
+                String safePrompt = currentPrompt != null ? currentPrompt : "";
+
+                // 如果是 Self-Refine 策略，收集最近的会话历史作为反思素材
+                List<String> recentSessionLog = null;
+                EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
+                if (evolutionConfig != null
+                        && evolutionConfig.getOptimizationStrategy()
+                            == EvolutionConfig.OptimizationStrategy.SELF_REFINE) {
+                    recentSessionLog = collectRecentSessionLogs(
+                            evolutionConfig.getSelfRefineSessionCount());
+                }
+
+                promptOptimizer.maybeOptimize(safePrompt, recentSessionLog);
             });
         }
 
@@ -433,6 +447,53 @@ public class AgentLoop {
     @FunctionalInterface
     private interface ThrowingRunnable {
         void run() throws Exception;
+    }
+
+    /**
+     * 收集最近的会话交互记录，供 Self-Refine 策略进行自我反思。
+     *
+     * <p>从 SessionManager 中获取最近的 N 个会话，将每个会话的消息历史
+     * 格式化为 "role: content" 文本，作为 Self-Refine 的反思素材。</p>
+     *
+     * @param maxSessionCount 最多收集的会话数量
+     * @return 格式化的会话记录列表，每个元素对应一个会话
+     */
+    private List<String> collectRecentSessionLogs(int maxSessionCount) {
+        List<String> sessionLogs = new ArrayList<>();
+        Set<String> sessionKeys = sessions.getSessionKeys();
+
+        if (sessionKeys.isEmpty()) {
+            return sessionLogs;
+        }
+
+        // 取最近的 N 个会话（SessionManager 的 key 集合按插入顺序排列）
+        List<String> keyList = new ArrayList<>(sessionKeys);
+        int startIndex = Math.max(0, keyList.size() - maxSessionCount);
+        List<String> recentKeys = keyList.subList(startIndex, keyList.size());
+
+        for (String sessionKey : recentKeys) {
+            List<Message> history = sessions.getHistory(sessionKey);
+            if (history == null || history.isEmpty()) {
+                continue;
+            }
+
+            StringBuilder sessionText = new StringBuilder();
+            for (Message message : history) {
+                String role = message.getRole() != null ? message.getRole() : "unknown";
+                String content = message.getContent() != null ? message.getContent() : "";
+                // 截断过长的单条消息，避免上下文爆炸
+                if (content.length() > 500) {
+                    content = content.substring(0, 500) + "...";
+                }
+                sessionText.append(role).append(": ").append(content).append("\n");
+            }
+
+            if (sessionText.length() > 0) {
+                sessionLogs.add(sessionText.toString());
+            }
+        }
+
+        return sessionLogs;
     }
 
     // ==================== 公开入口（CLI / 外部调用） ====================

@@ -19,6 +19,37 @@ package io.leavesfly.tinyclaw.agent.evolution;
  */
 public class EvolutionConfig {
 
+    // ==================== 优化策略枚举 ====================
+
+    /**
+     * Prompt 优化策略枚举。
+     *
+     * <ul>
+     *   <li>{@link #TEXTUAL_GRADIENT} — 反馈驱动的文本梯度（默认，已有实现）</li>
+     *   <li>{@link #OPRO} — 历史轨迹引导优化（Google DeepMind OPRO）</li>
+     *   <li>{@link #SELF_REFINE} — Agent 自我反思优化（无需外部反馈）</li>
+     * </ul>
+     */
+    public enum OptimizationStrategy {
+        /**
+         * 文本梯度：收集反馈 → LLM 生成优化建议 → 应用到 Prompt。
+         * 需要足够的反馈数据才能触发。
+         */
+        TEXTUAL_GRADIENT,
+
+        /**
+         * OPRO：维护 (prompt, score) 历史轨迹，让 LLM 从趋势中学习生成更优 Prompt。
+         * 需要反馈数据，但能从历史优化趋势中发现模式，避免局部最优。
+         */
+        OPRO,
+
+        /**
+         * 自我反思：Agent 回顾最近会话的交互质量，自动生成经验教训并改进 Prompt。
+         * 不依赖外部反馈，完全自驱动，适合反馈数据不足的场景。
+         */
+        SELF_REFINE
+    }
+
     // ==================== 反馈收集配置 ====================
 
     /**
@@ -61,6 +92,11 @@ public class EvolutionConfig {
     private boolean promptOptimizationEnabled = false;
 
     /**
+     * Prompt 优化策略（默认 TEXTUAL_GRADIENT，即反馈驱动的文本梯度）
+     */
+    private OptimizationStrategy optimizationStrategy = OptimizationStrategy.TEXTUAL_GRADIENT;
+
+    /**
      * 优化检查间隔（小时）
      */
     private int optimizationIntervalHours = 24;
@@ -97,6 +133,16 @@ public class EvolutionConfig {
      * 最大保留的优化历史版本数
      */
     private int maxHistoryVersions = 10;
+
+    /**
+     * Self-Refine 策略：回顾的最近会话数量
+     */
+    private int selfRefineSessionCount = 5;
+
+    /**
+     * OPRO 策略：历史轨迹中保留的最大条目数
+     */
+    private int oproMaxTrajectorySize = 20;
 
     // ==================== Getters & Setters ====================
 
@@ -212,6 +258,31 @@ public class EvolutionConfig {
         this.maxHistoryVersions = maxHistoryVersions;
     }
 
+    public OptimizationStrategy getOptimizationStrategy() {
+        return optimizationStrategy;
+    }
+
+    public void setOptimizationStrategy(OptimizationStrategy optimizationStrategy) {
+        this.optimizationStrategy = optimizationStrategy != null
+                ? optimizationStrategy : OptimizationStrategy.TEXTUAL_GRADIENT;
+    }
+
+    public int getSelfRefineSessionCount() {
+        return selfRefineSessionCount;
+    }
+
+    public void setSelfRefineSessionCount(int selfRefineSessionCount) {
+        this.selfRefineSessionCount = Math.max(1, selfRefineSessionCount);
+    }
+
+    public int getOproMaxTrajectorySize() {
+        return oproMaxTrajectorySize;
+    }
+
+    public void setOproMaxTrajectorySize(int oproMaxTrajectorySize) {
+        this.oproMaxTrajectorySize = Math.max(5, oproMaxTrajectorySize);
+    }
+
     // ==================== 便捷方法 ====================
 
     /**
@@ -225,16 +296,23 @@ public class EvolutionConfig {
 
     /**
      * 检查是否可以执行优化。
+     * SELF_REFINE 策略不要求反馈启用，其他策略需要反馈数据。
      *
      * @return 配置允许优化时返回 true
      */
     public boolean canOptimize() {
-        return promptOptimizationEnabled && feedbackEnabled;
+        if (!promptOptimizationEnabled) {
+            return false;
+        }
+        if (optimizationStrategy == OptimizationStrategy.SELF_REFINE) {
+            return true;
+        }
+        return feedbackEnabled;
     }
 
     @Override
     public String toString() {
-        return String.format("EvolutionConfig{feedback=%s, promptOpt=%s, interval=%dh}",
-                feedbackEnabled, promptOptimizationEnabled, optimizationIntervalHours);
+        return String.format("EvolutionConfig{feedback=%s, promptOpt=%s, strategy=%s, interval=%dh}",
+                feedbackEnabled, promptOptimizationEnabled, optimizationStrategy, optimizationIntervalHours);
     }
 }
