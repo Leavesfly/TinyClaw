@@ -77,11 +77,13 @@ public class SkillsHandler {
 
             } else if (path.startsWith(WebUtils.API_SKILLS + WebUtils.PATH_SEPARATOR)
                     && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+
                 String name = URLDecoder.decode(
                         path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
                 String body = WebUtils.readRequestBody(exchange);
                 JsonNode bodyJson = WebUtils.MAPPER.readTree(body);
                 String content = bodyJson.has("content") ? bodyJson.get("content").asText() : null;
+
                 if (content == null) {
                     WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Missing content"), corsOrigin);
                 } else if (skillsLoader.saveWorkspaceSkill(name, content)) {
@@ -94,8 +96,10 @@ public class SkillsHandler {
 
             } else if (path.startsWith(WebUtils.API_SKILLS + WebUtils.PATH_SEPARATOR)
                     && WebUtils.HTTP_METHOD_DELETE.equals(method)) {
+
                 String name = URLDecoder.decode(
                         path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+
                 if (skillsLoader.deleteWorkspaceSkill(name)) {
                     ObjectNode result = WebUtils.MAPPER.createObjectNode();
                     result.put("success", true);
