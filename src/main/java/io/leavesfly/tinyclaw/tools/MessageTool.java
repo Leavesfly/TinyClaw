@@ -7,7 +7,7 @@ import java.util.Map;
  * 消息发送工具
  * 用于通过通道发送消息
  */
-public class MessageTool implements Tool {
+public class MessageTool implements Tool, ToolContextAware {
     
     private String currentChannel;
     private String currentChatId;
@@ -22,6 +22,11 @@ public class MessageTool implements Tool {
     public void setContext(String channel, String chatId) {
         this.currentChannel = channel;
         this.currentChatId = chatId;
+    }
+    
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        setContext(channel, chatId);
     }
     
     /**

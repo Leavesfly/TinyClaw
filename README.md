@@ -1,9 +1,8 @@
 <div align="center">
 
-
 # 🦞 TinyClaw
 
-**超轻量个人 AI 助手** — 用 Java 编写，支持多模型、多通道、多技能的一站式 AI Agent 框架
+**超轻量个人 AI 助手** — 用 Java 编写，支持多模型、多通道、多 Agent 协同、自我进化的一站式 AI Agent 框架
 
 [![Java](https://img.shields.io/badge/Java-17-orange)](https://openjdk.org/)
 [![Maven](https://img.shields.io/badge/Maven-3.x-blue)](https://maven.apache.org/)
@@ -16,21 +15,23 @@
 
 ---
 
-
 ### ✨ 特性一览
 
-- **🤖 多模型支持** — 接入 OpenRouter、OpenAI、Anthropic、智谱 GLM、Gemini、阿里云、vLLM 等主流 LLM 提供商
+- **🤖 多模型支持** — 接入 OpenRouter、OpenAI、Anthropic、智谱 GLM、Gemini、阿里云、Groq、Ollama 等主流 LLM 提供商
 - **💬 多通道消息** — 同时连接 Telegram、Discord、WhatsApp、飞书、钉钉、QQ、MaixCam 等平台
-- **🛠️ 丰富的内置工具** — 文件读写、Shell 执行、网络搜索、网页抓取、定时任务、子代理等
-- **🧩 技能插件系统** — 通过 Markdown 定义技能，支持从 GitHub 安装，轻松扩展 Agent 能力
-- **⏰ 定时任务引擎** — 支持 Cron 表达式和固定间隔，自动执行 Agent 任务
-- **🧠 记忆与上下文** — 内置长期记忆存储和会话管理，Agent 能记住重要信息
+- **🤝 多 Agent 协同** — 7 种协同模式（辩论/团队/角色扮演/共识/层级/工作流/动态路由），内置工作流引擎
+- **🧬 自我进化** — 3 种 Prompt 自动优化策略（文本梯度/OPRO/自我反思）+ 记忆进化 + 反馈收集
+- **🔌 MCP 协议** — 完整的 MCP 客户端，支持 SSE、Stdio、Streamable HTTP 三种传输方式
+- **🛠️ 丰富的内置工具** — 文件读写、Shell 执行、网络搜索、网页抓取、定时任务、子代理、Token 统计等 15 个工具
+- **🧩 技能插件系统** — 通过 Markdown 定义技能，支持语义搜索匹配、从 GitHub 安装，Agent 可自主创建和改进技能
+- **⏰ 定时任务引擎** — 支持 Cron 表达式、固定间隔和单次定时
+- **🧠 记忆与上下文** — 长期记忆存储、会话摘要、分段式上下文构建
 - **💓 心跳服务** — 定期自主思考，让 Agent 保持"活跃"
-- **🎤 语音转写** — 集成阿里云 DashScope Paraformer，支持 Telegram/Discord 语音消息自动转文字
-- **🔒 安全沙箱** — 工作空间限制 + 命令黑名单，生产级安全防护（SecurityGuard）
+- **🎤 语音转写** — 集成阿里云 DashScope Paraformer，支持语音消息自动转文字
+- **🔒 安全沙箱** — 工作空间限制 + 命令黑名单 + Web 安全中间件，生产级安全防护
 - **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
-- **🖥️ Web 控制台** — 内置 Web UI，可视化管理 Agent 状态和会话
-- **🎬 Demo 模式** — 一键演示核心功能，方便现场展示和教学
+- **🖥️ Web 控制台** — 内置 Web UI，16 个 REST API，可视化管理 Agent 状态、会话、模型、技能等
+- **🎬 Demo 模式** — 一键演示核心功能
 
 ![TinyClaw Logo](src/main/resources/tinyclaw.png)
 
@@ -40,71 +41,33 @@
 
 ```
 src/main/java/io/leavesfly/tinyclaw/
-├── TinyClaw.java                # 应用入口，命令注册与分发
-├── agent/                       # Agent 核心引擎
-│   ├── AgentConstants.java      #   Agent 相关常量
-│   ├── AgentLoop.java           #   推理主循环与工具调用
-│   ├── ContextBuilder.java      #   上下文构建（系统提示、技能、记忆等）
-│   ├── LLMExecutor.java         #   LLM 调用与工具模式驱动
-│   ├── MemoryStore.java         #   长期记忆存储
-│   └── SessionSummarizer.java   #   会话摘要与上下文压缩
-├── bus/                         # 消息总线
-│   ├── MessageBus.java          #   发布/订阅消息中心（入站/出站队列）
-│   ├── InboundMessage.java      #   入站消息模型
-│   └── OutboundMessage.java     #   出站消息模型
-├── channels/                    # 消息通道适配器
-│   ├── Channel.java             #   通道接口
-│   ├── BaseChannel.java         #   通用通道基类
-│   ├── ChannelManager.java      #   通道生命周期与出站消息分发
-│   ├── WebhookServer.java       #   Webhook HTTP 服务器
-│   └── ...                      #   Telegram / Discord / Feishu / DingTalk / QQ / WhatsApp / MaixCam 等
-├── cli/                         # 命令行接口
-│   ├── CliCommand.java          #   命令基类
-│   ├── OnboardCommand.java      #   初始化引导
-│   ├── AgentCommand.java        #   Agent 交互
-│   ├── GatewayBootstrap.java    #   网关启动封装
-│   ├── GatewayCommand.java      #   网关服务
-│   ├── DemoCommand.java         #   Demo 演示流程
-│   ├── StatusCommand.java       #   状态查看
-│   ├── CronCommand.java         #   定时任务管理
-│   └── SkillsCommand.java       #   技能管理
-├── config/                      # 配置模型与加载
-│   ├── Config.java / ConfigLoader.java
-│   ├── AgentConfig.java         #   Agent 参数（模型、温度、心跳等）
-│   ├── ChannelsConfig.java      #   通道配置
-│   ├── ProvidersConfig.java     #   LLM 提供商配置
-│   ├── ModelsConfig.java        #   模型别名与默认模型
-│   ├── GatewayConfig.java       #   网关配置
-│   ├── ToolsConfig.java         #   工具配置
-│   └── SocialNetworkConfig.java #   Agent 社交网络配置
-├── cron/                        # 定时任务引擎
-├── heartbeat/                   # 心跳服务
-├── logger/                      # 结构化日志封装
-├── providers/                   # LLM 调用抽象（HTTPProvider 等）
-├── security/                    # 安全沙箱（SecurityGuard）
-├── session/                     # 会话管理与持久化
-├── skills/                      # 技能加载与安装
-├── tools/                       # Agent 工具集与子代理管理
-│   ├── Tool.java                #   工具接口
-│   ├── ToolRegistry.java        #   工具注册表
-│   ├── SubagentManager.java     #   子代理管理
-│   ├── ReadFileTool.java        #   读取文件
-│   ├── WriteFileTool.java       #   写入文件
-│   ├── AppendFileTool.java      #   追加文件
-│   ├── EditFileTool.java        #   编辑文件（diff 模式）
-│   ├── ListDirTool.java         #   列出目录
-│   ├── ExecTool.java            #   执行 Shell 命令
-│   ├── WebSearchTool.java       #   网络搜索
-│   ├── WebFetchTool.java        #   网页抓取
-│   ├── MessageTool.java         #   跨通道消息发送
-│   ├── CronTool.java            #   定时任务操作
-│   ├── SocialNetworkTool.java   #   Agent 社交网络工具
-│   ├── SkillsTool.java          #   技能查询与管理
-│   └── SpawnTool.java           #   子代理生成
-├── util/                        # 工具类
-│   └── StringUtils.java
-├── voice/                       # 语音转写（AliyunTranscriber）
-└── web/                         # Web 控制台服务器（WebConsoleServer）
+├── TinyClaw.java                    # 应用入口，命令注册与分发
+├── agent/                           # Agent 核心引擎
+│   ├── AgentLoop.java               #   生命周期管理与消息消费主循环
+│   ├── MessageRouter.java           #   消息路由（用户/系统/指令）
+│   ├── ProviderManager.java         #   LLM Provider 管理与热重载
+│   ├── LLMExecutor.java             #   LLM 调用与工具迭代循环
+│   ├── ContextBuilder.java          #   分段式上下文构建
+│   ├── SessionSummarizer.java       #   会话摘要与上下文压缩
+│   ├── context/                     #   上下文分段模块（Identity/Bootstrap/Tools/Skills/Memory）
+│   ├── evolution/                   #   自我进化引擎（PromptOptimizer/FeedbackManager/MemoryEvolver）
+│   └── collaboration/               #   多 Agent 协同编排（7 种模式 + 工作流引擎）
+├── bus/                             # 消息总线（发布/订阅，入站/出站队列）
+├── channels/                        # 消息通道适配器（7 种平台）
+├── cli/                             # 命令行接口（8 个命令）
+├── config/                          # 配置模型与加载（11 个配置类）
+├── cron/                            # 定时任务引擎
+├── heartbeat/                       # 心跳服务
+├── logger/                          # 结构化日志封装
+├── mcp/                             # MCP 协议集成（3 种传输方式）
+├── providers/                       # LLM 调用抽象（HTTPProvider + StreamEvent）
+├── security/                        # 安全沙箱（SecurityGuard）
+├── session/                         # 会话管理与持久化
+├── skills/                          # 技能系统（加载/注册/搜索/安装）
+├── tools/                           # Agent 工具集（15 个内置工具 + MCP 桥接）
+├── util/                            # 工具类
+├── voice/                           # 语音转写（AliyunTranscriber）
+└── web/                             # Web 控制台（16 个 REST API Handler）
 ```
 
 ---
@@ -171,25 +134,6 @@ java -jar target/tinyclaw-0.1.0.jar agent -m "你好，介绍一下你自己"
 java -jar target/tinyclaw-0.1.0.jar agent
 ```
 
-### 🎬 5 分钟 Demo：如何演示 TinyClaw
-
-- **Demo 0：一键演示模式（推荐首选）**
-  - 前置：完成上文“快速开始”的构建、onboard 和 API Key 配置。
-  - 在终端运行 `java -jar target/tinyclaw-0.1.0.jar demo agent-basic`，自动跑完一轮 CLI 对话流程。
-  - 对照日志输出，可以讲解从 `TinyClaw.main` → `DemoCommand` → `AgentLoop.processDirect` 的完整调用链。
-- **Demo 1：本地 CLI 助手**
-  - 前置：完成上文“快速开始”的构建、onboard 和 API Key 配置。
-  - 在终端运行 `java -jar target/tinyclaw-0.1.0.jar agent`，随便问一个问题，一边看终端输出，一边可以对照 `TinyClaw.java` → `AgentCommand` → `AgentLoop.processDirect` 的调用链来讲解。
-- **Demo 2：网关 + 单通道机器人**
-  - 在配置中启用一个通道（例如 Telegram），填好 token 和 allowFrom。
-  - 执行 `java -jar target/tinyclaw-0.1.0.jar gateway`，从 IM 客户端发消息，观察 MessageBus 进出站日志，即可演示“消息通道 → 消息总线 → Agent → 通道”的完整闭环。
-- **Demo 3：定时任务播报**
-  - 使用 `tinyclaw cron add --name "demo" --message "这是一条演示任务" --every 30` 创建一个每 30 秒执行的任务。
-  - 保持 gateway 运行，等待定时任务触发并在通道中看到播报消息，可以用来说明 `CronService` 与 Agent 的集成路径。
-- **Demo 4：Web 控制台**
-  - 在 gateway 模式下，访问 `http://localhost:18791`（默认端口），查看 Web UI 界面。
-  - 可以实时查看 Agent 状态、会话列表、工具使用情况等信息。
-
 ---
 
 ### 📖 命令参考
@@ -202,6 +146,7 @@ java -jar target/tinyclaw-0.1.0.jar agent
 | `status` | 查看系统状态和配置 | `tinyclaw status` |
 | `cron` | 管理定时任务 | `tinyclaw cron list` |
 | `skills` | 管理技能插件 | `tinyclaw skills list` |
+| `mcp` | 管理 MCP 服务器 | `tinyclaw mcp list` |
 | `demo` | 运行内置演示流程 | `tinyclaw demo agent-basic` |
 | `version` | 显示版本信息 | `tinyclaw version` |
 
@@ -241,12 +186,6 @@ tinyclaw skills show <name>                 # 查看技能详情
 tinyclaw skills remove <name>               # 移除技能
 ```
 
-#### Demo 命令选项
-
-```bash
-tinyclaw demo agent-basic                   # 一键运行 CLI 对话演示
-```
-
 ---
 
 ### 🔌 支持的 LLM 提供商
@@ -259,7 +198,7 @@ tinyclaw demo agent-basic                   # 一键运行 CLI 对话演示
 | [智谱 GLM](https://open.bigmodel.cn/) | `providers.zhipu` | GLM-4 系列，国内推荐 |
 | [Google Gemini](https://ai.google.dev/) | `providers.gemini` | Gemini 系列模型 |
 | [Groq](https://groq.com/) | `providers.groq` | 超快推理 |
-| [vLLM](https://docs.vllm.ai/) | `providers.vllm` | 本地部署模型 |
+| [Ollama](https://ollama.ai/) | `providers.ollama` | 本地部署开源模型 |
 | [阿里云 DashScope](https://dashscope.aliyun.com/) | `providers.dashscope` | Qwen 系列模型（通义千问） |
 
 所有提供商均通过统一的 `HTTPProvider` 适配 OpenAI 兼容 API 格式，切换模型只需修改配置。
@@ -280,20 +219,6 @@ tinyclaw demo agent-basic                   # 一键运行 CLI 对话演示
 
 每个通道都支持 `allowFrom` 白名单配置，确保只有授权用户可以与 Agent 交互。
 
-#### 通道配置示例（Telegram）
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "your-telegram-bot-token",
-      "allowFrom": ["your-telegram-user-id"]
-    }
-  }
-}
-```
-
 ---
 
 ### 🛠️ 内置工具
@@ -308,29 +233,67 @@ Agent 在对话中可以自主调用以下工具：
 | `edit_file` | 基于 diff 的精确文件编辑 | ✓ 工作空间限制 |
 | `list_dir` | 列出目录内容 | ✓ 工作空间限制 |
 | `exec` | 执行 Shell 命令 | ✓ 命令黑名单 + 工作目录限制 |
-| `web_search` | 网络搜索（基于 Brave Search API） | - |
+| `web_search` | 网络搜索（Brave Search API） | - |
 | `web_fetch` | 抓取网页内容 | - |
 | `message` | 向指定通道发送消息 | - |
 | `cron` | 创建/管理定时任务 | - |
 | `spawn` | 生成子代理执行独立任务 | - |
+| `collaborate` | 启动多 Agent 协同（7 种模式） | - |
 | `social_network` | 与其他 Agent 通信（ClawdChat.ai） | - |
 | `skills` | 管理和查询技能插件 | - |
+| `token_usage` | 查询 Token 用量统计 | - |
 
-#### 安全防护机制
+此外，通过 MCP 协议接入的外部工具会自动注册到工具系统中，LLM 可直接调用。
 
-TinyClaw 通过 **SecurityGuard** 提供生产级安全防护：
+---
 
-- **工作空间沙箱**：所有文件操作（读/写/编辑/列表）默认限制在 workspace 目录内，防止访问系统敏感文件
-- **命令黑名单**：`exec` 工具内置危险命令检测，阻止 `rm -rf`、`format`、`sudo` 等高风险操作
-- **可配置策略**：通过 `restrictToWorkspace` 和 `commandBlacklist` 配置项自定义安全策略
+### 🤝 多 Agent 协同
 
-配置示例：
+TinyClaw 内置了完整的多 Agent 协同编排系统，通过 `collaborate` 工具触发：
+
+| 模式 | 说明 |
+|------|------|
+| `debate` | 正反方辩论，适合利弊权衡和方案评审 |
+| `team` | 任务分解为子任务，支持并行/串行执行 |
+| `roleplay` | 多角色对话模拟、场景演练 |
+| `consensus` | 多方讨论后投票达成共识 |
+| `hierarchy` | 层级汇报式决策，逐层汇总 |
+| `workflow` | 多步骤工作流，支持 LLM 动态生成工作流定义 |
+| `dynamic` | Router Agent 动态选择下一个发言者 |
+
+工作流引擎支持 6 种节点类型：SINGLE / PARALLEL / SEQUENTIAL / CONDITIONAL / LOOP / AGGREGATE。
+
+---
+
+### 🧬 自我进化
+
+TinyClaw 内置自我进化引擎，Agent 能持续从交互中学习和改进：
+
+- **Prompt 自动优化**：3 种策略（文本梯度 / OPRO / 自我反思），自动改进系统提示
+- **记忆进化**：从对话中提取长期记忆，跨会话保留重要信息
+- **反馈收集**：支持显式评分、文字反馈和隐式信号
+
+---
+
+### 🔌 MCP 协议集成
+
+TinyClaw 实现了完整的 MCP（Model Context Protocol）客户端：
+
+| 传输方式 | 适用场景 |
+|----------|----------|
+| SSE | 远程 HTTP 服务器（Server-Sent Events） |
+| Stdio | 本地进程通信（标准输入/输出） |
+| Streamable HTTP | 远程 HTTP 服务器（流式 HTTP） |
+
+MCP 服务器的工具会自动注册到工具系统中，LLM 可直接调用。配置示例：
+
 ```json
 {
-  "agents": {
-    "defaults": {
-      "restrictToWorkspace": true,
-      "commandBlacklist": ["rm -rf", "sudo", "format"]
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      "timeout": 30
     }
   }
 }
@@ -338,23 +301,39 @@ TinyClaw 通过 **SecurityGuard** 提供生产级安全防护：
 
 ---
 
+### 🔒 安全防护
+
+TinyClaw 通过 **SecurityGuard** 提供多层安全防护：
+
+- **工作空间沙箱**：所有文件操作限制在 workspace 目录内
+- **命令黑名单**：阻止 `rm -rf`、`mkfs`、`sudo` 等危险命令
+- **通道白名单**：每个通道配置 `allowFrom`，只有授权用户可交互
+- **Web 安全中间件**：认证与 CORS 防护
+- **路径规范化**：防止路径遍历攻击
+
+---
+
+### 🖥️ Web 控制台
+
+网关模式下，访问 `http://localhost:18791` 可使用 Web 控制台：
+
+- 实时对话（支持 SSE 流式输出）
+- 会话管理与历史记录
+- 模型切换（运行时热重载）
+- Provider 管理
+- 通道状态监控
+- 技能管理
+- 定时任务管理
+- MCP 服务器管理
+- 文件浏览与上传
+- Token 用量统计
+- 用户反馈收集
+
+---
+
 ### 🧩 技能系统
 
-技能是通过 Markdown 文件定义的 Agent 能力扩展，存放在 `~/.tinyclaw/workspace/skills/` 目录下。
-
-#### 内置技能
-
-| 技能 | 说明 |
-|------|------|
-| `weather` | 天气查询 |
-| `github` | GitHub 仓库和 Issue 操作 |
-| `summarize` | 文本摘要 |
-| `tmux` | tmux 会话管理 |
-| `skill-creator` | 辅助创建新技能 |
-
-#### 自定义技能
-
-在 `~/.tinyclaw/workspace/skills/` 下创建目录，并添加 `SKILL.md` 文件：
+技能是通过 Markdown 文件定义的 Agent 能力扩展：
 
 ```markdown
 ---
@@ -369,13 +348,14 @@ description: "我的自定义技能"
 2. ...
 ```
 
-Agent 会在构建上下文时自动加载所有可用技能。
+- 支持从 workspace / global / builtin 三个目录加载
+- 支持从 GitHub 安装社区技能
+- 支持基于用户输入的**语义搜索匹配**，只注入相关技能
+- Agent 可通过 `skills` 工具自主创建、编辑和管理技能
 
 ---
 
 ### 🌐 网关模式
-
-网关模式是 TinyClaw 的核心运行方式，它会同时启动所有已配置的通道，并在后台运行 Agent 循环：
 
 ```bash
 java -jar target/tinyclaw-0.1.0.jar gateway
@@ -385,167 +365,67 @@ java -jar target/tinyclaw-0.1.0.jar gateway
 1. 加载配置并初始化 LLM 提供商
 2. 初始化安全防护（SecurityGuard）
 3. 注册所有内置工具
-4. 启动定时任务服务
-5. 启动心跳服务（如已启用）
-6. 连接所有已启用的消息通道
-7. 启动 Web 控制台（默认端口 18791）
-8. 在后台运行 Agent 消息处理循环
+4. 初始化 MCP 服务器连接
+5. 启动定时任务服务
+6. 启动心跳服务（如已启用）
+7. 连接所有已启用的消息通道
+8. 启动 Web 控制台
+9. 在后台运行 Agent 消息处理循环
 
 按 `Ctrl+C` 优雅关闭所有服务。
-
-#### Web 控制台
-
-网关启动后，访问 `http://localhost:18791` 可以查看：
-- 实时 Agent 状态和配置信息
-- 会话列表和历史记录
-- 工具使用统计
-- 技能插件状态
-- 定时任务管理
-
-Web 控制台端口可在配置文件中自定义：
-```json
-{
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18791
-  }
-}
-```
 
 ---
 
 ### 🗂️ 工作空间结构
 
-初始化后，工作空间目录结构如下（由 `tinyclaw onboard` 自动创建）：
-
 ```
-~/.tinyclaw/workspace/
-├── AGENTS.md          # Agent 行为指令（系统提示与工作准则）
-├── SOUL.md            # Agent 个性与价值观（"灵魂设定"）
-├── USER.md            # 用户画像与偏好（沟通风格、目标等）
-├── IDENTITY.md        # Agent 身份与能力描述
-├── PROFILE.md         # 运行配置与状态信息（由 onboard 创建）
-├── memory/            # 长期记忆与日常笔记
-│   ├── MEMORY.md      # 长期记忆存储（跨会话的重要信息）
-│   └── HEARTBEAT.md   # 心跳检查配置（心跳服务要检查的内容）
-├── skills/            # 技能插件目录（Markdown 定义的技能）
-├── sessions/          # 会话历史与上下文快照
-└── cron/
-    └── jobs.json      # 定时任务持久化（创建任务后生成）
+~/.tinyclaw/
+├── config.json              # 主配置文件
+├── workspace/
+│   ├── AGENTS.md            # Agent 行为指令
+│   ├── SOUL.md              # Agent 个性与价值观
+│   ├── USER.md              # 用户画像与偏好
+│   ├── IDENTITY.md          # Agent 身份描述
+│   ├── memory/              # 长期记忆
+│   │   ├── MEMORY.md
+│   │   └── HEARTBEAT.md
+│   ├── sessions/            # 会话持久化
+│   ├── skills/              # 用户技能
+│   ├── cron/                # 定时任务
+│   │   └── jobs.json
+│   ├── evolution/           # 进化数据
+│   │   └── prompts/         # Prompt 变体
+│   └── collaboration/       # 协同记录
 ```
-
-你可以通过编辑这些 Markdown 文件来自定义 Agent 的行为、个性、记忆和运行状态。
 
 ---
 
-### ⚙️ 完整配置示例
+### 🎬 Demo 演示
 
-`~/.tinyclaw/config.json`：
+```bash
+# 一键演示模式
+tinyclaw demo agent-basic
 
-```json
-{
-  "agents": {
-    "defaults": {
-      "workspace": "~/.tinyclaw/workspace",
-      "model": "glm-4.7",
-      "maxTokens": 8192,
-      "temperature": 0.7,
-      "maxToolIterations": 20,
-      "heartbeatEnabled": false,
-      "restrictToWorkspace": true,
-      "commandBlacklist": []
-    }
-  },
-  "providers": {
-    "openrouter": {
-      "apiKey": "",
-      "apiBase": "https://openrouter.ai/api/v1"
-    },
-    "openai": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "anthropic": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "zhipu": {
-      "apiKey": "your-key",
-      "apiBase": "https://open.bigmodel.cn/api/paas/v4"
-    },
-    "gemini": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "groq": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "vllm": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "dashscope": {
-      "apiKey": "",
-      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": []
-    },
-    "discord": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": []
-    },
-    "feishu": {
-      "enabled": false,
-      "appId": "",
-      "appSecret": "",
-      "allowFrom": []
-    },
-    "dingtalk": {
-      "enabled": false,
-      "clientId": "",
-      "clientSecret": "",
-      "allowFrom": []
-    }
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "maxResults": 5
-      }
-    }
-  },
-  "socialNetwork": {
-    "enabled": false,
-    "endpoint": "https://clawdchat.ai/api",
-    "agentId": "",
-    "apiKey": ""
-  }
-}
+# 本地 CLI 助手
+tinyclaw agent
+
+# 网关 + 通道机器人
+tinyclaw gateway
+
+# Web 控制台
+open http://localhost:18791
+
+# MCP 服务器管理
+tinyclaw mcp list
 ```
 
 ---
 
 ### 🧪 测试
 
-项目使用 **JUnit 5** + **Mockito** 作为测试框架：
-
 ```bash
-# 运行所有测试
-mvn test
-
-# 运行指定测试类
-mvn test -Dtest=TinyClawTest
+mvn test                        # 运行所有测试
+mvn test -Dtest=TinyClawTest    # 运行指定测试类
 ```
 
 ---
@@ -560,11 +440,8 @@ mvn test -Dtest=TinyClawTest
 | JSON 处理 | Jackson 2.17 |
 | 日志 | SLF4J + Logback |
 | 命令行 | JLine 3.25 |
-| Telegram | telegrambots 6.8 |
-| Discord | JDA 5.0 |
-| 飞书 | oapi-sdk 2.3 |
-| 钉钉 | dingtalk SDK 2.0 |
 | 定时任务 | cron-utils 9.2 |
+| 环境变量 | dotenv-java 3.0 |
 | 测试 | JUnit 5.10 + Mockito 5.10 |
 
 ---

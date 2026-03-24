@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * 协同记录
@@ -115,11 +117,11 @@ public class CollaborationRecord {
     private void calculateMetrics(SharedContext context) {
         Map<String, Object> metrics = new HashMap<>();
         List<AgentMessage> messages = context.getHistory();
-        
+
         if (!messages.isEmpty()) {
             // 消息总数
             metrics.put("totalMessages", messages.size());
-            
+
             // 每个 Agent 的发言次数
             Map<String, Long> messagesByAgent = messages.stream()
                     .collect(Collectors.groupingBy(
@@ -127,26 +129,137 @@ public class CollaborationRecord {
                             Collectors.counting()
                     ));
             metrics.put("messagesByAgent", messagesByAgent);
-            
+
             // 平均响应长度
             double avgLength = messages.stream()
                     .mapToInt(msg -> msg.getContent() != null ? msg.getContent().length() : 0)
                     .average()
                     .orElse(0.0);
             metrics.put("averageResponseLength", Math.round(avgLength * 100.0) / 100.0);
-            
+
             // 总字符数
             int totalChars = messages.stream()
                     .mapToInt(msg -> msg.getContent() != null ? msg.getContent().length() : 0)
                     .sum();
             metrics.put("totalCharacters", totalChars);
+
+            // 参与均衡度：各 Agent 发言次数的变异系数（越高越均衡）
+            if (messagesByAgent.size() > 1) {
+                double participationBalance = calculateParticipationBalance(messagesByAgent);
+                metrics.put("participationBalance", Math.round(participationBalance * 100.0) / 100.0);
+            }
         }
-        
+
         // 协同时长
         long duration = System.currentTimeMillis() - context.getStartTime();
         metrics.put("durationMs", duration);
-        
+
+        // ---- 协同质量评估指标 ----
+
+        // 观点多样性：不同 Agent 观点的差异度（基于发言内容的 Jaccard 距离近似）
+        if (messages.size() >= 2) {
+            double diversityScore = calculateDiversityScore(messages);
+            metrics.put("diversityScore", Math.round(diversityScore * 100.0) / 100.0);
+        }
+
+        // 收敛速度：从分歧到共识的轮次比例（越高表示后期越趋于一致）
+        int totalRounds = context.getCurrentRound();
+        if (totalRounds > 0 && messages.size() >= 3) {
+            int lastThirdStart = Math.max(0, messages.size() - messages.size() / 3);
+            List<AgentMessage> lastThird = messages.subList(lastThirdStart, messages.size());
+            double convergenceRatio = calculateConvergenceRatio(lastThird, messages);
+            metrics.put("convergenceRatio", Math.round(convergenceRatio * 100.0) / 100.0);
+        }
+
         this.metrics = metrics;
+    }
+
+    /**
+     * 计算观点多样性评分（0.0-1.0，越高越多样）
+     * 基于不同 Agent 发言内容的关键词重叠度的反向指标
+     */
+    private static double calculateDiversityScore(List<AgentMessage> messages) {
+        Map<String, Set<String>> agentKeywords = new HashMap<>();
+        for (AgentMessage msg : messages) {
+            String role = msg.getAgentRole() != null ? msg.getAgentRole() : msg.getAgentId();
+            agentKeywords.computeIfAbsent(role, k -> new HashSet<>());
+            if (msg.getContent() != null) {
+                // 提取关键词（按空格和标点分词，取长度 >= 2 的词）
+                String[] words = msg.getContent().split("[\\s\\p{Punct}]+");
+                for (String word : words) {
+                    if (word.length() >= 2) {
+                        agentKeywords.get(role).add(word.toLowerCase());
+                    }
+                }
+            }
+        }
+
+        if (agentKeywords.size() < 2) return 0.0;
+
+        // 计算所有 Agent 对之间的 Jaccard 距离的平均值
+        List<Set<String>> keywordSets = new ArrayList<>(agentKeywords.values());
+        double totalDistance = 0.0;
+        int pairCount = 0;
+        for (int i = 0; i < keywordSets.size(); i++) {
+            for (int j = i + 1; j < keywordSets.size(); j++) {
+                Set<String> intersection = new HashSet<>(keywordSets.get(i));
+                intersection.retainAll(keywordSets.get(j));
+                Set<String> union = new HashSet<>(keywordSets.get(i));
+                union.addAll(keywordSets.get(j));
+                double jaccard = union.isEmpty() ? 0.0 : (double) intersection.size() / union.size();
+                totalDistance += (1.0 - jaccard); // Jaccard 距离 = 1 - Jaccard 相似度
+                pairCount++;
+            }
+        }
+        return pairCount > 0 ? totalDistance / pairCount : 0.0;
+    }
+
+    /**
+     * 计算收敛比率（0.0-1.0，越高表示后期越趋于一致）
+     * 比较后 1/3 消息与全部消息的关键词重叠度
+     */
+    private static double calculateConvergenceRatio(List<AgentMessage> lastThird,
+                                                     List<AgentMessage> allMessages) {
+        Set<String> lastThirdKeywords = extractKeywords(lastThird);
+        Set<String> allKeywords = extractKeywords(allMessages);
+        if (allKeywords.isEmpty()) return 0.0;
+
+        Set<String> intersection = new HashSet<>(lastThirdKeywords);
+        intersection.retainAll(allKeywords);
+        return (double) intersection.size() / allKeywords.size();
+    }
+
+    private static Set<String> extractKeywords(List<AgentMessage> messages) {
+        Set<String> keywords = new HashSet<>();
+        for (AgentMessage msg : messages) {
+            if (msg.getContent() != null) {
+                String[] words = msg.getContent().split("[\\s\\p{Punct}]+");
+                for (String word : words) {
+                    if (word.length() >= 2) {
+                        keywords.add(word.toLowerCase());
+                    }
+                }
+            }
+        }
+        return keywords;
+    }
+
+    /**
+     * 计算参与均衡度（0.0-1.0，越高越均衡）
+     * 基于各 Agent 发言次数的变异系数的反向指标
+     */
+    private static double calculateParticipationBalance(Map<String, Long> messagesByAgent) {
+        double[] counts = messagesByAgent.values().stream().mapToDouble(Long::doubleValue).toArray();
+        double mean = 0;
+        for (double c : counts) mean += c;
+        mean /= counts.length;
+        if (mean == 0) return 1.0;
+
+        double variance = 0;
+        for (double c : counts) variance += (c - mean) * (c - mean);
+        variance /= counts.length;
+        double cv = Math.sqrt(variance) / mean; // 变异系数
+        return Math.max(0.0, 1.0 - cv); // 反转：cv 越小越均衡
     }
 
     /**

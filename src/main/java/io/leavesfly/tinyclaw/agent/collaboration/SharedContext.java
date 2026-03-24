@@ -4,11 +4,12 @@ import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -59,19 +60,60 @@ public class SharedContext {
 
     /** 共识模式：各轮投票结果（轮次 → 选项 → 投票者列表） */
     private final Map<Integer, Map<String, List<String>>> votesByRound;
+
+    // -------------------------------------------------------------------------
+    // Artifact 工件存储（结构化中间产物共享）
+    // -------------------------------------------------------------------------
+
+    /** 工件存储（artifactId → 最新版本的 Artifact） */
+    private final Map<String, Artifact> artifacts;
+
+    // -------------------------------------------------------------------------
+    // Token 预算追踪
+    // -------------------------------------------------------------------------
+
+    /** 累计消耗的 token 数量（输入 + 输出） */
+    private final AtomicLong totalTokensUsed;
+
+    /** Token 预算上限（0 表示不限制） */
+    private long tokenBudget;
     
     public SharedContext() {
         this.history = new CopyOnWriteArrayList<>();
         this.metadata = new ConcurrentHashMap<>();
         this.votesByRound = new ConcurrentHashMap<>();
+        this.artifacts = new ConcurrentHashMap<>();
+        this.totalTokensUsed = new AtomicLong(0);
+        this.tokenBudget = 0;
         this.currentRound = 0;
         this.startTime = System.currentTimeMillis();
     }
     
+    /** 主 Agent 传入的对话上下文摘要（帮助协同 Agent 理解完整背景） */
+    private String contextSummary;
+
     public SharedContext(String topic, String userInput) {
         this();
         this.topic = topic;
         this.userInput = userInput;
+    }
+
+    /**
+     * 设置主 Agent 的对话上下文摘要
+     * <p>协同 Agent 可通过此摘要了解用户与主 Agent 之前的对话背景，
+     * 避免因上下文缺失而产生偏离用户意图的回答。
+     *
+     * @param summary 主 Agent 对话摘要
+     */
+    public void setContextSummary(String summary) {
+        this.contextSummary = summary;
+    }
+
+    /**
+     * 获取主 Agent 的对话上下文摘要
+     */
+    public String getContextSummary() {
+        return contextSummary;
     }
     
     /**
@@ -118,6 +160,28 @@ public class SharedContext {
                 .filter(m -> roleName.equals(m.getAgentRole()))
                 .collect(Collectors.toList());
     }
+
+    /**
+     * 获取与指定角色相关的消息（广播消息 + 定向给该角色的消息）
+     * <p>用于定向通信场景，Agent 只看到与自己相关的消息，减少无关上下文的 token 消耗。
+     *
+     * @param roleName 角色名称
+     * @return 与该角色相关的消息列表
+     */
+    public List<AgentMessage> getMessagesRelevantTo(String roleName) {
+        return history.stream()
+                .filter(m -> m.isRelevantTo(roleName))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 获取指定类型的所有消息
+     */
+    public List<AgentMessage> getMessagesByType(AgentMessage.MessageType messageType) {
+        return history.stream()
+                .filter(m -> messageType == m.getMessageType())
+                .collect(Collectors.toList());
+    }
     
     /**
      * 获取最近 N 条发言
@@ -134,14 +198,45 @@ public class SharedContext {
      * 构建对话历史的文本表示（供 Agent 参考）
      */
     public String buildHistoryText() {
-        if (history.isEmpty()) {
-            return "";
-        }
         StringBuilder sb = new StringBuilder();
+
+        // 如果有主 Agent 上下文摘要，先输出背景信息
+        if (contextSummary != null && !contextSummary.isEmpty()) {
+            sb.append("=== 对话背景 ===\n");
+            sb.append(contextSummary).append("\n\n");
+        }
+
+        if (history.isEmpty()) {
+            return sb.toString();
+        }
         sb.append("=== 协同对话历史 ===\n");
         for (AgentMessage msg : history) {
             sb.append("[").append(msg.getAgentRole()).append("]: ");
             sb.append(msg.getContent()).append("\n\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 构建与指定角色相关的对话历史文本（定向通信优化版）
+     * <p>只包含广播消息和定向给该角色的消息，减少无关上下文。
+     *
+     * @param roleName 角色名称
+     * @return 过滤后的对话历史文本
+     */
+    public String buildHistoryTextFor(String roleName) {
+        List<AgentMessage> relevant = getMessagesRelevantTo(roleName);
+        if (relevant.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 协同对话历史 ===\n");
+        for (AgentMessage msg : relevant) {
+            sb.append("[").append(msg.getAgentRole()).append("]");
+            if (msg.isDirected()) {
+                sb.append(" → [").append(msg.getTargetRole()).append("]");
+            }
+            sb.append(": ").append(msg.getContent()).append("\n\n");
         }
         return sb.toString();
     }
@@ -217,6 +312,127 @@ public class SharedContext {
      */
     public Map<String, List<String>> getLatestVotes() {
         return votesByRound.get(currentRound);
+    }
+
+    // -------------------------------------------------------------------------
+    // Artifact 工件操作
+    // -------------------------------------------------------------------------
+
+    /**
+     * 发布工件到共享上下文
+     * <p>如果已存在同 ID 的工件，将被新版本覆盖。
+     *
+     * @param artifact 要发布的工件
+     */
+    public void publishArtifact(Artifact artifact) {
+        if (artifact == null || artifact.getArtifactId() == null) {
+            return;
+        }
+        artifacts.put(artifact.getArtifactId(), artifact);
+    }
+
+    /**
+     * 根据 ID 获取工件
+     */
+    public Artifact getArtifact(String artifactId) {
+        return artifacts.get(artifactId);
+    }
+
+    /**
+     * 根据类型获取所有工件
+     */
+    public List<Artifact> getArtifactsByType(Artifact.ArtifactType type) {
+        return artifacts.values().stream()
+                .filter(a -> type == a.getType())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 根据产出者获取所有工件
+     */
+    public List<Artifact> getArtifactsByProducer(String producer) {
+        return artifacts.values().stream()
+                .filter(a -> producer.equals(a.getProducer()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 获取所有工件
+     */
+    public Map<String, Artifact> getArtifacts() {
+        return artifacts;
+    }
+
+    /**
+     * 构建所有工件的摘要文本（用于注入 Agent 上下文）
+     */
+    public String buildArtifactsSummary() {
+        if (artifacts.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 已产出工件 ===\n");
+        for (Artifact artifact : artifacts.values()) {
+            sb.append(artifact.toSummary()).append("\n");
+        }
+        return sb.toString();
+    }
+
+    // -------------------------------------------------------------------------
+    // Token 预算追踪
+    // -------------------------------------------------------------------------
+
+    /**
+     * 记录 token 消耗
+     *
+     * @param tokens 本次消耗的 token 数量
+     */
+    public void addTokensUsed(long tokens) {
+        totalTokensUsed.addAndGet(tokens);
+    }
+
+    /**
+     * 获取累计消耗的 token 数量
+     */
+    public long getTotalTokensUsed() {
+        return totalTokensUsed.get();
+    }
+
+    /**
+     * 设置 token 预算上限
+     *
+     * @param budget token 预算，0 表示不限制
+     */
+    public void setTokenBudget(long budget) {
+        this.tokenBudget = budget;
+    }
+
+    /**
+     * 获取 token 预算上限
+     */
+    public long getTokenBudget() {
+        return tokenBudget;
+    }
+
+    /**
+     * 检查是否已超出 token 预算
+     *
+     * @return 如果设置了预算且已超出则返回 true
+     */
+    public boolean isTokenBudgetExceeded() {
+        return tokenBudget > 0 && totalTokensUsed.get() >= tokenBudget;
+    }
+
+    /**
+     * 获取剩余 token 预算
+     *
+     * @return 剩余预算，未设置预算时返回 Long.MAX_VALUE
+     */
+    public long getRemainingTokenBudget() {
+        if (tokenBudget <= 0) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(0, tokenBudget - totalTokensUsed.get());
     }
 
     // -------------------------------------------------------------------------

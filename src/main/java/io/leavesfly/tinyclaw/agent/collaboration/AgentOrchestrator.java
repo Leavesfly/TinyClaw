@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.agent.collaboration;
 
 import io.leavesfly.tinyclaw.agent.collaboration.strategy.*;
+import io.leavesfly.tinyclaw.agent.collaboration.strategy.DynamicRoutingStrategy;
 import io.leavesfly.tinyclaw.agent.evolution.EvaluationFeedback;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -70,6 +71,7 @@ public class AgentOrchestrator {
         strategies.put(CollaborationConfig.Mode.TEAM, new TeamWorkStrategy(executorPool));
         strategies.put(CollaborationConfig.Mode.HIERARCHY, new HierarchyStrategy(executionContext, executorPool));
         strategies.put(CollaborationConfig.Mode.WORKFLOW, new WorkflowStrategy(executionContext, executorPool));
+        strategies.put(CollaborationConfig.Mode.DYNAMIC, new DynamicRoutingStrategy(executionContext));
     }
     
     /**
@@ -110,6 +112,28 @@ public class AgentOrchestrator {
         // 1. 创建共享上下文，传递流式回调
         SharedContext context = new SharedContext(config.getGoal(), userInput);
         context.setStreamCallback(callback);
+
+        // 注入主 Agent 的对话上下文摘要
+        String contextSummary = config.getMeta("contextSummary");
+        if (contextSummary != null && !contextSummary.isEmpty()) {
+            context.setContextSummary(contextSummary);
+        }
+
+        // 注入审批回调到 SharedContext（供 WorkflowEngine 使用）
+        if (config.getApprovalCallback() != null) {
+            context.setMeta("approvalCallback", config.getApprovalCallback());
+        }
+
+        // 设置 Token 预算
+        if (config.getMaxTokenBudget() > 0) {
+            context.setTokenBudget(config.getMaxTokenBudget());
+        }
+
+        // 传递自反馈配置到 Workflow 变量
+        if (config.isSelfReflectionEnabled() && config.getWorkflow() != null) {
+            config.getWorkflow().setVariable("selfReflectionEnabled", true);
+            config.getWorkflow().setVariable("maxReflectionRetries", config.getMaxReflectionRetries());
+        }
         
         // 2. 根据角色配置创建Agent执行器
         List<AgentExecutor> agents = createAgents(config);
@@ -151,8 +175,8 @@ public class AgentOrchestrator {
             // 6. 构建并保存协同记录
             saveCollaborationRecord(context, config, result);
 
-            // 7. 将协同结论回流到调用方的主会话
-            flowbackToCallerSession(config, result);
+            // 7. 将协同结论回流到调用方的主会话（含 Artifact 摘要和质量指标）
+            flowbackToCallerSession(context, config, result);
 
             // 8. 向 evolution 系统记录协同反馈
             recordCollaborationFeedback(context, config, true);
@@ -167,6 +191,21 @@ public class AgentOrchestrator {
             // 记录失败反馈
             recordCollaborationFeedback(context, config, false);
 
+            // 优雅降级：协同失败时尝试单 Agent 模式
+            if (config.isFallbackEnabled()) {
+                logger.info("协同失败，启用优雅降级为单 Agent 模式", Map.of("error", e.getMessage()));
+                try {
+                    AgentExecutor fallbackAgent = executionContext.createAgentExecutor(
+                            AgentRole.of("Fallback", "你是一个通用助手。请直接回答用户的问题。"));
+                    String fallbackResult = fallbackAgent.answer(userInput);
+                    if (callback != null) {
+                        callback.onEvent(StreamEvent.collaborateEnd("FALLBACK", fallbackResult));
+                    }
+                    return "[降级为单Agent模式] " + fallbackResult;
+                } catch (Exception fallbackError) {
+                    logger.error("降级执行也失败", Map.of("error", fallbackError.getMessage()));
+                }
+            }
             return "协同执行失败: " + e.getMessage();
         }
     }
@@ -213,6 +252,19 @@ public class AgentOrchestrator {
      * @param result 协同结论
      */
     private void flowbackToCallerSession(CollaborationConfig config, String result) {
+        flowbackToCallerSession(null, config, result);
+    }
+
+    /**
+     * 将协同结论回流到调用方的主会话历史（增强版）
+     * <p>除了协同结论外，还回流 Artifact 摘要和质量指标，
+     * 使主 Agent 后续能引用协同过程的细节。
+     *
+     * @param context 共享上下文（可为 null，降级时无上下文）
+     * @param config  协同配置
+     * @param result  协同结论
+     */
+    private void flowbackToCallerSession(SharedContext context, CollaborationConfig config, String result) {
         if (callerSessionManager == null) {
             return;
         }
@@ -220,19 +272,35 @@ public class AgentOrchestrator {
             String sessionId = executionContext.getSessionId();
             String sessionKey = "collab:" + sessionId;
 
-            // 构建回流消息：包含协同模式、目标和结论
-            String flowbackContent = String.format(
-                    "【%s协同完成】目标: %s\n\n%s",
+            StringBuilder flowbackContent = new StringBuilder();
+            flowbackContent.append(String.format("【%s协同完成】目标: %s\n\n",
                     config.getMode().name(),
-                    config.getGoal() != null ? config.getGoal() : "N/A",
-                    result
-            );
+                    config.getGoal() != null ? config.getGoal() : "N/A"));
 
-            callerSessionManager.addMessage(sessionKey, "assistant", flowbackContent);
+            // 回流协同结论
+            flowbackContent.append(result);
+
+            // 回流 Artifact 摘要（如果有）
+            if (context != null && !context.getArtifacts().isEmpty()) {
+                flowbackContent.append("\n\n").append(context.buildArtifactsSummary());
+            }
+
+            // 回流质量指标摘要（如果有）
+            if (context != null) {
+                long tokensUsed = context.getTotalTokensUsed();
+                int rounds = context.getCurrentRound();
+                int messageCount = context.getHistory().size();
+                flowbackContent.append(String.format(
+                        "\n\n【协同统计】轮次: %d, 消息数: %d, Token消耗: %d",
+                        rounds, messageCount, tokensUsed));
+            }
+
+            callerSessionManager.addMessage(sessionKey, "assistant", flowbackContent.toString());
 
             logger.debug("协同结论已回流到会话", Map.of(
                     "sessionKey", sessionKey,
-                    "resultLength", result.length()
+                    "resultLength", result.length(),
+                    "hasArtifacts", context != null && !context.getArtifacts().isEmpty()
             ));
         } catch (Exception e) {
             logger.warn("协同结论回流失败", Map.of("error", e.getMessage()));

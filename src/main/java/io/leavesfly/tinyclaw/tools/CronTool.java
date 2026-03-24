@@ -41,7 +41,7 @@ import java.util.Map;
  * - 创建周期性通知
  * - 自动化日常工作任务
  */
-public class CronTool implements Tool {
+public class CronTool implements Tool, ToolContextAware {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("tools.cron");
     
@@ -135,20 +135,22 @@ public class CronTool implements Tool {
         
         
         params.put("properties", properties);
-        params.put("required", List.of("action"));
+        params.put("required", new String[]{"action"});
         
         return params;
     }
     
     /**
-     * 设置任务创建的上下文。
-     * 
-     * @param channel 通道名称
-     * @param chatId 聊天 ID
+     * 设置上下文
      */
     public void setContext(String channel, String chatId) {
-        this.channel = channel;
-        this.chatId = chatId;
+        this.channel = channel != null ? channel : "";
+        this.chatId = chatId != null ? chatId : "";
+    }
+    
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        setContext(channel, chatId);
     }
     
     @Override

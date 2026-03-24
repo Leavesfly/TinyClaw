@@ -15,7 +15,7 @@ import java.util.*;
  * 多Agent协同工具
  * 允许主Agent启动多Agent协同完成复杂任务
  */
-public class CollaborateTool implements Tool {
+public class CollaborateTool implements Tool, StreamAwareTool {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("tools");
     
@@ -59,6 +59,7 @@ public class CollaborateTool implements Tool {
      * 
      * @param callback 流式回调，可为 null
      */
+    @Override
     public void setStreamCallback(LLMProvider.EnhancedStreamCallback callback) {
         this.streamCallback = callback;
     }
@@ -70,16 +71,16 @@ public class CollaborateTool implements Tool {
     
     @Override
     public String description() {
-        return "启动多Agent协同完成复杂任务。支持协同模式：" +
-                "debate(辩论-正反方观点对决)、" +
-                "team(团队协作-任务分解并行执行)、" +
-                "roleplay(角色扮演-多角色对话模拟)、" +
-                "consensus(共识决策-讨论后投票)、" +
-                "hierarchy(分层决策-层级汇报式决策)、" +
-                "workflow(通用工作流-LLM动态生成执行计划)。" +
-                "workflow模式支持节点类型：" +
-                "SINGLE(单Agent执行)、PARALLEL(多Agent并行)、SEQUENTIAL(多Agent顺序)、" +
-                "CONDITIONAL(条件分支-根据条件选择路径)、LOOP(循环执行-直到条件满足)、AGGREGATE(聚合多节点结果)";
+        return "启动多Agent协同完成复杂任务。根据任务特征选择最合适的协同模式：\n" +
+                "- debate: 需要对比分析、利弊权衡、正反方观点对决时使用\n" +
+                "- team: 任务可分解为多个独立子任务并行/串行执行时使用\n" +
+                "- roleplay: 需要多角色对话模拟、用户访谈、场景演练时使用\n" +
+                "- consensus: 需要多方讨论后投票达成共识决策时使用\n" +
+                "- hierarchy: 需要层级汇报式决策、逐层汇总分析时使用\n" +
+                "- workflow: 需要多步骤流程、复杂依赖关系的执行计划时使用（支持LLM动态生成）\n" +
+                "- dynamic: 开放式协作，由Router Agent根据上下文动态选择下一个发言者\n" +
+                "可选增强配置：token_budget(Token预算上限)、fallback(协同失败降级为单Agent)、" +
+                "self_reflection(Critic Agent评估结果质量并可选改进)";
     }
     
     @Override
@@ -92,8 +93,8 @@ public class CollaborateTool implements Tool {
         // mode参数
         Map<String, Object> modeParam = new LinkedHashMap<>();
         modeParam.put("type", "string");
-        modeParam.put("description", "协同模式: debate/team/roleplay/consensus/hierarchy/workflow");
-        modeParam.put("enum", Arrays.asList("debate", "team", "roleplay", "consensus", "hierarchy", "workflow"));
+        modeParam.put("description", "协同模式: debate/team/roleplay/consensus/hierarchy/workflow/dynamic");
+        modeParam.put("enum", Arrays.asList("debate", "team", "roleplay", "consensus", "hierarchy", "workflow", "dynamic"));
         properties.put("mode", modeParam);
         
         // topic参数
@@ -191,6 +192,33 @@ public class CollaborateTool implements Tool {
         timeoutParam.put("default", 0);
         properties.put("timeout_ms", timeoutParam);
 
+        // token_budget参数（Token预算上限）
+        Map<String, Object> tokenBudgetParam = new LinkedHashMap<>();
+        tokenBudgetParam.put("type", "integer");
+        tokenBudgetParam.put("description", "Token预算上限，超出后协同自动终止，0表示不限制（默认0）");
+        tokenBudgetParam.put("default", 0);
+        properties.put("token_budget", tokenBudgetParam);
+
+        // fallback参数（优雅降级）
+        Map<String, Object> fallbackParam = new LinkedHashMap<>();
+        fallbackParam.put("type", "boolean");
+        fallbackParam.put("description", "是否启用优雅降级：协同失败时自动降级为单Agent模式（默认false）");
+        fallbackParam.put("default", false);
+        properties.put("fallback", fallbackParam);
+
+        // self_reflection参数（自反馈循环）
+        Map<String, Object> selfReflectionParam = new LinkedHashMap<>();
+        selfReflectionParam.put("type", "boolean");
+        selfReflectionParam.put("description", "是否启用自反馈循环：由Critic Agent评估结果质量，不合格则改进重试（默认false，仅workflow模式有效）");
+        selfReflectionParam.put("default", false);
+        properties.put("self_reflection", selfReflectionParam);
+
+        // context_summary参数（主Agent上下文摘要）
+        Map<String, Object> contextSummaryParam = new LinkedHashMap<>();
+        contextSummaryParam.put("type", "string");
+        contextSummaryParam.put("description", "主Agent当前对话的上下文摘要，帮助协同Agent理解完整背景（可选）");
+        properties.put("context_summary", contextSummaryParam);
+
         params.put("properties", properties);
         params.put("required", Arrays.asList("mode", "topic"));
         
@@ -233,6 +261,26 @@ public class CollaborateTool implements Tool {
             config.setMaxRounds(maxRounds);
             if (timeoutMs > 0) {
                 config.setTimeoutMs(timeoutMs);
+            }
+
+            // 解析新增配置项
+            Long tokenBudget = args.get("token_budget") != null ?
+                    ((Number) args.get("token_budget")).longValue() : 0L;
+            if (tokenBudget > 0) {
+                config.setMaxTokenBudget(tokenBudget);
+            }
+
+            Boolean fallback = args.get("fallback") != null ?
+                    (Boolean) args.get("fallback") : false;
+            if (Boolean.TRUE.equals(fallback)) {
+                config.setFallbackEnabled(true);
+            }
+
+            Boolean selfReflection = args.get("self_reflection") != null ?
+                    (Boolean) args.get("self_reflection") : false;
+            if (Boolean.TRUE.equals(selfReflection)) {
+                config.setSelfReflectionEnabled(true);
+                config.setMaxReflectionRetries(2);
             }
 
             // 解析角色（支持 allowed_tools 工具白名单）
@@ -279,6 +327,12 @@ public class CollaborateTool implements Tool {
                 config.setWorkflow(workflow);
             }
             
+            // 解析主 Agent 上下文摘要
+            String contextSummary = (String) args.get("context_summary");
+            if (contextSummary != null && !contextSummary.isEmpty()) {
+                config.withMeta("contextSummary", contextSummary);
+            }
+
             // 执行协同（如果有流式回调，使用流式版本）
             String result;
             if (streamCallback != null) {
@@ -310,6 +364,7 @@ public class CollaborateTool implements Tool {
             case "consensus" -> CollaborationConfig.Mode.CONSENSUS;
             case "hierarchy" -> CollaborationConfig.Mode.HIERARCHY;
             case "workflow" -> CollaborationConfig.Mode.WORKFLOW;
+            case "dynamic" -> CollaborationConfig.Mode.DYNAMIC;
             default -> throw new IllegalArgumentException("Unknown mode: " + modeStr);
         };
     }

@@ -15,7 +15,7 @@ import java.util.Map;
  * 异步模式（async=true）：子代理在后台运行，立即返回确认信息，
  * 完成后通过 MessageBus 通知主 Agent。
  */
-public class SpawnTool implements Tool {
+public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     
     private final SubagentManager manager;
     private String originChannel = "cli";
@@ -75,11 +75,17 @@ public class SpawnTool implements Tool {
         this.originChatId = chatId != null ? chatId : "direct";
     }
     
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        setContext(channel, chatId);
+    }
+    
     /**
      * 设置流式回调，用于输出子代理的执行过程。
      * 
      * @param callback 流式回调，可为 null
      */
+    @Override
     public void setStreamCallback(LLMProvider.EnhancedStreamCallback callback) {
         this.streamCallback = callback;
     }

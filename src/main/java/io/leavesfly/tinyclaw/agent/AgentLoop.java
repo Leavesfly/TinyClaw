@@ -4,15 +4,13 @@ import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.agent.evolution.*;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
-import io.leavesfly.tinyclaw.bus.OutboundMessage;
-import io.leavesfly.tinyclaw.channels.Channel;
+
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
-import io.leavesfly.tinyclaw.config.ModelsConfig;
-import io.leavesfly.tinyclaw.config.ProvidersConfig;
+
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
-import io.leavesfly.tinyclaw.providers.HTTPProvider;
+
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -35,7 +33,7 @@ import java.util.Set;
  * TinyClaw 核心执行引擎，协调消息路由、上下文构建、会话管理与 LLM 交互。
  *
  * <p>将 LLM 调用委托给 {@link LLMExecutor}，会话摘要委托给 {@link SessionSummarizer}，
- * 自身聚焦于消息分发与生命周期管理。</p>
+ * 消息路由委托给 {@link MessageRouter}，自身聚焦于生命周期管理与外部接口。</p>
  */
 public class AgentLoop {
 
@@ -52,9 +50,10 @@ public class AgentLoop {
     private final ContextBuilder contextBuilder;
     private final ToolRegistry tools;
     private final Config config;
+    private final ProviderManager providerManager;
+    private final MessageRouter messageRouter;
 
     /* ---------- 可热更新组件（volatile 保证线程可见性） ---------- */
-    private volatile LLMProvider provider;
     private volatile MCPManager mcpManager;
 
     /**
@@ -67,9 +66,6 @@ public class AgentLoop {
     private volatile ChannelManager channelManager;
 
     private volatile boolean running = false;
-    private volatile boolean providerConfigured = false;
-
-    private final Object providerLock = new Object();
 
     // ==================== 构造与初始化 ====================
 
@@ -85,8 +81,11 @@ public class AgentLoop {
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
 
+        this.providerManager = new ProviderManager(config, contextBuilder, tools, sessions, workspace);
+        this.messageRouter = new MessageRouter(providerManager, bus, sessions, contextBuilder, config);
+
         if (provider != null) {
-            applyProvider(provider);
+            providerManager.setProvider(provider);
             logger.info("Agent initialized with provider", Map.of(
                     "model", config.getAgent().getModel(),
                     "workspace", workspace,
@@ -103,14 +102,7 @@ public class AgentLoop {
 
     /** 动态设置或替换 LLM Provider，线程安全。 */
     public void setProvider(LLMProvider provider) {
-        if (provider == null) {
-            return;
-        }
-        synchronized (providerLock) {
-            applyProvider(provider);
-        }
-        logger.info("Provider configured dynamically", Map.of(
-                "model", config.getAgent().getModel()));
+        providerManager.setProvider(provider);
     }
 
     /**
@@ -123,50 +115,15 @@ public class AgentLoop {
      * @return true 表示重载成功，false 表示 provider 未配置或无效
      */
     public boolean reloadModel() {
-        String modelName = config.getAgent().getModel();
-        String providerName = resolveProviderName(modelName);
-
-        if (providerName == null || providerName.isEmpty()) {
-            logger.warn("reloadModel skipped: provider name could not be resolved",
-                    Map.of("model", modelName));
-            return false;
-        }
-
-        ProvidersConfig.ProviderConfig providerConfig = config.getProviders().getByName(providerName);
-        if (providerConfig == null || !providerConfig.isValid()) {
-            logger.warn("reloadModel skipped: provider not configured or invalid",
-                    Map.of("provider", providerName, "model", modelName));
-            return false;
-        }
-
-        String apiBase = providerConfig.getApiBaseOrDefault(ProvidersConfig.getDefaultApiBase(providerName));
-        setProvider(new HTTPProvider(providerConfig.getApiKey(), apiBase));
-
-        logger.info("Model reloaded successfully", Map.of("provider", providerName, "model", modelName));
-        return true;
-    }
-
-    /**
-     * 从 ModelsConfig 中反查 model 对应的 provider 名称。
-     * 若 model 未在 ModelsConfig 中定义，则 fallback 到 AgentConfig.provider。
-     */
-    private String resolveProviderName(String modelName) {
-        ModelsConfig.ModelDefinition modelDef = config.getModels().getDefinitions().get(modelName);
-        if (modelDef != null) {
-            return modelDef.getProvider();
-        }
-        String fallback = config.getAgent().getProvider();
-        logger.warn("reloadModel: model not found in ModelsConfig, falling back to agent config provider",
-                Map.of("model", modelName, "fallback_provider", fallback != null ? fallback : ""));
-        return fallback;
+        return providerManager.reloadModel();
     }
 
     public boolean isProviderConfigured() {
-        return providerConfigured;
+        return providerManager.isConfigured();
     }
 
     public LLMProvider getProvider() {
-        return provider;
+        return providerManager.getProvider();
     }
 
     /**
@@ -175,111 +132,7 @@ public class AgentLoop {
      */
     public void setChannelManager(ChannelManager channelManager) {
         this.channelManager = channelManager;
-    }
-
-    /**
-     * 从 ModelsConfig 中解析当前模型的上下文窗口大小。
-     *
-     * 优先使用 ModelsConfig 中配置的 maxContextSize，
-     * 若模型未在配置中定义则 fallback 到 DEFAULT_CONTEXT_WINDOW。
-     *
-     * @param model 模型名称
-     * @return 上下文窗口 token 数
-     */
-    private int resolveContextWindow(String model) {
-        ModelsConfig.ModelDefinition definition = config.getModels().getDefinitions().get(model);
-        if (definition != null && definition.getMaxContextSize() != null) {
-            return definition.getMaxContextSize();
-        }
-        logger.warn("Model not found in ModelsConfig, using default context window",
-                Map.of("model", model, "default", AgentConstants.DEFAULT_CONTEXT_WINDOW));
-        return AgentConstants.DEFAULT_CONTEXT_WINDOW;
-    }
-
-    /**
-     * 将 provider 及其派生组件一次性赋值，消除构造器与 setProvider 之间的重复逻辑。
-     * 调用方需自行保证线程安全（构造器天然安全，setProvider 通过 providerLock 保护）。
-     */
-    private void applyProvider(LLMProvider newProvider) {
-        this.provider = newProvider;
-
-        String model = config.getAgent().getModel();
-        int maxIterations = config.getAgent().getMaxToolIterations();
-        int contextWindow = resolveContextWindow(model);
-        String providerName = resolveProviderName(model);
-
-        // 同步上下文窗口到 ContextBuilder，用于计算记忆 token 预算
-        contextBuilder.setContextWindow(contextWindow);
-
-        MemoryStore memoryStore = contextBuilder.getMemoryStore();
-        MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
-
-        TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
-        LLMExecutor llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
-        llmExecutor.setTokenUsageStore(tokenUsageStore);
-
-        SessionSummarizer summarizer = new SessionSummarizer(
-                sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);
-
-        this.components = buildOptionalComponents(
-                newProvider, model, maxIterations, llmExecutor, summarizer, memoryEvolver, tokenUsageStore);
-
-        this.providerConfigured = true;
-    }
-
-    /**
-     * 构建完整的 {@link ProviderComponents}，包含核心组件与可选的进化/协同组件。
-     *
-     * <p>将各可选功能的初始化逻辑收敛在此处，使 {@link #applyProvider} 保持高层编排视角，
-     * 不感知各组件的构造细节。</p>
-     */
-    private ProviderComponents buildOptionalComponents(
-            LLMProvider newProvider, String model, int maxIterations,
-            LLMExecutor llmExecutor, SessionSummarizer summarizer,
-            MemoryEvolver memoryEvolver, TokenUsageStore tokenUsageStore) {
-
-        FeedbackManager feedbackManager = null;
-        PromptOptimizer promptOptimizer = null;
-        AgentOrchestrator orchestrator = null;
-
-        // 进化组件（反馈收集 + Prompt 优化）
-        EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
-        if (evolutionConfig != null && evolutionConfig.isAnyEvolutionEnabled()) {
-            if (evolutionConfig.isFeedbackEnabled()) {
-                feedbackManager = new FeedbackManager(workspace, evolutionConfig);
-                llmExecutor.setFeedbackManager(feedbackManager);
-                logger.info("Feedback collection enabled");
-            }
-            if (evolutionConfig.isPromptOptimizationEnabled() && feedbackManager != null) {
-                promptOptimizer = new PromptOptimizer(
-                        newProvider, model, workspace, feedbackManager, evolutionConfig);
-                contextBuilder.setPromptOptimizer(promptOptimizer);
-                logger.info("Prompt optimization enabled");
-            }
-        } else {
-            logger.debug("Evolution features disabled");
-        }
-
-        // 协同组件（多 Agent 编排）
-        if (config.getAgent().isCollaborationEnabled()) {
-            orchestrator = new AgentOrchestrator(newProvider, tools, workspace, model, maxIterations);
-
-            // 注入会话管理器，使协同结论可回流到主会话历史
-            orchestrator.setCallerSessionManager(sessions);
-
-            // 注入反馈管理器（如果已启用），使协同结果可驱动 Agent 自我进化
-            if (feedbackManager != null) {
-                orchestrator.setFeedbackManager(feedbackManager);
-            }
-
-            logger.info("Collaboration features enabled",
-                    Map.of("supportedModes", "debate,team,roleplay,consensus,hierarchy"));
-        } else {
-            logger.debug("Collaboration features disabled");
-        }
-
-        return new ProviderComponents(llmExecutor, summarizer, memoryEvolver, tokenUsageStore,
-                feedbackManager, promptOptimizer, orchestrator);
+        this.messageRouter.setChannelManager(channelManager);
     }
 
     // ==================== 生命周期 ====================
@@ -295,7 +148,7 @@ public class AgentLoop {
                 if (message == null) {
                     continue; // MessageBus 已关闭，poll 返回 null
                 }
-                processMessage(message);
+                messageRouter.route(message);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -344,26 +197,31 @@ public class AgentLoop {
 
     /** 获取记忆进化引擎，供外部组件（如心跳服务）触发记忆进化 */
     public MemoryEvolver getMemoryEvolver() {
-        return components != null ? components.memoryEvolver : null;
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.memoryEvolver : null;
     }
 
     /** 获取 Token 消耗存储，供外部组件（如 TokenUsageTool）使用 */
     public TokenUsageStore getTokenUsageStore() {
-        return components != null ? components.tokenUsageStore : null;
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.tokenUsageStore : null;
     }
 
     /** 获取协同编排器，供外部组件（如 CollaborateTool）使用 */
     public AgentOrchestrator getOrchestrator() {
-        return components != null ? components.orchestrator : null;
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.orchestrator : null;
     }
 
     public FeedbackManager getFeedbackManager() {
-        return components != null ? components.feedbackManager : null;
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.feedbackManager : null;
     }
 
     /** 获取 Prompt 优化器，供外部组件触发优化 */
     public PromptOptimizer getPromptOptimizer() {
-        return components != null ? components.promptOptimizer : null;
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.promptOptimizer : null;
     }
     
     /**
@@ -373,13 +231,14 @@ public class AgentLoop {
      * 各步骤独立容错，单步失败不影响后续步骤执行。</p>
      */
     public void runEvolutionCycle() {
-        if (components == null) {
+        ProviderComponents comps = providerManager.getComponents();
+        if (comps == null) {
             return;
         }
 
-        FeedbackManager feedbackManager = components.feedbackManager;
-        MemoryEvolver memoryEvolver = components.memoryEvolver;
-        PromptOptimizer promptOptimizer = components.promptOptimizer;
+        FeedbackManager feedbackManager = comps.feedbackManager;
+        MemoryEvolver memoryEvolver = comps.memoryEvolver;
+        PromptOptimizer promptOptimizer = comps.promptOptimizer;
 
         // 1. 基于反馈的智能记忆进化
         if (feedbackManager != null && memoryEvolver != null) {
@@ -502,7 +361,7 @@ public class AgentLoop {
     public String processDirect(String content, String sessionKey) throws Exception {
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
         message.setSessionKey(sessionKey);
-        return processMessage(message);
+        return messageRouter.route(message);
     }
 
     /** 流式处理单条消息，通过回调逐块输出，适用于 CLI 流式模式。 */
@@ -514,7 +373,7 @@ public class AgentLoop {
     /** 流式处理单条消息，支持多模态内容（文本+图片）。 */
     public String processDirectStream(String content, List<String> images, String sessionKey,
                                       LLMProvider.StreamCallback callback) throws Exception {
-        if (!providerConfigured) {
+        if (!providerManager.isConfigured()) {
             notifyCallback(callback, PROVIDER_NOT_CONFIGURED_MSG);
             return PROVIDER_NOT_CONFIGURED_MSG;
         }
@@ -526,16 +385,17 @@ public class AgentLoop {
 
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
         message.setMedia(absoluteImagePaths);  // 设置图片列表
-        List<Message> messages = buildContextWithImages(sessionKey, message, absoluteImagePaths);
+        List<Message> messages = messageRouter.buildContextWithImages(sessionKey, message, absoluteImagePaths);
         
         // 保存用户消息（含图片，存储相对路径供前端显示）
         sessions.addFullMessage(sessionKey, Message.user(content, images));
         sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
+        ProviderComponents comps = providerManager.getComponents();
         String response = ensureNonBlank(
-                components.llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
+                comps.llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
 
-        persistAndSummarize(sessionKey, response);
+        messageRouter.persistAndSummarize(sessionKey, response);
         return response;
     }
 
@@ -544,195 +404,11 @@ public class AgentLoop {
                                            String channel, String chatId) throws Exception {
         InboundMessage message = new InboundMessage(channel, "cron", chatId, content);
         message.setSessionKey(sessionKey);
-        return processMessage(message);
+        return messageRouter.route(message);
     }
 
     // ==================== 消息分发 ====================
-
-    private String processMessage(InboundMessage msg) throws Exception {
-        logIncoming(msg);
-
-        // 处理指令消息
-        if (msg.isCommand()) {
-            return processCommandMessage(msg);
-        }
-
-        if ("system".equals(msg.getChannel())) {
-            return processSystemMessage(msg);
-        }
-        return processUserMessage(msg);
-    }
-
-    // ==================== 指令消息处理 ====================
-
-    /**
-     * 处理指令消息（如 /new）。
-     * 指令消息不会发送给 LLM，而是由 Agent 直接执行对应操作。
-     */
-    private String processCommandMessage(InboundMessage msg) {
-        String command = msg.getCommand();
-
-        if (InboundMessage.COMMAND_NEW_SESSION.equals(command)) {
-            return handleNewSessionCommand(msg);
-        }
-
-        logger.warn("Unknown command received", Map.of("command", command));
-        String unknownResponse = "未知指令: /" + command;
-        publishReplyIfNeeded(msg, unknownResponse);
-        return unknownResponse;
-    }
-
-    /**
-     * 处理 /new 指令：开启全新会话。
-     * 旧会话保留不动，后续消息将使用新的 sessionKey（由 BaseChannel 生成）。
-     */
-    private String handleNewSessionCommand(InboundMessage msg) {
-        String newSessionKey = msg.getSessionKey();
-
-        // 预创建新会话，确保 SessionManager 中存在该 session
-        sessions.getOrCreate(newSessionKey);
-
-        logger.info("New session created by /new command", Map.of(
-                "new_session_key", newSessionKey,
-                "channel", msg.getChannel(),
-                "sender_id", msg.getSenderId()));
-
-        String response = "✨ 新会话已开启，让我们开始新的对话吧！";
-        publishReplyIfNeeded(msg, response);
-        return response;
-    }
-
-    // ==================== 用户消息处理 ====================
-
-    private String processUserMessage(InboundMessage msg) throws Exception {
-        if (!providerConfigured) {
-            publishReplyIfNeeded(msg, PROVIDER_NOT_CONFIGURED_MSG);
-            return PROVIDER_NOT_CONFIGURED_MSG;
-        }
-
-        String sessionKey = msg.getSessionKey();
-        List<Message> messages = buildContext(sessionKey, msg);
-        sessions.addMessage(sessionKey, "user", msg.getContent());
-        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
-
-        // 记录消息交互（进化组件启用时）
-        if (components != null && components.feedbackManager != null) {
-            components.feedbackManager.recordMessageExchange(sessionKey);
-        }
-
-        boolean usedStreaming = isStreamingChannel(msg);
-        String response = ensureNonBlank(
-                executeWithStreamingIfSupported(msg, messages, sessionKey, usedStreaming),
-                DEFAULT_EMPTY_RESPONSE);
-
-        persistAndSummarize(sessionKey, response);
-        // 无论是否走流式路径，最终完整回复统一由此处发送
-        // 流式路径中 callback 只负责发送"思考中"占位消息，不发送最终内容
-        publishReplyIfNeeded(msg, response);
-        return response;
-    }
-
-    /**
-     * 判断当前消息的目标通道是否支持流式输出。
-     */
-    private boolean isStreamingChannel(InboundMessage msg) {
-        if (channelManager == null || "cli".equals(msg.getChannel())) {
-            return false;
-        }
-        Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
-        return channel != null && channel.supportsStreaming();
-    }
-
-    /**
-     * 根据目标通道是否支持流式输出，选择对应的 LLM 执行路径。
-     *
-     * <p>若通道支持流式（如钉钉），则先发送占位消息告知用户正在处理，
-     * LLM 完成后通过通道直接发送完整回复，避免重复发送。</p>
-     *
-     * @param msg           入站消息，用于获取通道名称和 chatId
-     * @param messages      已构建好的上下文消息列表
-     * @param sessionKey    当前会话 key
-     * @param usedStreaming 是否走流式路径
-     * @return LLM 生成的完整回复内容
-     */
-    private String executeWithStreamingIfSupported(InboundMessage msg,
-                                                   List<Message> messages,
-                                                   String sessionKey,
-                                                   boolean usedStreaming) throws Exception {
-        if (!usedStreaming) {
-            return components.llmExecutor.execute(messages, sessionKey);
-        }
-
-        Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
-        LLMProvider.StreamCallback streamingCallback = channel.createStreamingCallback(msg.getChatId());
-
-        logger.info("Using streaming output for channel", Map.of("channel", msg.getChannel()));
-        // callback 仅负责发送"思考中"占位消息，最终完整回复由外层 processUserMessage 统一发送
-        return components.llmExecutor.executeStream(messages, sessionKey, streamingCallback);
-    }
-
-    /**
-     * 将回复发布到出站队列，使 ChannelManager 能将消息路由到对应通道。
-     * 仅对来自外部通道的消息发布（跳过 CLI 直接调用）。
-     */
-    private void publishReplyIfNeeded(InboundMessage msg, String response) {
-        String channel = msg.getChannel();
-        if ("cli".equals(channel)) {
-            return;
-        }
-        bus.publishOutbound(new OutboundMessage(channel, msg.getChatId(), response));
-    }
-
-    // ==================== 系统消息处理 ====================
-
-    private String processSystemMessage(InboundMessage msg) throws Exception {
-        logger.info("Processing system message", Map.of(
-                "sender_id", msg.getSenderId(),
-                "chat_id", msg.getChatId()));
-
-        String[] origin = parseOrigin(msg.getChatId());
-        String originChannel = origin[0];
-        String originChatId = origin[1];
-        String sessionKey = originChannel + ":" + originChatId;
-        String userMessage = "[System: " + msg.getSenderId() + "] " + msg.getContent();
-
-        InboundMessage syntheticMessage =
-                new InboundMessage(originChannel, msg.getSenderId(), originChatId, userMessage);
-        List<Message> messages = buildContext(sessionKey, syntheticMessage);
-        sessions.addMessage(sessionKey, "user", userMessage);
-        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
-
-        String response = ensureNonBlank(
-                components.llmExecutor.execute(messages, sessionKey), "Background task completed.");
-
-        persistAndSummarize(sessionKey, response); // 保存 assistant 回复并触发摘要
-        bus.publishOutbound(new OutboundMessage(originChannel, originChatId, response));
-        return response;
-    }
-
-    // ==================== 上下文与会话辅助 ====================
-
-    private List<Message> buildContext(String sessionKey, InboundMessage msg) {
-        return contextBuilder.buildMessages(
-                sessions.getHistory(sessionKey),
-                sessions.getSummary(sessionKey),
-                msg.getContent(), msg.getChannel(), msg.getChatId());
-    }
-    
-    /** 构建带图片的上下文（多模态）。 */
-    private List<Message> buildContextWithImages(String sessionKey, InboundMessage msg, List<String> images) {
-        return contextBuilder.buildMessages(
-                sessions.getHistory(sessionKey),
-                sessions.getSummary(sessionKey),
-                msg.getContent(), images, msg.getChannel(), msg.getChatId());
-    }
-
-    /** 保存助手回复并按需触发会话摘要。 */
-    private void persistAndSummarize(String sessionKey, String response) {
-        sessions.addMessage(sessionKey, "assistant", response);
-        sessions.save(sessions.getOrCreate(sessionKey));
-        components.summarizer.maybeSummarize(sessionKey);
-    }
+    // 已迁移到 MessageRouter
 
     // ==================== 启动信息 ====================
 
@@ -798,13 +474,6 @@ public class AgentLoop {
 
     private static String ensureNonBlank(String value, String fallback) {
         return StringUtils.isBlank(value) ? fallback : value;
-    }
-
-    private static String[] parseOrigin(String chatId) {
-        String[] parts = chatId.split(":", 2);
-        return parts.length == 2
-                ? parts
-                : new String[]{"cli", chatId};
     }
 
     private static void ensureDirectoryExists(String path) {

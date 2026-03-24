@@ -61,6 +61,12 @@ public class WorkflowNode {
     /** 超时时间（毫秒），0 表示不限制 */
     private long timeoutMs;
 
+    /** 是否需要人类审批才能执行（Human-in-the-Loop） */
+    private boolean requireApproval;
+
+    /** 审批描述（人类可读的审批说明，requireApproval=true 时使用） */
+    private String approvalDescription;
+
     /**
      * 多分支路由表（CONDITIONAL 节点使用）
      * key: 条件值（如 "approve"、"reject"、"default"）
@@ -75,6 +81,7 @@ public class WorkflowNode {
         this.branches = new HashMap<>();
         this.maxRetries = 0;
         this.timeoutMs = 0;
+        this.requireApproval = false;
     }
     
     public WorkflowNode(String id, NodeType type) {
@@ -261,6 +268,33 @@ public class WorkflowNode {
     public WorkflowNode addBranch(String conditionValue, String targetNodeId) {
         this.branches.put(conditionValue, targetNodeId);
         return this;
+    }
+
+    /**
+     * 标记该节点需要人类审批
+     *
+     * @param description 审批描述（人类可读的说明）
+     */
+    public WorkflowNode withApproval(String description) {
+        this.requireApproval = true;
+        this.approvalDescription = description;
+        return this;
+    }
+
+    public boolean isRequireApproval() {
+        return requireApproval;
+    }
+
+    public void setRequireApproval(boolean requireApproval) {
+        this.requireApproval = requireApproval;
+    }
+
+    public String getApprovalDescription() {
+        return approvalDescription;
+    }
+
+    public void setApprovalDescription(String approvalDescription) {
+        this.approvalDescription = approvalDescription;
     }
 
     @Override

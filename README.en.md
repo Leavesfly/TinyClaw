@@ -2,31 +2,36 @@
 
 # 🦞 TinyClaw
 
-**Ultra-lightweight personal AI assistant** — A Java-based, one-stop AI Agent framework with multi-model, multi-channel and multi-skill support
+**Ultra-lightweight Personal AI Assistant** — Built with Java, featuring multi-model, multi-channel, multi-agent collaboration, and self-evolution capabilities
 
 [![Java](https://img.shields.io/badge/Java-17-orange)](https://openjdk.org/)
 [![Maven](https://img.shields.io/badge/Maven-3.x-blue)](https://maven.apache.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-0.1.0-brightgreen)]()
 
+[中文 README](./README.md)
+
 </div>
 
 ---
 
-### ✨ Features at a Glance
+### ✨ Features
 
-- **🤖 Multi-model support** — Integrate OpenRouter, OpenAI, Anthropic, Zhipu GLM, Gemini, Groq, vLLM, DashScope and more mainstream LLM providers
-- **💬 Multi-channel messaging** — Connect Telegram, Discord, WhatsApp, Feishu, DingTalk, QQ, MaixCam and other platforms at the same time
-- **🛠️ Rich built-in tools** — File read/write, shell execution, web search, web scraping, cron tasks, sub-agents, etc.
-- **🧩 Skill plugin system** — Define skills in Markdown, install from GitHub, easily extend agent capabilities
-- **⏰ Cron task engine** — Support cron expressions and fixed intervals to automatically execute agent jobs
-- **🧠 Memory & context** — Built-in long-term memory store and conversation management so the agent can remember important information
-- **💓 Heartbeat service** — Periodic self-thinking to keep the agent "alive"
-- **🎤 Speech transcription** — Integrate Aliyun DashScope Paraformer to convert Telegram/Discord voice messages into text automatically
-- **🔒 Security sandbox** — Workspace restriction + command blacklist for production-grade protection (SecurityGuard)
-- **🌐 Agent social network** — Connect to ClawdChat.ai to communicate and cooperate with other agents
-- **🖥️ Web console** — Built-in Web UI to manage agent status and sessions visually
-- **🎬 Demo mode** — One-command demo of core features for live presentation and teaching
+- **🤖 Multi-Model Support** — Connect to OpenRouter, OpenAI, Anthropic, Zhipu GLM, Gemini, Aliyun DashScope, Groq, Ollama and more
+- **💬 Multi-Channel Messaging** — Simultaneously connect to Telegram, Discord, WhatsApp, Feishu, DingTalk, QQ, MaixCam and more
+- **🤝 Multi-Agent Collaboration** — 7 collaboration modes (debate/team/roleplay/consensus/hierarchy/workflow/dynamic) with built-in workflow engine
+- **🧬 Self-Evolution** — 3 automatic Prompt optimization strategies (Textual Gradient/OPRO/Self-Refine) + memory evolution + feedback collection
+- **🔌 MCP Protocol** — Full MCP client supporting SSE, Stdio, and Streamable HTTP transports
+- **🛠️ Rich Built-in Tools** — File I/O, shell execution, web search, web fetch, cron jobs, sub-agents, token stats and 15 tools total
+- **🧩 Skill Plugin System** — Define skills in Markdown, semantic search matching, install from GitHub, agent can self-create and improve skills
+- **⏰ Cron Task Engine** — Supports cron expressions, fixed intervals, and one-time scheduling
+- **🧠 Memory & Context** — Long-term memory storage, session summarization, modular context building
+- **💓 Heartbeat Service** — Periodic autonomous thinking to keep the agent "alive"
+- **🎤 Voice Transcription** — Aliyun DashScope Paraformer integration for automatic speech-to-text
+- **🔒 Security Sandbox** — Workspace restriction + command blacklist + web security middleware for production-grade protection
+- **🌐 Agent Social Network** — Connect to ClawdChat.ai for inter-agent communication
+- **🖥️ Web Console** — Built-in Web UI with 16 REST APIs for managing agent status, sessions, models, skills and more
+- **🎬 Demo Mode** — One-click demonstration of core features
 
 ![TinyClaw Logo](src/main/resources/tinyclaw.png)
 
@@ -36,71 +41,33 @@
 
 ```
 src/main/java/io/leavesfly/tinyclaw/
-├── TinyClaw.java                # Application entry point, command registration & dispatch
-├── agent/                       # Agent core engine
-│   ├── AgentConstants.java      #   Agent-related constants
-│   ├── AgentLoop.java           #   Main reasoning loop & tool calling
-│   ├── ContextBuilder.java      #   Context building (system prompts, skills, memory, etc.)
-│   ├── LLMExecutor.java         #   LLM invocation & tool-call driven flow
-│   ├── MemoryStore.java         #   Long-term memory storage
-│   └── SessionSummarizer.java   #   Session summarization & context compression
-├── bus/                         # Message bus
-│   ├── MessageBus.java          #   Pub/sub center (inbound/outbound queues)
-│   ├── InboundMessage.java      #   Inbound message model
-│   └── OutboundMessage.java     #   Outbound message model
-├── channels/                    # Channel adapters
-│   ├── Channel.java             #   Channel interface
-│   ├── BaseChannel.java         #   Common channel base class
-│   ├── ChannelManager.java      #   Channel lifecycle & outbound dispatch
-│   ├── WebhookServer.java       #   Webhook HTTP server
-│   └── ...                      #   Telegram / Discord / Feishu / DingTalk / QQ / WhatsApp / MaixCam, etc.
-├── cli/                         # Command-line interface
-│   ├── CliCommand.java          #   Command base abstraction
-│   ├── OnboardCommand.java      #   Initialization & onboarding
-│   ├── AgentCommand.java        #   Local CLI conversation
-│   ├── GatewayBootstrap.java    #   Gateway bootstrap helper
-│   ├── GatewayCommand.java      #   Gateway service
-│   ├── DemoCommand.java         #   Demo flows
-│   ├── StatusCommand.java       #   Status inspection
-│   ├── CronCommand.java         #   Cron task management
-│   └── SkillsCommand.java       #   Skill management
-├── config/                      # Configuration models & loader
-│   ├── Config.java / ConfigLoader.java
-│   ├── AgentConfig.java         #   Agent parameters (model, temperature, heartbeat, etc.)
-│   ├── ChannelsConfig.java      #   Channel configuration
-│   ├── ProvidersConfig.java     #   LLM provider configuration
-│   ├── ModelsConfig.java        #   Model aliases & defaults
-│   ├── GatewayConfig.java       #   Gateway configuration
-│   ├── ToolsConfig.java         #   Tool configuration
-│   └── SocialNetworkConfig.java #   Agent social network configuration
-├── cron/                        # Cron task engine
-├── heartbeat/                   # Heartbeat service
-├── logger/                      # Structured logging wrapper
-├── providers/                   # LLM invocation abstraction (HTTPProvider, etc.)
-├── security/                    # Security sandbox (SecurityGuard)
-├── session/                     # Session management & persistence
-├── skills/                      # Skill loading & installation
-├── tools/                       # Agent toolset & sub-agent management
-│   ├── Tool.java                #   Tool interface
-│   ├── ToolRegistry.java        #   Tool registry
-│   ├── SubagentManager.java     #   Sub-agent manager
-│   ├── ReadFileTool.java        #   Read files
-│   ├── WriteFileTool.java       #   Write files
-│   ├── AppendFileTool.java      #   Append to files
-│   ├── EditFileTool.java        #   Edit files (diff based)
-│   ├── ListDirTool.java         #   List directory
-│   ├── ExecTool.java            #   Execute shell commands
-│   ├── WebSearchTool.java       #   Web search
-│   ├── WebFetchTool.java        #   Web page fetching
-│   ├── MessageTool.java         #   Cross-channel messaging
-│   ├── CronTool.java            #   Cron task operations
-│   ├── SocialNetworkTool.java   #   Agent social network tool
-│   ├── SkillsTool.java          #   Skill querying & management
-│   └── SpawnTool.java           #   Sub-agent spawning
-├── util/                        # Utility classes
-│   └── StringUtils.java
-├── voice/                       # Speech transcription (AliyunTranscriber)
-└── web/                         # Web console server (WebConsoleServer)
+├── TinyClaw.java                    # Application entry, command registration & dispatch
+├── agent/                           # Agent core engine
+│   ├── AgentLoop.java               #   Lifecycle management & message consumption loop
+│   ├── MessageRouter.java           #   Message routing (user/system/command)
+│   ├── ProviderManager.java         #   LLM Provider management & hot-reload
+│   ├── LLMExecutor.java             #   LLM invocation & tool iteration loop
+│   ├── ContextBuilder.java          #   Modular context building
+│   ├── SessionSummarizer.java       #   Session summarization & context compression
+│   ├── context/                     #   Context sections (Identity/Bootstrap/Tools/Skills/Memory)
+│   ├── evolution/                   #   Self-evolution engine (PromptOptimizer/FeedbackManager/MemoryEvolver)
+│   └── collaboration/               #   Multi-agent orchestration (7 modes + workflow engine)
+├── bus/                             # Message bus (pub/sub, inbound/outbound queues)
+├── channels/                        # Channel adapters (7 platforms)
+├── cli/                             # CLI interface (8 commands)
+├── config/                          # Configuration models & loader (11 config classes)
+├── cron/                            # Cron task engine
+├── heartbeat/                       # Heartbeat service
+├── logger/                          # Structured logging wrapper
+├── mcp/                             # MCP protocol integration (3 transport types)
+├── providers/                       # LLM invocation abstraction (HTTPProvider + StreamEvent)
+├── security/                        # Security sandbox (SecurityGuard)
+├── session/                         # Session management & persistence
+├── skills/                          # Skill system (loader/registry/searcher/installer)
+├── tools/                           # Agent toolset (15 built-in tools + MCP bridge)
+├── util/                            # Utility classes
+├── voice/                           # Voice transcription (AliyunTranscriber)
+└── web/                             # Web console (16 REST API handlers)
 ```
 
 ---
@@ -111,7 +78,7 @@ src/main/java/io/leavesfly/tinyclaw/
 
 - **Java 17** or later
 - **Maven 3.x**
-- At least one LLM API key (recommended [OpenRouter](https://openrouter.ai/keys) or [Zhipu GLM](https://open.bigmodel.cn/))
+- At least one LLM API key (recommended: [OpenRouter](https://openrouter.ai/keys) or [Zhipu GLM](https://open.bigmodel.cn/))
 
 #### 1. Build the project
 
@@ -167,37 +134,19 @@ java -jar target/tinyclaw-0.1.0.jar agent -m "Hi, introduce yourself."
 java -jar target/tinyclaw-0.1.0.jar agent
 ```
 
-### 🎬 5-Minute Demo: How to Present TinyClaw
-
-- **Demo 0: One-command demo mode (recommended)**
-  - Prerequisites: complete the build, onboarding and API key configuration in "Getting Started" above.
-  - Run `java -jar target/tinyclaw-0.1.0.jar demo agent-basic` in the terminal to automatically execute a full CLI conversation flow.
-  - With the logs, you can walk through the full call chain from `TinyClaw.main` → `DemoCommand` → `AgentLoop.processDirect`.
-- **Demo 1: Local CLI assistant**
-  - Prerequisites: same as above.
-  - Run `java -jar target/tinyclaw-0.1.0.jar agent`, ask any question, and explain the flow along `TinyClaw.java` → `AgentCommand` → `AgentLoop.processDirect` with the terminal output.
-- **Demo 2: Gateway + single-channel bot**
-  - Enable one channel (e.g. Telegram) in the config and fill in the token and `allowFrom`.
-  - Run `java -jar target/tinyclaw-0.1.0.jar gateway`, send messages from your IM client, and use MessageBus inbound/outbound logs to explain the full loop: "Channel → MessageBus → Agent → Channel".
-- **Demo 3: Cron broadcast**
-  - Use `tinyclaw cron add --name "demo" --message "This is a demo job" --every 30` to create a job that runs every 30 seconds.
-  - Keep the gateway running, wait for the cron trigger and the broadcast message in the channel, and explain how `CronService` integrates with the agent.
-- **Demo 4: Web console**
-  - In gateway mode, visit `http://localhost:18791` (default port) to view the Web UI.
-  - You can inspect agent status, session list, tool usage, and skill status in real time.
-
 ---
 
 ### 📖 Command Reference
 
 | Command | Description | Example |
-|--------|-------------|---------|
+|---------|-------------|----------|
 | `onboard` | Initialize config and workspace | `tinyclaw onboard` |
 | `agent` | Interact with the agent directly | `tinyclaw agent -m "Hello"` |
-| `gateway` | Start the gateway service (connect all channels) | `tinyclaw gateway` |
+| `gateway` | Start gateway service (connect all channels) | `tinyclaw gateway` |
 | `status` | Show system status and configuration | `tinyclaw status` |
 | `cron` | Manage cron jobs | `tinyclaw cron list` |
 | `skills` | Manage skill plugins | `tinyclaw skills list` |
+| `mcp` | Manage MCP servers | `tinyclaw mcp list` |
 | `demo` | Run built-in demo flows | `tinyclaw demo agent-basic` |
 | `version` | Show version info | `tinyclaw version` |
 
@@ -217,7 +166,7 @@ tinyclaw agent [options]
 tinyclaw cron list                          # List all cron jobs
 tinyclaw cron add --name "Daily Report" \
   --message "Generate today's work summary" \
-  --cron "0 18 * * *"                       # Every day 18:00
+  --cron "0 18 * * *"                       # Every day at 18:00
 tinyclaw cron add --name "Heartbeat" \
   --message "Check system status" \
   --every 3600                              # Every hour
@@ -237,12 +186,6 @@ tinyclaw skills show <name>                 # Show skill details
 tinyclaw skills remove <name>               # Remove a skill
 ```
 
-#### Demo command options
-
-```bash
-tinyclaw demo agent-basic                   # One-click CLI conversation demo
-```
-
 ---
 
 ### 🔌 Supported LLM Providers
@@ -252,10 +195,10 @@ tinyclaw demo agent-basic                   # One-click CLI conversation demo
 | [OpenRouter](https://openrouter.ai/) | `providers.openrouter` | Aggregated multi-model gateway, recommended |
 | [OpenAI](https://platform.openai.com/) | `providers.openai` | GPT series models |
 | [Anthropic](https://www.anthropic.com/) | `providers.anthropic` | Claude series models |
-| [Zhipu GLM](https://open.bigmodel.cn/) | `providers.zhipu` | GLM-4 series, mainland China friendly |
+| [Zhipu GLM](https://open.bigmodel.cn/) | `providers.zhipu` | GLM-4 series, China-friendly |
 | [Google Gemini](https://ai.google.dev/) | `providers.gemini` | Gemini series models |
 | [Groq](https://groq.com/) | `providers.groq` | Ultra-fast inference |
-| [vLLM](https://docs.vllm.ai/) | `providers.vllm` | Self-hosted models |
+| [Ollama](https://ollama.ai/) | `providers.ollama` | Self-hosted open-source models |
 | [Aliyun DashScope](https://dashscope.aliyun.com/) | `providers.dashscope` | Qwen (Tongyi Qianwen) models |
 
 All providers are adapted via a unified `HTTPProvider` using OpenAI-compatible API format. Switching models only requires updating configuration.
@@ -266,8 +209,8 @@ All providers are adapted via a unified `HTTPProvider` using OpenAI-compatible A
 
 | Channel | Config key | Credentials |
 |---------|------------|-------------|
-| Telegram | `channels.telegram` | Bot token |
-| Discord | `channels.discord` | Bot token |
+| Telegram | `channels.telegram` | Bot Token |
+| Discord | `channels.discord` | Bot Token |
 | WhatsApp | `channels.whatsapp` | Bridge URL |
 | Feishu | `channels.feishu` | App ID + App Secret |
 | DingTalk | `channels.dingtalk` | Client ID + Client Secret |
@@ -275,20 +218,6 @@ All providers are adapted via a unified `HTTPProvider` using OpenAI-compatible A
 | MaixCam | `channels.maixcam` | Host + Port |
 
 Each channel supports an `allowFrom` whitelist so that only authorized users can interact with the agent.
-
-#### Channel configuration example (Telegram)
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "your-telegram-bot-token",
-      "allowFrom": ["your-telegram-user-id"]
-    }
-  }
-}
-```
 
 ---
 
@@ -309,25 +238,62 @@ The agent can autonomously call the following tools during conversations:
 | `message` | Send messages to specific channels | - |
 | `cron` | Create/manage cron jobs | - |
 | `spawn` | Spawn sub-agents for isolated tasks | - |
+| `collaborate` | Launch multi-agent collaboration (7 modes) | - |
 | `social_network` | Communicate with other agents (ClawdChat.ai) | - |
 | `skills` | Manage and query skill plugins | - |
+| `token_usage` | Query token usage statistics | - |
 
-#### Security mechanisms
+Additionally, tools from MCP servers are automatically registered and directly callable by the LLM.
 
-TinyClaw provides production-grade protection via **SecurityGuard**:
+---
 
-- **Workspace sandbox**: all file operations (read/write/edit/list) are restricted to the workspace directory by default, preventing access to sensitive system files
-- **Command blacklist**: the `exec` tool has built-in dangerous command detection, blocking high-risk commands like `rm -rf`, `format`, `sudo`, etc.
-- **Configurable policy**: use `restrictToWorkspace` and `commandBlacklist` in config to customize security policies
+### 🤝 Multi-Agent Collaboration
 
-Configuration example:
+TinyClaw includes a complete multi-agent orchestration system, triggered via the `collaborate` tool:
+
+| Mode | Description |
+|------|-------------|
+| `debate` | Pro/con argumentation for trade-off analysis |
+| `team` | Task decomposition with parallel/sequential execution |
+| `roleplay` | Multi-role dialogue simulation and scenario rehearsal |
+| `consensus` | Discussion followed by voting to reach consensus |
+| `hierarchy` | Hierarchical reporting and layered decision-making |
+| `workflow` | Multi-step workflows with LLM-generated workflow definitions |
+| `dynamic` | Router Agent dynamically selects the next speaker |
+
+The workflow engine supports 6 node types: SINGLE / PARALLEL / SEQUENTIAL / CONDITIONAL / LOOP / AGGREGATE.
+
+---
+
+### 🧬 Self-Evolution
+
+TinyClaw includes a self-evolution engine that enables the agent to continuously learn and improve:
+
+- **Automatic Prompt Optimization**: 3 strategies (Textual Gradient / OPRO / Self-Refine) to automatically improve system prompts
+- **Memory Evolution**: Extract long-term memories from conversations, retaining important information across sessions
+- **Feedback Collection**: Supports explicit ratings, text feedback, and implicit signals
+
+---
+
+### 🔌 MCP Protocol Integration
+
+TinyClaw implements a complete MCP (Model Context Protocol) client:
+
+| Transport | Use Case |
+|-----------|----------|
+| SSE | Remote HTTP servers (Server-Sent Events) |
+| Stdio | Local process communication (stdin/stdout) |
+| Streamable HTTP | Remote HTTP servers (streaming HTTP) |
+
+MCP server tools are automatically registered into the tool system. Configuration example:
 
 ```json
 {
-  "agents": {
-    "defaults": {
-      "restrictToWorkspace": true,
-      "commandBlacklist": ["rm -rf", "sudo", "format"]
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+      "timeout": 30
     }
   }
 }
@@ -335,23 +301,39 @@ Configuration example:
 
 ---
 
+### 🔒 Security
+
+TinyClaw provides multi-layer security protection via **SecurityGuard**:
+
+- **Workspace Sandbox**: All file operations restricted to the workspace directory
+- **Command Blacklist**: Blocks dangerous commands like `rm -rf`, `mkfs`, `sudo`
+- **Channel Whitelist**: Each channel supports `allowFrom` configuration
+- **Web Security Middleware**: Authentication and CORS protection
+- **Path Normalization**: Prevents path traversal attacks
+
+---
+
+### 🖥️ Web Console
+
+In gateway mode, visit `http://localhost:18791` to access the web console:
+
+- Real-time chat (SSE streaming support)
+- Session management and history
+- Model switching (runtime hot-reload)
+- Provider management
+- Channel status monitoring
+- Skill management
+- Cron job management
+- MCP server management
+- File browsing and upload
+- Token usage statistics
+- User feedback collection
+
+---
+
 ### 🧩 Skill System
 
-Skills are agent capability extensions defined in Markdown and stored under `~/.tinyclaw/workspace/skills/`.
-
-#### Built-in skills
-
-| Skill | Description |
-|-------|-------------|
-| `weather` | Weather query |
-| `github` | GitHub repository and issue operations |
-| `summarize` | Text summarization |
-| `tmux` | tmux session management |
-| `skill-creator` | Helper for creating new skills |
-
-#### Custom skills
-
-Create a directory under `~/.tinyclaw/workspace/skills/` and add a `SKILL.md`:
+Skills are agent capability extensions defined in Markdown:
 
 ```markdown
 ---
@@ -366,13 +348,14 @@ When the user asks to perform a certain task, follow these steps:
 2. ...
 ```
 
-The agent will automatically load all available skills when building context.
+- Load from workspace / global / builtin directories
+- Install community skills from GitHub
+- **Semantic search matching** — only inject relevant skills based on user input
+- Agent can self-create, edit, and manage skills via the `skills` tool
 
 ---
 
 ### 🌐 Gateway Mode
-
-Gateway mode is the core way TinyClaw runs. It starts all configured channels and runs the agent loop in the background:
 
 ```bash
 java -jar target/tinyclaw-0.1.0.jar gateway
@@ -382,168 +365,67 @@ Once started, the gateway will:
 1. Load configuration and initialize LLM providers
 2. Initialize security protection (SecurityGuard)
 3. Register all built-in tools
-4. Start the cron service
-5. Start the heartbeat service (if enabled)
-6. Connect all enabled channels
-7. Start the web console (default port 18790)
-8. Run the agent message-processing loop in the background
+4. Initialize MCP server connections
+5. Start the cron service
+6. Start the heartbeat service (if enabled)
+7. Connect all enabled channels
+8. Start the web console
+9. Run the agent message-processing loop in the background
 
 Press `Ctrl+C` to gracefully shut down all services.
-
-#### Web console
-
-After the gateway has started, visit `http://localhost:18790` to see:
-- Real-time agent status and configuration
-- Session list and history
-- Tool usage statistics
-- Skill plugin status
-- Cron job management
-
-The web console port can be customized in the config file:
-
-```json
-{
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
-  }
-}
-```
 
 ---
 
 ### 🗂️ Workspace Layout
 
-After running `tinyclaw onboard`, the workspace directory is initialized as follows:
-
 ```
-~/.tinyclaw/workspace/
-├── AGENTS.md          # Agent behavior instructions (system prompts & working rules)
-├── SOUL.md            # Agent personality and values ("soul" definition)
-├── USER.md            # User profile and preferences (communication style, goals, etc.)
-├── IDENTITY.md        # Agent identity and capability description
-├── PROFILE.md         # Runtime configuration and status information (created by onboard)
-├── memory/            # Long-term memory and daily notes
-│   ├── MEMORY.md      # Long-term memory store (important cross-session facts)
-│   └── HEARTBEAT.md   # Heartbeat check definition (what the heartbeat service should verify)
-├── skills/            # Skill plugin directory (skills defined in Markdown)
-├── sessions/          # Conversation history and context snapshots
-└── cron/
-    └── jobs.json      # Cron job persistence (generated after jobs are created)
+~/.tinyclaw/
+├── config.json              # Main configuration file
+├── workspace/
+│   ├── AGENTS.md            # Agent behavior instructions
+│   ├── SOUL.md              # Agent personality and values
+│   ├── USER.md              # User profile and preferences
+│   ├── IDENTITY.md          # Agent identity description
+│   ├── memory/              # Long-term memory
+│   │   ├── MEMORY.md
+│   │   └── HEARTBEAT.md
+│   ├── sessions/            # Session persistence
+│   ├── skills/              # User skills
+│   ├── cron/                # Cron jobs
+│   │   └── jobs.json
+│   ├── evolution/           # Evolution data
+│   │   └── prompts/         # Prompt variants
+│   └── collaboration/       # Collaboration records
 ```
-
-You can edit these Markdown files to customize the agent's behavior, personality, memory and runtime profile.
 
 ---
 
-### ⚙️ Full Config Example
+### 🎬 Demo
 
-`~/.tinyclaw/config.json`:
+```bash
+# One-click demo mode
+tinyclaw demo agent-basic
 
-```json
-{
-  "agents": {
-    "defaults": {
-      "workspace": "~/.tinyclaw/workspace",
-      "model": "glm-4.7",
-      "maxTokens": 8192,
-      "temperature": 0.7,
-      "maxToolIterations": 20,
-      "heartbeatEnabled": false,
-      "restrictToWorkspace": true,
-      "commandBlacklist": []
-    }
-  },
-  "providers": {
-    "openrouter": {
-      "apiKey": "",
-      "apiBase": "https://openrouter.ai/api/v1"
-    },
-    "openai": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "anthropic": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "zhipu": {
-      "apiKey": "your-key",
-      "apiBase": "https://open.bigmodel.cn/api/paas/v4"
-    },
-    "gemini": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "groq": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "vllm": {
-      "apiKey": "",
-      "apiBase": ""
-    },
-    "dashscope": {
-      "apiKey": "",
-      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": []
-    },
-    "discord": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": []
-    },
-    "feishu": {
-      "enabled": false,
-      "appId": "",
-      "appSecret": "",
-      "allowFrom": []
-    },
-    "dingtalk": {
-      "enabled": false,
-      "clientId": "",
-      "clientSecret": "",
-      "allowFrom": []
-    }
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "maxResults": 5
-      }
-    }
-  },
-  "socialNetwork": {
-    "enabled": false,
-    "endpoint": "https://clawdchat.ai/api",
-    "agentId": "",
-    "apiKey": ""
-  }
-}
+# Local CLI assistant
+tinyclaw agent
+
+# Gateway + channel bot
+tinyclaw gateway
+
+# Web console
+open http://localhost:18791
+
+# MCP server management
+tinyclaw mcp list
 ```
 
 ---
 
 ### 🧪 Tests
 
-This project uses **JUnit 5** and **Mockito** for testing:
-
 ```bash
-# Run all tests
-mvn test
-
-# Run a specific test class
-mvn test -Dtest=TinyClawTest
+mvn test                        # Run all tests
+mvn test -Dtest=TinyClawTest    # Run a specific test class
 ```
 
 ---
@@ -554,15 +436,12 @@ mvn test -Dtest=TinyClawTest
 |-----------|------------|
 | Language | Java 17 |
 | Build | Maven |
-| HTTP client | OkHttp 4.12 |
-| JSON processing | Jackson 2.17 |
+| HTTP Client | OkHttp 4.12 |
+| JSON Processing | Jackson 2.17 |
 | Logging | SLF4J + Logback |
 | CLI | JLine 3.25 |
-| Telegram | telegrambots 6.8 |
-| Discord | JDA 5.0 |
-| Feishu | oapi-sdk 2.3 |
-| DingTalk | dingtalk SDK 2.0 |
 | Cron | cron-utils 9.2 |
+| Environment | dotenv-java 3.0 |
 | Testing | JUnit 5.10 + Mockito 5.10 |
 
 ---

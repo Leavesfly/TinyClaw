@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.agent.context.*;
 import io.leavesfly.tinyclaw.agent.evolution.MemoryStore;
 import io.leavesfly.tinyclaw.agent.evolution.PromptOptimizer;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -9,11 +10,7 @@ import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -46,18 +43,18 @@ public class ContextBuilder {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("context");
     
-    private static final String SECTION_SEPARATOR = "\n\n---\n\n";  // 部分分隔符
-    private static final String[] BOOTSTRAP_FILES = {               // 引导文件列表
-        "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"
-    };
+    private static final String SECTION_SEPARATOR = "\n\n---\n\n";
     
-    private final String workspace;          // 工作空间路径
-    private ToolRegistry tools;              // 工具注册表
-    private final MemoryStore memory;        // 记忆存储
-    private final SkillsLoader skillsLoader; // 技能加载器
+    private final String workspace;
+    private ToolRegistry tools;
+    private final MemoryStore memory;
+    private final SkillsLoader skillsLoader;
     
-    /** 可选的 Prompt 优化器（进化功能启用时设置） */
     private volatile PromptOptimizer promptOptimizer;
+    
+    private int contextWindow = AgentConstants.DEFAULT_CONTEXT_WINDOW;
+    
+    private final List<ContextSection> sections = new ArrayList<>();
     
     /**
      * 创建上下文构建器。
@@ -73,9 +70,8 @@ public class ContextBuilder {
     public ContextBuilder(String workspace) {
         this.workspace = workspace;
         this.memory = new MemoryStore(workspace);
-        // 初始化技能加载器，使用默认路径
-        // 实际使用时可传入全局和内置技能目录路径
         this.skillsLoader = new SkillsLoader(workspace, null, null);
+        initializeSections();
     }
     
     /**
@@ -91,6 +87,27 @@ public class ContextBuilder {
         this.workspace = workspace;
         this.memory = new MemoryStore(workspace);
         this.skillsLoader = new SkillsLoader(workspace, globalSkills, builtinSkills);
+        initializeSections();
+    }
+    
+    /**
+     * 初始化内置的 section 列表。
+     */
+    private void initializeSections() {
+        sections.add(new IdentitySection());
+        sections.add(new BootstrapSection());
+        sections.add(new ToolsSection());
+        sections.add(new SkillsSection());
+        sections.add(new MemorySection());
+    }
+    
+    /**
+     * 添加自定义 section。
+     * 
+     * @param section 要添加的 section
+     */
+    public void addSection(ContextSection section) {
+        sections.add(section);
     }
     
     /**
@@ -100,18 +117,6 @@ public class ContextBuilder {
      */
     public void setTools(ToolRegistry tools) {
         this.tools = tools;
-    }
-    
-    /** 上下文窗口大小，用于计算记忆 token 预算 */
-    private int contextWindow = AgentConstants.DEFAULT_CONTEXT_WINDOW;
-    
-    /**
-     * 设置上下文窗口大小，用于动态计算记忆 token 预算。
-     *
-     * @param contextWindow 上下文窗口 token 数
-     */
-    public void setContextWindow(int contextWindow) {
-        this.contextWindow = contextWindow;
     }
     
     /**
@@ -159,289 +164,31 @@ public class ContextBuilder {
      * @return 完整的系统提示词字符串
      */
     public String buildSystemPrompt(String currentMessage) {
+        SectionContext ctx = new SectionContext(
+            currentMessage, workspace, contextWindow,
+            tools, promptOptimizer, skillsLoader, memory
+        );
+        
         List<String> parts = new ArrayList<>();
-        
-        // 1. 核心身份部分
-        parts.add(getIdentity());
-        
-        // 2. 引导文件
-        addSectionIfNotBlank(parts, loadBootstrapFiles());
-        
-        // 3. 工具部分
-        addSectionIfNotBlank(parts, buildToolsSection());
-        
-        // 4. 技能摘要部分
-        addSectionIfNotBlank(parts, buildSkillsSection());
-        
-        // 5. 记忆上下文（带 token 预算控制和相关性检索）
-        int memoryBudget = calculateMemoryTokenBudget();
-        String memoryContext = memory.getMemoryContext(currentMessage, memoryBudget);
-        if (StringUtils.isNotBlank(memoryContext)) {
-            parts.add("# Memory\n\n" + memoryContext);
+        for (ContextSection section : sections) {
+            String content = section.build(ctx);
+            if (StringUtils.isNotBlank(content)) {
+                parts.add(content);
+            }
         }
         
         return String.join(SECTION_SEPARATOR, parts);
     }
     
     /**
-     * 根据上下文窗口大小计算记忆 token 预算。
-     * 
-     * 预算 = 上下文窗口 × MEMORY_TOKEN_BUDGET_PERCENTAGE%，
-     * 并限制在 [MEMORY_MIN_TOKEN_BUDGET, MEMORY_MAX_TOKEN_BUDGET] 范围内。
-     * 
-     * @return 记忆 token 预算
-     */
-    private int calculateMemoryTokenBudget() {
-        int budget = contextWindow * AgentConstants.MEMORY_TOKEN_BUDGET_PERCENTAGE / 100;
-        return Math.max(AgentConstants.MEMORY_MIN_TOKEN_BUDGET,
-                Math.min(AgentConstants.MEMORY_MAX_TOKEN_BUDGET, budget));
-    }
-    
-    /**
-     * 添加非空部分到列表。
-     * 
-     * @param parts 部分列表
-     * @param section 要添加的部分内容
-     */
-    private void addSectionIfNotBlank(List<String> parts, String section) {
-        if (StringUtils.isNotBlank(section)) {
-            parts.add(section);
-        }
-    }
-    
-    /**
-     * 构建技能摘要部分。
-     * 
-     * 生成已安装技能的简要说明，采用渐进式披露策略：
-     * - 只显示技能名称、描述和位置
-     * - 完整内容需要使用 read_file 工具读取
-     * - 引导 AI 自主学习：安装社区技能、创建新技能、迭代优化已有技能
-     * 
-     * @return 技能摘要字符串（即使没有技能也返回自主学习引导）
-     */
-    private String buildSkillsSection() {
-        String skillsSummary = skillsLoader.buildSkillsSummary();
-        
-        StringBuilder sb = new StringBuilder();
-        sb.append("# Skills\n\n");
-        
-        // 已安装技能摘要
-        if (StringUtils.isNotBlank(skillsSummary)) {
-            appendInstalledSkillsSummary(sb, skillsSummary);
-        }
-        
-        // AI 自主学习技能的引导
-        appendSkillSelfLearningGuide(sb);
-        
-        return sb.toString();
-    }
-    
-    /**
-     * 追加已安装技能摘要。
-     * 
-     * @param sb 字符串构建器
-     * @param skillsSummary 技能摘要内容
-     */
-    private void appendInstalledSkillsSummary(StringBuilder sb, String skillsSummary) {
-        sb.append("## 已安装技能\n\n");
-        sb.append("以下技能扩展了你的能力。");
-        sb.append("使用 `skills(action='invoke', name='技能名')` 调用技能，获取完整内容和 base-path（可用于执行技能目录下的脚本）。\n\n");
-        sb.append(skillsSummary);
-        sb.append("\n\n");
-    }
-    
-    /**
-     * 追加技能自主学习引导。
+     * 设置上下文窗口大小，用于动态计算记忆 token 预算。
      *
-     * 涵盖四个方面：何时学习新技能、如何管理技能（含可信市场搜索流程）、
-     * 调用带脚本技能的工作流、以及如何创建新技能。
-     *
-     * @param sb 字符串构建器
+     * @param contextWindow 上下文窗口 token 数
      */
-    private void appendSkillSelfLearningGuide(StringBuilder sb) {
-        String skillsPath = Paths.get(workspace).toAbsolutePath() + "/skills/";
-
-        sb.append("""
-                ## 技能自主学习
-
-                你有能力使用 `skills` 工具**自主学习和管理技能**。\
-                这意味着你不局限于预安装的技能——你可以随着时间增长你的能力。
-
-                ### 何时学习新技能
-
-                - 当你遇到现有技能无法覆盖的任务时，先**搜索 GitHub** 上是否有现成的技能可以安装。
-                - 当用户提到社区技能或包含有用技能的 GitHub 仓库时，直接**安装它**。
-                - 如果搜索不到合适的技能，考虑**创建新技能**来处理它。
-                - 当你发现自己重复执行类似的多步操作时，**将模式提取为可复用的技能**。
-                - 当现有技能可以根据新经验改进时，**编辑它**使其更好。
-
-                ### 如何管理技能
-
-                使用 `skills` 工具执行以下操作：
-                - `skills(action='list')` — 查看所有已安装技能
-                - `skills(action='invoke', name='...')` — **调用技能并获取其基础路径**（用于带脚本的技能）
-                - `skills(action='search', query='...')` — **从可信技能市场搜索可用的技能**（按功能描述搜索）
-                - `skills(action='install', repo='owner/repo')` — 从 GitHub 安装指定技能
-                - `skills(action='create', name='...', content='...', skill_description='...')` — 根据经验创建新技能
-                - `skills(action='edit', name='...', content='...')` — 改进现有技能
-                - `skills(action='remove', name='...')` — 删除不再需要的技能
-
-                ### 自动搜索安装技能
-
-                搜索功能默认从**可信技能市场**中搜索，确保安全性。内置市场源包括：
-                - TinyClaw Official（官方技能集合）
-                - VoltAgent Skills（500+ 多平台 agent 技能）
-                - Composio Skills（Composio 社区精选技能）
-                - Travis Skills（社区精选 Claude Skills 资源）
-                - Jeffallan Skills（66+ 专业全栈开发技能）
-
-                当你遇到无法处理的任务时，推荐使用以下流程：
-                1. 先用 `skills(action='search', query='描述需要的功能')` 从可信市场搜索技能
-                2. 如果找到合适的，用 `skills(action='install', repo='owner/repo')` 安装
-                3. 安装后用 `skills(action='invoke', name='...')` 调用技能解决问题
-                4. 如果搜索不到，再考虑自己创建技能
-
-                ### 调用带脚本的技能
-
-                当技能包含可执行脚本（如 Python 文件）时，使用 `invoke` 而非 `show`：
-                1. 调用 `skills(action='invoke', name='技能名')` 获取技能的基础路径和指令
-                2. 响应中包含指向技能目录的 `<base-path>`
-                3. 使用基础路径执行脚本，例如：`exec(command='python3 {base-path}/script.py 参数1')`
-
-                带脚本技能的示例工作流：
-                ```
-                1. skills(action='invoke', name='pptx')  → 获取基础路径: /path/to/skills/pptx/
-                2. exec(command='python3 /path/to/skills/pptx/create_pptx.py output.pptx')
-                ```
-
-                ### 创建可学习技能
-
-                创建技能时，将其编写为带有 YAML frontmatter 的 **Markdown 指令手册**。好的技能应包含：
-                1. 清晰描述技能的功能
-                2. 逐步执行的指令
-                3. （可选）在哪里找到和安装依赖或相关社区技能
-                4. 何时以及如何使用该技能的示例
-
-                """);
-
-        sb.append("你创建的技能保存在 `").append(skillsPath).append("`，将在未来的对话中自动可用。\n");
+    public void setContextWindow(int contextWindow) {
+        this.contextWindow = contextWindow;
     }
-    
-    /**
-     * 获取 Agent 身份和基本信息（包含可选的优化内容）。
-     * 
-     * 如果配置了 PromptOptimizer 且有活跃的优化，
-     * 会在基础身份信息后追加优化后的行为指导。
-     * 
-     * @return 身份信息字符串
-     */
-    private String getIdentity() {
-        String baseIdentity = getBaseIdentity();
-        
-        // 如果有优化器且有活跃优化，追加优化内容
-        if (promptOptimizer != null && promptOptimizer.hasActiveOptimization()) {
-            String optimization = promptOptimizer.getActiveOptimization();
-            if (StringUtils.isNotBlank(optimization)) {
-                return baseIdentity + "\n\n## 优化后的行为指导\n\n" + optimization;
-            }
-        }
-        
-        return baseIdentity;
-    }
-    
-    /**
-     * 获取基础身份信息（不含优化）。
-     * 
-     * @return 基础身份信息字符串
-     */
-    private String getBaseIdentity() {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"));
-        String workspacePath = Paths.get(workspace).toAbsolutePath().toString();
-        String runtime = System.getProperty("os.name") + " " + System.getProperty("os.arch") + ", Java " + System.getProperty("java.version");
-        
-        StringBuilder sb = new StringBuilder();
-        sb.append("# tinyclaw 🦞\n\n");
-        sb.append("你是 tinyclaw，一个有用的 AI 助手。\n\n");
-        sb.append("## 当前时间\n");
-        sb.append(now).append("\n\n");
-        sb.append("## 运行环境\n");
-        sb.append(runtime).append("\n\n");
-        sb.append("## 工作空间\n");
-        sb.append("你的工作空间位于: ").append(workspacePath).append("\n");
-        sb.append("- 内存: ").append(workspacePath).append("/memory/MEMORY.md\n");
-        sb.append("- 每日笔记: ").append(workspacePath).append("/memory/YYYYMM/YYYYMMDD.md\n");
-        sb.append("- 技能: ").append(workspacePath).append("/skills/{skill-name}/SKILL.md\n\n");
-        sb.append("## 重要规则\n\n");
-        sb.append("1. **始终使用工具** - 当你需要执行操作（安排提醒、发送消息、执行命令等）时，你必须调用适当的工具。不要只是说你会做或假装做。\n\n");
-        sb.append("2. **乐于助人和准确** - 使用工具时，简要说明你在做什么。\n\n");
-        sb.append("3. **记忆** - 记住某些内容时，写入 ").append(workspacePath).append("/memory/MEMORY.md\n");
-        
-        return sb.toString();
-    }
-    
-    /**
-     * 构建系统提示词的工具部分。
-     * 
-     * @return 工具部分字符串，无工具时返回空字符串
-     */
-    private String buildToolsSection() {
-        if (tools == null || tools.getSummaries().isEmpty()) {
-            return "";
-        }
-        
-        StringBuilder sb = new StringBuilder();
-        sb.append("## 可用工具\n\n");
-        sb.append("**重要**: 你必须使用工具来执行操作。不要假装执行命令或安排任务。\n\n");
-        sb.append("你可以访问以下工具:\n\n");
-        
-        for (String summary : tools.getSummaries()) {
-            sb.append(summary).append("\n");
-        }
-        
-        return sb.toString();
-    }
-    
-    /**
-     * 从工作空间加载引导文件。
-     * 
-     * 尝试加载 AGENTS.md、SOUL.md、USER.md、IDENTITY.md 等文件。
-     * 
-     * @return 引导文件内容，无文件时返回空字符串
-     */
-    private String loadBootstrapFiles() {
-        StringBuilder result = new StringBuilder();
-        
-        for (String filename : BOOTSTRAP_FILES) {
-            String content = loadBootstrapFile(filename);
-            if (StringUtils.isNotBlank(content)) {
-                result.append("## ").append(filename).append("\n\n");
-                result.append(content).append("\n\n");
-            }
-        }
-        
-        return result.toString();
-    }
-    
-    /**
-     * 加载单个引导文件。
-     * 
-     * @param filename 文件名
-     * @return 文件内容，失败时返回空字符串
-     */
-    private String loadBootstrapFile(String filename) {
-        try {
-            String filePath = Paths.get(workspace, filename).toString();
-            if (Files.exists(Paths.get(filePath))) {
-                return Files.readString(Paths.get(filePath));
-            }
-        } catch (IOException e) {
-            logger.debug("Failed to load bootstrap file", Map.of(
-                    "filename", filename,
-                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
-        }
-        return "";
-    }
-    
+
     /**
      * 为 LLM 构建消息列表。
      * 

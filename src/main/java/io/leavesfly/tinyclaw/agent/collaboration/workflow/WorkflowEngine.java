@@ -2,6 +2,7 @@ package io.leavesfly.tinyclaw.agent.collaboration.workflow;
 
 import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
+import io.leavesfly.tinyclaw.agent.collaboration.ApprovalCallback;
 import io.leavesfly.tinyclaw.agent.collaboration.CollaborationExecutorPool;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
@@ -99,6 +100,17 @@ public class WorkflowEngine {
 
         // 解析输出表达式
         String output = resolveOutput(workflow, context);
+
+        // 自反馈循环：由 Critic Agent 评估结果质量，不满意则重新生成
+        if (workflow.getVariables().containsKey("selfReflectionEnabled")
+                && Boolean.TRUE.equals(workflow.getVariables().get("selfReflectionEnabled"))) {
+            int maxRetries = 2;
+            Object retriesObj = workflow.getVariables().get("maxReflectionRetries");
+            if (retriesObj instanceof Number) {
+                maxRetries = ((Number) retriesObj).intValue();
+            }
+            output = applySelfReflection(output, sharedContext, executionContext, maxRetries);
+        }
 
         logger.info("工作流执行完成", Map.of(
                 "executedNodes", context.getExecutedNodeCount(),
@@ -200,6 +212,29 @@ public class WorkflowEngine {
             context.setNodeResult(node.getId(), skipped);
             logger.info("节点被条件分支跳过", Map.of("nodeId", node.getId()));
             return;
+        }
+
+        // Human-in-the-Loop：检查节点是否需要人类审批
+        if (node.isRequireApproval()) {
+            ApprovalCallback approvalCallback = context.getSharedContext().getMeta("approvalCallback");
+            if (approvalCallback != null) {
+                String approvalDesc = node.getApprovalDescription() != null
+                        ? node.getApprovalDescription()
+                        : "节点 " + node.getId() + " 请求执行审批";
+                ApprovalCallback.ApprovalContext approvalCtx = new ApprovalCallback.ApprovalContext(
+                        node.getId(), approvalDesc, buildNodeInput(node, context), context.getSharedContext());
+                ApprovalCallback.ApprovalResult approvalResult = approvalCallback.requestApproval(approvalCtx);
+                if (!approvalResult.isApproved()) {
+                    NodeResult rejected = new NodeResult(node.getId());
+                    rejected.markSkipped("人类审批拒绝: " + approvalResult.getFeedback());
+                    context.setNodeResult(node.getId(), rejected);
+                    logger.info("节点被人类审批拒绝", Map.of("nodeId", node.getId(), "feedback", approvalResult.getFeedback()));
+                    return;
+                }
+                logger.info("节点通过人类审批", Map.of("nodeId", node.getId()));
+            } else {
+                logger.warn("节点需要审批但未配置审批回调，跳过审批", Map.of("nodeId", node.getId()));
+            }
         }
 
         // 检查依赖是否有失败
@@ -369,6 +404,43 @@ public class WorkflowEngine {
         }
 
         return "工作流执行完成，但没有输出结果";
+    }
+
+    /**
+     * 自反馈循环：由 Critic Agent 评估结果质量，不满意则重新生成
+     */
+    private String applySelfReflection(String currentOutput, SharedContext sharedContext,
+                                       ExecutionContext executionContext, int maxRetries) {
+        AgentRole criticRole = AgentRole.of("Critic",
+                "你是一个严格的质量评审员。评估以下输出的质量，判断是否满足用户需求。\n"
+                + "如果质量合格，回复 [PASS] 并简要说明理由。\n"
+                + "如果质量不合格，回复 [FAIL] 并详细说明需要改进的地方。");
+        AgentExecutor criticAgent = executionContext.createAgentExecutor(criticRole);
+
+        for (int attempt = 0; attempt < maxRetries; attempt++) {
+            String evaluationPrompt = "【任务目标】" + sharedContext.getTopic() + "\n\n"
+                    + "【待评估输出】\n" + currentOutput + "\n\n"
+                    + "请评估以上输出的质量。";
+            String evaluation = criticAgent.answer(evaluationPrompt);
+
+            if (evaluation.contains("[PASS]")) {
+                logger.info("自反馈评估通过", Map.of("attempt", attempt + 1));
+                break;
+            }
+
+            logger.info("自反馈评估未通过，尝试改进", Map.of("attempt", attempt + 1));
+
+            // 使用改进建议重新生成
+            AgentRole improverRole = AgentRole.of("Improver",
+                    "你是一个内容改进专家。根据评审意见改进以下内容。");
+            AgentExecutor improverAgent = executionContext.createAgentExecutor(improverRole);
+            String improvePrompt = "【原始输出】\n" + currentOutput + "\n\n"
+                    + "【评审意见】\n" + evaluation + "\n\n"
+                    + "请根据评审意见改进原始输出，直接输出改进后的完整内容。";
+            currentOutput = improverAgent.answer(improvePrompt);
+        }
+
+        return currentOutput;
     }
 
     /**

@@ -3,7 +3,9 @@ package io.leavesfly.tinyclaw.agent.collaboration;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowDefinition;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 多 Agent 协同配置
@@ -38,7 +40,9 @@ public class CollaborationConfig {
         /** 分层决策模式：层级汇报式决策 */
         HIERARCHY,
         /** 通用工作流模式：LLM 动态生成 Workflow */
-        WORKFLOW
+        WORKFLOW,
+        /** 动态路由模式：Router Agent 动态选择下一个发言者 */
+        DYNAMIC
     }
 
     /** 协同模式 */
@@ -68,6 +72,27 @@ public class CollaborationConfig {
     /** 通用工作流定义 */
     private WorkflowDefinition workflow;
 
+    /** Token 预算上限（0 表示不限制） */
+    private long maxTokenBudget;
+
+    /** Human-in-the-Loop 审批回调（null 表示不需要审批） */
+    private transient ApprovalCallback approvalCallback;
+
+    /** 是否启用优雅降级（协同失败时自动降级为单 Agent 模式） */
+    private boolean fallbackEnabled;
+
+    /** 动态路由模式专用：Router Agent 的角色定义 */
+    private AgentRole routerRole;
+
+    /** 是否启用自反馈循环（Workflow 执行后由 Critic Agent 评估） */
+    private boolean selfReflectionEnabled;
+
+    /** 自反馈最大重试次数 */
+    private int maxReflectionRetries;
+
+    /** 扩展元数据（用于传递不适合作为一等字段的配置，如主 Agent 上下文摘要） */
+    private Map<String, String> metadata;
+
     public CollaborationConfig() {
         this.mode = Mode.DEBATE;
         this.maxRounds = 3;
@@ -75,6 +100,11 @@ public class CollaborationConfig {
         this.tasks = new ArrayList<>();
         this.consensusThreshold = 0.6;
         this.timeoutMs = 0;
+        this.maxTokenBudget = 0;
+        this.fallbackEnabled = false;
+        this.selfReflectionEnabled = false;
+        this.maxReflectionRetries = 2;
+        this.metadata = new HashMap<>();
     }
 
     // -------------------------------------------------------------------------
@@ -163,6 +193,21 @@ public class CollaborationConfig {
         return config;
     }
 
+    /**
+     * 创建动态路由配置
+     * <p>Router Agent 根据当前上下文动态选择下一个发言者，适合开放式协作场景。
+     *
+     * @param goal      协同目标
+     * @param maxRounds 最大轮次
+     */
+    public static CollaborationConfig dynamic(String goal, int maxRounds) {
+        CollaborationConfig config = new CollaborationConfig();
+        config.mode = Mode.DYNAMIC;
+        config.goal = goal;
+        config.maxRounds = maxRounds;
+        return config;
+    }
+
     // -------------------------------------------------------------------------
     // 链式配置方法
     // -------------------------------------------------------------------------
@@ -198,6 +243,55 @@ public class CollaborationConfig {
      */
     public CollaborationConfig withTimeout(long timeoutMillis) {
         this.timeoutMs = timeoutMillis;
+        return this;
+    }
+
+    /**
+     * 设置 Token 预算上限
+     *
+     * @param maxTokens 最大 token 数，0 表示不限制
+     */
+    public CollaborationConfig withTokenBudget(long maxTokens) {
+        this.maxTokenBudget = maxTokens;
+        return this;
+    }
+
+    /**
+     * 设置 Human-in-the-Loop 审批回调
+     *
+     * @param callback 审批回调，null 表示不需要审批
+     */
+    public CollaborationConfig withApproval(ApprovalCallback callback) {
+        this.approvalCallback = callback;
+        return this;
+    }
+
+    /**
+     * 启用优雅降级（协同失败时自动降级为单 Agent 模式）
+     */
+    public CollaborationConfig withFallback() {
+        this.fallbackEnabled = true;
+        return this;
+    }
+
+    /**
+     * 设置动态路由模式的 Router Agent
+     *
+     * @param router Router Agent 角色定义
+     */
+    public CollaborationConfig withRouter(AgentRole router) {
+        this.routerRole = router;
+        return this;
+    }
+
+    /**
+     * 启用自反馈循环
+     *
+     * @param maxRetries 最大重试次数
+     */
+    public CollaborationConfig withSelfReflection(int maxRetries) {
+        this.selfReflectionEnabled = true;
+        this.maxReflectionRetries = maxRetries;
         return this;
     }
 
@@ -275,5 +369,72 @@ public class CollaborationConfig {
 
     public void setWorkflow(WorkflowDefinition workflow) {
         this.workflow = workflow;
+    }
+
+    public long getMaxTokenBudget() {
+        return maxTokenBudget;
+    }
+
+    public void setMaxTokenBudget(long maxTokenBudget) {
+        this.maxTokenBudget = maxTokenBudget;
+    }
+
+    public ApprovalCallback getApprovalCallback() {
+        return approvalCallback;
+    }
+
+    public void setApprovalCallback(ApprovalCallback approvalCallback) {
+        this.approvalCallback = approvalCallback;
+    }
+
+    public boolean isFallbackEnabled() {
+        return fallbackEnabled;
+    }
+
+    public void setFallbackEnabled(boolean fallbackEnabled) {
+        this.fallbackEnabled = fallbackEnabled;
+    }
+
+    public AgentRole getRouterRole() {
+        return routerRole;
+    }
+
+    public void setRouterRole(AgentRole routerRole) {
+        this.routerRole = routerRole;
+    }
+
+    public boolean isSelfReflectionEnabled() {
+        return selfReflectionEnabled;
+    }
+
+    public void setSelfReflectionEnabled(boolean selfReflectionEnabled) {
+        this.selfReflectionEnabled = selfReflectionEnabled;
+    }
+
+    public int getMaxReflectionRetries() {
+        return maxReflectionRetries;
+    }
+
+    public void setMaxReflectionRetries(int maxReflectionRetries) {
+        this.maxReflectionRetries = maxReflectionRetries;
+    }
+
+    /**
+     * 设置扩展元数据
+     */
+    public CollaborationConfig withMeta(String key, String value) {
+        this.metadata.put(key, value);
+        return this;
+    }
+
+    /**
+     * 获取扩展元数据
+     */
+    public String getMeta(String key) {
+        return metadata.get(key);
+    }
+
+    public Map<String, String> getMetadata() {
+        return metadata;
     }
 }
