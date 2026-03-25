@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow.executor;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeExecutor;
@@ -73,16 +73,16 @@ public class ConditionalNodeExecutor implements NodeExecutor {
         }
 
         AgentRole role = node.getAgents().get(0);
-        AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
+        RoleAgent roleAgent = createAgentExecutor(role, executionContext);
 
         String input = buildNodeInput(node, context);
-        String response = agentExecutor.answer(input);
+        String response = roleAgent.answer(input);
 
         result.addAgentResult(role.getRoleName(), response);
         result.markCompleted(response);
     }
 
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 

@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
@@ -15,11 +15,11 @@ import java.util.Map;
  * Demo 命令 - 一键运行可复现的演示流程
  *
  * 当前支持的子模式：
- * - agent-basic：构造一个固定问题，直接通过 AgentLoop 跑完一轮 CLI 对话链路，方便现场演示。
+ * - agent-basic：构造一个固定问题，直接通过 AgentRuntime 跑完一轮 CLI 对话链路，方便现场演示。
  *
  * 学习/演示提示：
  * 结合 README 中的"5 分钟 Demo / Demo 1"，可以先执行 tinyclaw demo agent-basic，
- * 再对照 TinyClaw → DemoCommand → AgentLoop 的调用关系，向听众讲解从配置加载、
+ * 再对照 TinyClaw → DemoCommand → AgentRuntime 的调用关系，向听众讲解从配置加载、
  * LLM Provider 初始化，到一次完整推理流程的关键步骤。
  */
 public class DemoCommand extends CliCommand {
@@ -55,7 +55,7 @@ public class DemoCommand extends CliCommand {
 
     private int runAgentBasicDemo() {
         System.out.println(LOGO + " Running demo: agent-basic");
-        System.out.println("这个 Demo 会加载配置、初始化 LLMProvider 和 AgentLoop，然后用一个固定问题跑完一次 CLI 对话流程。\n");
+        System.out.println("这个 Demo 会加载配置、初始化 LLMProvider 和 AgentRuntime，然后用一个固定问题跑完一次 CLI 对话流程。\n");
 
         // 1. 加载配置
         Config config;
@@ -103,11 +103,11 @@ public class DemoCommand extends CliCommand {
             return 1;
         }
 
-        // 3. 创建 MessageBus 和 AgentLoop
+        // 3. 创建 MessageBus 和 AgentRuntime
         MessageBus bus = new MessageBus();
-        AgentLoop agentLoop = new AgentLoop(config, bus, provider);
+        AgentRuntime agentRuntime = new AgentRuntime(config, bus, provider);
 
-        Map<String, Object> startupInfo = agentLoop.getStartupInfo();
+        Map<String, Object> startupInfo = agentRuntime.getStartupInfo();
         @SuppressWarnings("unchecked")
         Map<String, Object> toolsInfo = (Map<String, Object>) startupInfo.get("tools");
         @SuppressWarnings("unchecked")
@@ -125,11 +125,11 @@ public class DemoCommand extends CliCommand {
 
         System.out.println("示例问题: " + question + "\n");
         try {
-            String answer = agentLoop.processDirect(question, sessionKey);
+            String answer = agentRuntime.processDirect(question, sessionKey);
             System.out.println(LOGO + " Demo 响应:\n");
             System.out.println(answer);
             System.out.println();
-            System.out.println("（可以打开 AgentLoop、MessageBus、ToolRegistry 等类，对照这次 Demo 的日志来讲解内部流程。）");
+            System.out.println("（可以打开 AgentRuntime、MessageBus、ToolRegistry 等类，对照这次 Demo 的日志来讲解内部流程。）");
         } catch (Exception e) {
             System.err.println("运行 Demo 时出错: " + e.getMessage());
             return 1;

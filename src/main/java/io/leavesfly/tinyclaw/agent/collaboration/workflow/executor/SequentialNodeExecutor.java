@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow.executor;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeExecutor;
@@ -26,8 +26,8 @@ public class SequentialNodeExecutor implements NodeExecutor {
         StringBuilder accumulated = new StringBuilder(input);
 
         for (AgentRole role : node.getAgents()) {
-            AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-            String response = agentExecutor.answer(accumulated.toString());
+            RoleAgent roleAgent = createAgentExecutor(role, executionContext);
+            String response = roleAgent.answer(accumulated.toString());
 
             result.addAgentResult(role.getRoleName(), response);
 
@@ -39,7 +39,7 @@ public class SequentialNodeExecutor implements NodeExecutor {
         result.markCompleted(result.getAgentResults().get(lastAgentName));
     }
 
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 

@@ -121,6 +121,9 @@ public class SharedContext {
      *
      * <p>使用 {@link CopyOnWriteArrayList} 保证并发写入安全。
      * 流式回调在 add 完成后触发，避免回调内读取 history 时出现可见性问题。
+     *
+     * <p>当消息已通过 {@code speakStream} 逐 chunk 流式输出过时，
+     * 调用方应使用 {@link #addMessageSilent(AgentMessage)} 避免重复推送完整消息。
      */
     public void addMessage(AgentMessage message) {
         if (message == null) {
@@ -134,6 +137,20 @@ public class SharedContext {
                     ? message.getAgentRole() : message.getAgentId();
             cb.onEvent(StreamEvent.collaborateAgent(agentName, message.getContent()));
         }
+    }
+
+    /**
+     * 静默添加消息到历史（不触发流式回调）。
+     * <p>用于已通过 {@code speakStream} 逐 chunk 流式输出过的消息，
+     * 避免完整消息再次通过 {@code COLLABORATE_AGENT} 事件重复推送给用户。
+     *
+     * @param message Agent 消息
+     */
+    public void addMessageSilent(AgentMessage message) {
+        if (message == null) {
+            return;
+        }
+        history.add(message);
     }
 
     /**

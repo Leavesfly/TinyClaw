@@ -153,7 +153,7 @@ public class ProvidersConfig {
     /**
      * 根据 provider 名称查找对应的 ProviderConfig。
      *
-     * <p>将 provider 名称到配置对象的映射收敛在此处，避免调用方（如 AgentLoop）
+     * <p>将 provider 名称到配置对象的映射收敛在此处，避免调用方（如 AgentRuntime）
      * 需要感知具体的 provider 枚举，降低耦合。</p>
      *
      * @param providerName provider 名称，如 "openai"、"anthropic" 等

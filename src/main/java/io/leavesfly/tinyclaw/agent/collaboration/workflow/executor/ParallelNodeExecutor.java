@@ -1,12 +1,11 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow.executor;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeExecutor;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeResult;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowContext;
-import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowEngine;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowNode;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 
@@ -45,8 +44,8 @@ public class ParallelNodeExecutor implements NodeExecutor {
 
         for (AgentRole role : node.getAgents()) {
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
-                String response = agentExecutor.answer(input);
+                RoleAgent roleAgent = createAgentExecutor(role, executionContext);
+                String response = roleAgent.answer(input);
                 synchronized (result) {
                     result.addAgentResult(role.getRoleName(), response);
                 }
@@ -74,7 +73,7 @@ public class ParallelNodeExecutor implements NodeExecutor {
         }
     }
 
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 

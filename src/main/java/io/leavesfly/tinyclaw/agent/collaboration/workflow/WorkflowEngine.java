@@ -1,11 +1,7 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
-import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
-import io.leavesfly.tinyclaw.agent.collaboration.ApprovalCallback;
-import io.leavesfly.tinyclaw.agent.collaboration.CollaborationExecutorPool;
-import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
-import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
+import io.leavesfly.tinyclaw.agent.collaboration.*;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowNode.NodeType;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.executor.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -415,7 +411,7 @@ public class WorkflowEngine {
                 "你是一个严格的质量评审员。评估以下输出的质量，判断是否满足用户需求。\n"
                 + "如果质量合格，回复 [PASS] 并简要说明理由。\n"
                 + "如果质量不合格，回复 [FAIL] 并详细说明需要改进的地方。");
-        AgentExecutor criticAgent = executionContext.createAgentExecutor(criticRole);
+        RoleAgent criticAgent = executionContext.createAgentExecutor(criticRole);
 
         for (int attempt = 0; attempt < maxRetries; attempt++) {
             String evaluationPrompt = "【任务目标】" + sharedContext.getTopic() + "\n\n"
@@ -433,7 +429,7 @@ public class WorkflowEngine {
             // 使用改进建议重新生成
             AgentRole improverRole = AgentRole.of("Improver",
                     "你是一个内容改进专家。根据评审意见改进以下内容。");
-            AgentExecutor improverAgent = executionContext.createAgentExecutor(improverRole);
+            RoleAgent improverAgent = executionContext.createAgentExecutor(improverRole);
             String improvePrompt = "【原始输出】\n" + currentOutput + "\n\n"
                     + "【评审意见】\n" + evaluation + "\n\n"
                     + "请根据评审意见改进原始输出，直接输出改进后的完整内容。";
@@ -446,7 +442,7 @@ public class WorkflowEngine {
     /**
      * 创建 Agent 执行器，统一使用 ExecutionContext 的工厂方法
      */
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 }

@@ -26,7 +26,7 @@ public class TeamWorkStrategy implements CollaborationStrategy {
     }
     
     @Override
-    public String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config) {
+    public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         List<TeamTask> tasks = config.getTasks();
         
         if (tasks.isEmpty()) {
@@ -39,8 +39,8 @@ public class TeamWorkStrategy implements CollaborationStrategy {
                 "agentCount", agents.size()
         ));
         
-        // 构建Agent映射（角色ID -> AgentExecutor）
-        Map<String, AgentExecutor> agentMap = buildAgentMap(agents);
+        // 构建Agent映射（角色ID -> RoleAgent）
+        Map<String, RoleAgent> agentMap = buildAgentMap(agents);
         
         // 构建任务映射（任务ID -> TeamTask）
         Map<String, TeamTask> taskMap = tasks.stream()
@@ -96,9 +96,9 @@ public class TeamWorkStrategy implements CollaborationStrategy {
     /**
      * 构建Agent映射
      */
-    private Map<String, AgentExecutor> buildAgentMap(List<AgentExecutor> agents) {
-        Map<String, AgentExecutor> map = new HashMap<>();
-        for (AgentExecutor agent : agents) {
+    private Map<String, RoleAgent> buildAgentMap(List<RoleAgent> agents) {
+        Map<String, RoleAgent> map = new HashMap<>();
+        for (RoleAgent agent : agents) {
             map.put(agent.getRole().getRoleId(), agent);
             map.put(agent.getRole().getRoleName(), agent);
         }
@@ -166,7 +166,7 @@ public class TeamWorkStrategy implements CollaborationStrategy {
     /**
      * 并行执行任务
      */
-    private void executeTasksInParallel(List<TeamTask> tasks, Map<String, AgentExecutor> agentMap, 
+    private void executeTasksInParallel(List<TeamTask> tasks, Map<String, RoleAgent> agentMap,
                                          SharedContext context) {
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         
@@ -189,7 +189,7 @@ public class TeamWorkStrategy implements CollaborationStrategy {
     /**
      * 执行单个任务
      */
-    private void executeTask(TeamTask task, Map<String, AgentExecutor> agentMap, SharedContext context) {
+    private void executeTask(TeamTask task, Map<String, RoleAgent> agentMap, SharedContext context) {
         task.markStarted();
         
         AgentRole assignee = task.getAssignee();
@@ -198,7 +198,7 @@ public class TeamWorkStrategy implements CollaborationStrategy {
             return;
         }
         
-        AgentExecutor agent = agentMap.get(assignee.getRoleId());
+        RoleAgent agent = agentMap.get(assignee.getRoleId());
         if (agent == null) {
             agent = agentMap.get(assignee.getRoleName());
         }

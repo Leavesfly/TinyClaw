@@ -2,6 +2,7 @@ package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
 import io.leavesfly.tinyclaw.agent.collaboration.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMProvider;
 
 import java.util.List;
 import java.util.Map;
@@ -41,13 +42,13 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
     }
 
     @Override
-    public String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config) {
+    public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         if (agents.isEmpty()) {
             return "动态路由至少需要 1 个参与者";
         }
 
         // 创建或使用配置中指定的 Router Agent
-        AgentExecutor routerAgent = createRouterAgent(config, agents);
+        RoleAgent routerAgent = createRouterAgent(config, agents);
 
         logger.info("开始动态路由协同", Map.of(
                 "topic", context.getTopic(),
@@ -58,9 +59,9 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
         while (!shouldTerminate(context, config)) {
             context.nextRound();
 
-            // 1. Router Agent 决定下一个发言者
+            // 1. Router Agent 决定下一个发言者（Router 的决策不需要流式输出给用户）
             String routingDecision = routerAgent.speak(context, buildRoutingPrompt(agents, context));
-            context.addMessage(
+            context.addMessageSilent(
                     AgentMessage.builder(routerAgent.getAgentId(), routerAgent.getRoleName(), routingDecision)
                             .type(AgentMessage.MessageType.SYSTEM)
                             .build()
@@ -91,15 +92,15 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
             }
 
             // 4. 找到对应的 Agent 并让其发言
-            AgentExecutor selectedAgent = findAgentByRole(agents, nextRoleName);
+            RoleAgent selectedAgent = findAgentByRole(agents, nextRoleName);
             if (selectedAgent == null) {
                 logger.warn("未找到角色，跳过本轮", Map.of("roleName", nextRoleName));
                 context.addMessage(AgentMessage.system("未找到角色 [" + nextRoleName + "]，跳过本轮"));
                 continue;
             }
 
-            String response = selectedAgent.speak(context);
-            context.addMessage(selectedAgent.getAgentId(), selectedAgent.getRoleName(), response);
+            String response = speakWithStream(selectedAgent, context, null);
+            addMessageWithStream(context, selectedAgent.getAgentId(), selectedAgent.getRoleName(), response);
 
             logger.info("Agent 发言", Map.of(
                     "round", context.getCurrentRound(),
@@ -124,12 +125,12 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
      * 创建 Router Agent
      * <p>优先使用配置中指定的 routerRole，否则使用默认的路由角色定义。
      */
-    private AgentExecutor createRouterAgent(CollaborationConfig config, List<AgentExecutor> agents) {
+    private RoleAgent createRouterAgent(CollaborationConfig config, List<RoleAgent> agents) {
         AgentRole routerRole = config.getRouterRole();
         if (routerRole == null) {
             // 构建参与者列表描述
             StringBuilder participantsDesc = new StringBuilder();
-            for (AgentExecutor agent : agents) {
+            for (RoleAgent agent : agents) {
                 AgentRole role = agent.getRole();
                 participantsDesc.append("- ").append(role.getRoleName());
                 if (role.getDescription() != null && !role.getDescription().isEmpty()) {
@@ -161,7 +162,7 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
     /**
      * 构建路由提示词
      */
-    private String buildRoutingPrompt(List<AgentExecutor> agents, SharedContext context) {
+    private String buildRoutingPrompt(List<RoleAgent> agents, SharedContext context) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("请分析当前对话进展，决定下一步应该由哪个角色发言。\n\n");
 
@@ -175,7 +176,7 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
 
         // 统计各角色发言次数
         prompt.append("各角色已发言次数：\n");
-        for (AgentExecutor agent : agents) {
+        for (RoleAgent agent : agents) {
             long count = context.getMessagesByRole(agent.getRoleName()).size();
             prompt.append("- ").append(agent.getRoleName()).append(": ").append(count).append(" 次\n");
         }
@@ -196,17 +197,17 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
     }
 
     /**
-     * 根据角色名查找 AgentExecutor
+     * 根据角色名查找 RoleAgent
      */
-    private AgentExecutor findAgentByRole(List<AgentExecutor> agents, String roleName) {
+    private RoleAgent findAgentByRole(List<RoleAgent> agents, String roleName) {
         // 精确匹配
-        for (AgentExecutor agent : agents) {
+        for (RoleAgent agent : agents) {
             if (roleName.equals(agent.getRoleName())) {
                 return agent;
             }
         }
         // 模糊匹配（包含关系）
-        for (AgentExecutor agent : agents) {
+        for (RoleAgent agent : agents) {
             if (agent.getRoleName().contains(roleName) || roleName.contains(agent.getRoleName())) {
                 return agent;
             }
@@ -217,19 +218,15 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
     /**
      * 构建最终结论（由 Router Agent 总结）
      */
-    private String buildConclusion(SharedContext context, AgentExecutor routerAgent) {
+    private String buildConclusion(SharedContext context, RoleAgent routerAgent) {
         String summaryPrompt = "协同讨论已结束。请综合所有参与者的观点，给出最终的结论和总结。\n"
                 + "要求：\n"
                 + "1. 概述讨论的核心议题\n"
                 + "2. 总结各方的主要观点\n"
                 + "3. 给出综合结论和建议";
 
-        String conclusion = routerAgent.speak(context, summaryPrompt);
-        context.addMessage(
-                AgentMessage.builder(routerAgent.getAgentId(), routerAgent.getRoleName(), conclusion)
-                        .type(AgentMessage.MessageType.SYSTEM)
-                        .build()
-        );
+        String conclusion = speakWithStream(routerAgent, context, summaryPrompt);
+        addMessageWithStream(context, routerAgent.getAgentId(), routerAgent.getRoleName(), conclusion);
         return conclusion;
     }
 
@@ -246,6 +243,32 @@ public class DynamicRoutingStrategy implements CollaborationStrategy {
             return true;
         }
         return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // 流式发言辅助方法
+    // -------------------------------------------------------------------------
+
+    /**
+     * 根据 SharedContext 是否持有流式回调，选择流式或非流式发言。
+     */
+    private String speakWithStream(RoleAgent speaker, SharedContext context, String prompt) {
+        LLMProvider.EnhancedStreamCallback callback = context.getStreamCallback();
+        if (callback != null) {
+            return speaker.speakStream(context, prompt, callback);
+        }
+        return prompt != null ? speaker.speak(context, prompt) : speaker.speak(context);
+    }
+
+    /**
+     * 根据是否已流式输出过，选择静默或普通方式添加消息到历史。
+     */
+    private void addMessageWithStream(SharedContext context, String agentId, String roleName, String content) {
+        if (context.getStreamCallback() != null) {
+            context.addMessageSilent(new AgentMessage(agentId, roleName, content));
+        } else {
+            context.addMessage(agentId, roleName, content);
+        }
     }
 
     @Override

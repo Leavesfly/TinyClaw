@@ -53,7 +53,7 @@ public interface Channel {
      * 创建流式输出回调。
      *
      * 仅在 {@link #supportsStreaming()} 返回 true 时有效。
-     * 返回的 {@link LLMProvider.StreamCallback} 由 AgentLoop 传给 LLMExecutor，
+     * 返回的 {@link LLMProvider.StreamCallback} 由 AgentRuntime 传给 LLMExecutor，
      * 通道实现负责在回调中将 LLM 生成的 chunk 实时推送给用户。
      *
      * @param chatId 目标会话 ID

@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
@@ -238,9 +238,9 @@ public abstract class CliCommand {
     }
 
     /**
-     * 注册常用工具到 AgentLoop
+     * 注册常用工具到 AgentRuntime
      */
-    protected void registerTools(AgentLoop agentLoop, Config config, MessageBus bus, LLMProvider provider) {
+    protected void registerTools(AgentRuntime agentRuntime, Config config, MessageBus bus, LLMProvider provider) {
         String workspace = config.getWorkspacePath();
 
         // 初始化 SecurityGuard
@@ -255,28 +255,28 @@ public abstract class CliCommand {
         }
 
         // 文件工具
-        agentLoop.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
-        agentLoop.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
+        agentRuntime.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
+        agentRuntime.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
 
-        agentLoop.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
-        agentLoop.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
+        agentRuntime.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
+        agentRuntime.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
 
         // 执行工具
-        agentLoop.registerTool(new ExecTool(workspace, securityGuard));
+        agentRuntime.registerTool(new ExecTool(workspace, securityGuard));
 
         // 网络工具
         String braveApiKey = config.getTools() != null ? config.getTools().getBraveApi() : null;
         if (braveApiKey != null && !braveApiKey.isEmpty()) {
-            agentLoop.registerTool(new WebSearchTool(braveApiKey, 5));
+            agentRuntime.registerTool(new WebSearchTool(braveApiKey, 5));
         }
-        agentLoop.registerTool(new WebFetchTool(50000));
+        agentRuntime.registerTool(new WebFetchTool(50000));
 
         // 消息工具
         MessageTool messageTool = new MessageTool();
         messageTool.setSendCallback((channel, chatId, content) -> {
             bus.publishOutbound(new OutboundMessage(channel, chatId, content));
         });
-        agentLoop.registerTool(messageTool);
+        agentRuntime.registerTool(messageTool);
 
         // 定时任务工具
         String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
@@ -285,22 +285,22 @@ public abstract class CliCommand {
         CronTool cronTool = new CronTool(cronService, new CronTool.JobExecutor() {
             @Override
             public String processDirectWithChannel(String content, String sessionKey, String channel, String chatId) throws Exception {
-                return agentLoop.processDirectWithChannel(content, sessionKey, channel, chatId);
+                return agentRuntime.processDirectWithChannel(content, sessionKey, channel, chatId);
             }
         }, bus);
-        agentLoop.registerTool(cronTool);
+        agentRuntime.registerTool(cronTool);
 
         // 子代理工具（传入 ToolRegistry 以支持工具调用和 Agent Loop）
-        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentLoop.getToolRegistry());
-        agentLoop.registerTool(new SpawnTool(subagentManager));
+        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry());
+        agentRuntime.registerTool(new SpawnTool(subagentManager));
 
         // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
-        agentLoop.registerTool(new SkillsTool(workspace, agentLoop.getSkillsLoader(),
+        agentRuntime.registerTool(new SkillsTool(workspace, agentRuntime.getSkillsLoader(),
                 config.getTools() != null ? config.getTools().getSkills() : null));
 
         // 社交网络工具
         if (config.getSocialNetwork() != null && config.getSocialNetwork().isEnabled()) {
-            agentLoop.registerTool(new SocialNetworkTool(
+            agentRuntime.registerTool(new SocialNetworkTool(
                     config.getSocialNetwork().getEndpoint(),
                     config.getSocialNetwork().getAgentId(),
                     config.getSocialNetwork().getApiKey()
@@ -308,27 +308,27 @@ public abstract class CliCommand {
         }
 
         // Token 消耗查询工具
-        TokenUsageStore tokenUsageStore = agentLoop.getTokenUsageStore();
+        TokenUsageStore tokenUsageStore = agentRuntime.getTokenUsageStore();
         if (tokenUsageStore != null) {
-            agentLoop.registerTool(new TokenUsageTool(tokenUsageStore));
+            agentRuntime.registerTool(new TokenUsageTool(tokenUsageStore));
         }
 
         // 多 Agent 协同工具（仅在协同功能启用时注册）
-        AgentOrchestrator orchestrator = agentLoop.getOrchestrator();
+        AgentOrchestrator orchestrator = agentRuntime.getOrchestrator();
         if (orchestrator != null) {
             CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
             collaborateTool.setLLMContext(provider, config.getAgent().getModel());
-            agentLoop.registerTool(collaborateTool);
+            agentRuntime.registerTool(collaborateTool);
         }
     }
 
     /**
      * 打印 Agent 启动状态信息
      */
-    protected void printAgentStatus(AgentLoop agentLoop) {
+    protected void printAgentStatus(AgentRuntime agentRuntime) {
         System.out.println();
         System.out.println("📦 Agent 状态:");
-        Map<String, Object> startupInfo = agentLoop.getStartupInfo();
+        Map<String, Object> startupInfo = agentRuntime.getStartupInfo();
         @SuppressWarnings("unchecked")
         Map<String, Object> toolsInfo = (Map<String, Object>) startupInfo.get("tools");
         @SuppressWarnings("unchecked")

@@ -3,7 +3,7 @@ package io.leavesfly.tinyclaw.web.handler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackType;
 import io.leavesfly.tinyclaw.config.Config;
@@ -30,19 +30,19 @@ public class FeedbackHandler {
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web.feedback");
 
     private final Config config;
-    private final AgentLoop agentLoop;
+    private final AgentRuntime agentRuntime;
     private final SecurityMiddleware security;
 
     /**
      * 构造 FeedbackHandler。
      *
      * @param config    全局配置
-     * @param agentLoop Agent 循环执行器
+     * @param agentRuntime Agent 循环执行器
      * @param security  安全中间件
      */
-    public FeedbackHandler(Config config, AgentLoop agentLoop, SecurityMiddleware security) {
+    public FeedbackHandler(Config config, AgentRuntime agentRuntime, SecurityMiddleware security) {
         this.config = config;
-        this.agentLoop = agentLoop;
+        this.agentRuntime = agentRuntime;
         this.security = security;
     }
 
@@ -84,7 +84,7 @@ public class FeedbackHandler {
         String corsOrigin = config.getGateway().getCorsOrigin();
         
         // 检查进化功能是否启用
-        FeedbackManager feedbackManager = agentLoop.getFeedbackManager();
+        FeedbackManager feedbackManager = agentRuntime.getFeedbackManager();
         if (feedbackManager == null) {
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("success", false);
@@ -175,15 +175,15 @@ public class FeedbackHandler {
     private void handleGetStatus(HttpExchange exchange) throws IOException {
         String corsOrigin = config.getGateway().getCorsOrigin();
         
-        boolean feedbackEnabled = agentLoop.getFeedbackManager() != null;
-        boolean promptOptEnabled = agentLoop.getPromptOptimizer() != null;
+        boolean feedbackEnabled = agentRuntime.getFeedbackManager() != null;
+        boolean promptOptEnabled = agentRuntime.getPromptOptimizer() != null;
         
         ObjectNode result = WebUtils.MAPPER.createObjectNode();
         result.put("feedbackEnabled", feedbackEnabled);
         result.put("promptOptimizationEnabled", promptOptEnabled);
         
-        if (feedbackEnabled && agentLoop.getPromptOptimizer() != null) {
-            Map<String, Object> stats = agentLoop.getPromptOptimizer().getStats();
+        if (feedbackEnabled && agentRuntime.getPromptOptimizer() != null) {
+            Map<String, Object> stats = agentRuntime.getPromptOptimizer().getStats();
             ObjectNode statsNode = WebUtils.MAPPER.createObjectNode();
             for (Map.Entry<String, Object> entry : stats.entrySet()) {
                 statsNode.putPOJO(entry.getKey(), entry.getValue());

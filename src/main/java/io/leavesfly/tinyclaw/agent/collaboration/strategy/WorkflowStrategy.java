@@ -1,10 +1,7 @@
 package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
-import io.leavesfly.tinyclaw.agent.collaboration.CollaborationConfig;
-import io.leavesfly.tinyclaw.agent.collaboration.CollaborationExecutorPool;
-import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
-import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
+import io.leavesfly.tinyclaw.agent.collaboration.*;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowDefinition;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowEngine;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -32,7 +29,7 @@ public class WorkflowStrategy implements CollaborationStrategy {
     }
     
     @Override
-    public String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config) {
+    public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         WorkflowDefinition workflow = config.getWorkflow();
         
         if (workflow == null) {

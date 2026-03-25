@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.agent.collaboration;
 import io.leavesfly.tinyclaw.agent.LLMExecutor;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
+import io.leavesfly.tinyclaw.providers.StreamEvent;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
@@ -13,7 +14,7 @@ import java.util.List;
  * 单个Agent执行器
  * 封装Agent的执行能力，用于多Agent协同场景
  */
-public class AgentExecutor {
+public class RoleAgent {
     
     /** Agent唯一标识（格式：collab-<sessionId>-<sequence>） */
     private final String agentId;
@@ -34,10 +35,10 @@ public class AgentExecutor {
     private final String baseSystemPrompt;
     
     /**
-     * 构造 AgentExecutor，使用外部传入的共享 SessionManager。
+     * 构造 RoleAgent，使用外部传入的共享 SessionManager。
      *
-     * <p>协同场景下所有 AgentExecutor 共享同一个 SessionManager 实例（由 ExecutionContext 持有），
-     * 避免每个 AgentExecutor 独立初始化 SessionManager 带来的重复磁盘 IO 开销。
+     * <p>协同场景下所有 RoleAgent 共享同一个 SessionManager 实例（由 ExecutionContext 持有），
+     * 避免每个 RoleAgent 独立初始化 SessionManager 带来的重复磁盘 IO 开销。
      *
      * @param role           Agent 角色定义
      * @param provider       LLM 服务提供者
@@ -49,9 +50,9 @@ public class AgentExecutor {
      * @param sequence       Agent 序号（在协同会话内唯一）
      * @param baseSystemPrompt 基础系统提示词（可选，继承自主 Agent 的核心身份信息）
      */
-    public AgentExecutor(AgentRole role, LLMProvider provider, ToolRegistry tools,
-                         SessionManager sharedSessions, String model, int maxIterations,
-                         String sessionId, int sequence, String baseSystemPrompt) {
+    public RoleAgent(AgentRole role, LLMProvider provider, ToolRegistry tools,
+                     SessionManager sharedSessions, String model, int maxIterations,
+                     String sessionId, int sequence, String baseSystemPrompt) {
         this.agentId = "collab-" + sessionId + "-" + sequence;
         this.role = role;
         this.sessionManager = sharedSessions;
@@ -101,7 +102,42 @@ public class AgentExecutor {
             return "执行失败: " + e.getMessage();
         }
     }
-    
+
+    /**
+     * Agent 流式发言（基于共享上下文）
+     * <p>LLM 生成回复时逐 chunk 通过 {@link StreamEvent#collaborateAgentChunk} 事件输出，
+     * 用户无需等待完整回复即可看到 Agent 的发言过程。
+     *
+     * @param context  共享上下文
+     * @param callback 流式回调，接收 COLLABORATE_AGENT_CHUNK 事件
+     * @return Agent 的完整回复内容
+     */
+    public String speakStream(SharedContext context, LLMProvider.EnhancedStreamCallback callback) {
+        return speakStream(context, null, callback);
+    }
+
+    /**
+     * Agent 流式发言（带自定义提示）
+     * <p>LLM 生成回复时逐 chunk 通过 {@link StreamEvent#collaborateAgentChunk} 事件输出。
+     *
+     * @param context      共享上下文
+     * @param customPrompt 自定义提示（追加到系统提示后）
+     * @param callback     流式回调，接收 COLLABORATE_AGENT_CHUNK 事件
+     * @return Agent 的完整回复内容
+     */
+    public String speakStream(SharedContext context, String customPrompt,
+                              LLMProvider.EnhancedStreamCallback callback) {
+        List<Message> messages = buildMessages(context, customPrompt);
+        try {
+            // 将 LLM 的流式 CONTENT chunk 转换为 COLLABORATE_AGENT_CHUNK 事件
+            LLMProvider.StreamCallback chunkRelay = chunk ->
+                    callback.onEvent(StreamEvent.collaborateAgentChunk(role.getRoleName(), chunk));
+            return llmExecutor.executeStream(messages, sessionKey, chunkRelay);
+        } catch (Exception e) {
+            return "执行失败: " + e.getMessage();
+        }
+    }
+
     /**
      * Agent直接回答（不使用共享上下文历史）
      * 
@@ -206,7 +242,7 @@ public class AgentExecutor {
     
     @Override
     public String toString() {
-        return "AgentExecutor{" +
+        return "RoleAgent{" +
                 "agentId='" + agentId + '\'' +
                 ", role=" + role.getRoleName() +
                 '}';

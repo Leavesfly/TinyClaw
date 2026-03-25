@@ -136,7 +136,7 @@ public class AgentOrchestrator {
         }
         
         // 2. 根据角色配置创建Agent执行器
-        List<AgentExecutor> agents = createAgents(config);
+        List<RoleAgent> agents = createAgents(config);
         
         if (agents.isEmpty() && config.getMode() != CollaborationConfig.Mode.HIERARCHY) {
             return "未配置参与角色，无法启动协同";
@@ -195,7 +195,7 @@ public class AgentOrchestrator {
             if (config.isFallbackEnabled()) {
                 logger.info("协同失败，启用优雅降级为单 Agent 模式", Map.of("error", e.getMessage()));
                 try {
-                    AgentExecutor fallbackAgent = executionContext.createAgentExecutor(
+                    RoleAgent fallbackAgent = executionContext.createAgentExecutor(
                             AgentRole.of("Fallback", "你是一个通用助手。请直接回答用户的问题。"));
                     String fallbackResult = fallbackAgent.answer(userInput);
                     if (callback != null) {
@@ -380,8 +380,8 @@ public class AgentOrchestrator {
     /**
      * 为每个角色创建独立的Agent执行器
      */
-    private List<AgentExecutor> createAgents(CollaborationConfig config) {
-        List<AgentExecutor> agents = new ArrayList<>();
+    private List<RoleAgent> createAgents(CollaborationConfig config) {
+        List<RoleAgent> agents = new ArrayList<>();
         
         List<AgentRole> roles = config.getRoles();
         if (roles == null || roles.isEmpty()) {
@@ -393,8 +393,8 @@ public class AgentOrchestrator {
         }
         
         for (AgentRole role : roles) {
-            // 使用 ExecutionContext 的工厂方法统一创建 AgentExecutor
-            AgentExecutor executor = executionContext.createAgentExecutor(role);
+            // 使用 ExecutionContext 的工厂方法统一创建 RoleAgent
+            RoleAgent executor = executionContext.createAgentExecutor(role);
             agents.add(executor);
 
             logger.debug("创建Agent", Map.of(

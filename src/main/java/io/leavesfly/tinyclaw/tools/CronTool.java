@@ -364,7 +364,7 @@ public class CronTool implements Tool, ToolContextAware {
                     jobChannel,
                     jobChatId
             );
-            // 响应会通过 MessageBus 由 AgentLoop 自动发送
+            // 响应会通过 MessageBus 由 AgentRuntime 自动发送
             return "ok";
         } catch (Exception e) {
             logger.error("Failed to execute cron job", Map.of(

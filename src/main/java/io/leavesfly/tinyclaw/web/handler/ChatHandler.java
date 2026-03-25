@@ -3,7 +3,7 @@ package io.leavesfly.tinyclaw.web.handler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -26,15 +26,15 @@ public class ChatHandler {
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
 
     private final Config config;
-    private final AgentLoop agentLoop;
+    private final AgentRuntime agentRuntime;
     private final SecurityMiddleware security;
 
     /**
      * 构造 ChatHandler，注入全局配置、Agent 循环执行器与安全中间件。
      */
-    public ChatHandler(Config config, AgentLoop agentLoop, SecurityMiddleware security) {
+    public ChatHandler(Config config, AgentRuntime agentRuntime, SecurityMiddleware security) {
         this.config = config;
-        this.agentLoop = agentLoop;
+        this.agentRuntime = agentRuntime;
         this.security = security;
     }
 
@@ -72,7 +72,7 @@ public class ChatHandler {
         String sessionId = json.path("sessionId").asText(WebUtils.DEFAULT_SESSION_ID);
 
         try {
-            String response = agentLoop.processDirect(message, sessionId);
+            String response = agentRuntime.processDirect(message, sessionId);
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("response", response);
             result.put("sessionId", sessionId);
@@ -147,7 +147,7 @@ public class ChatHandler {
     }
 
     /**
-     * 调用 AgentLoop 流式接口，将每个事件序列化为 JSON 后写入 SSE 流。
+     * 调用 AgentRuntime 流式接口，将每个事件序列化为 JSON 后写入 SSE 流。
      * 使用 EnhancedStreamCallback 接收结构化事件（工具调用、子代理、普通内容等），
      * 前端通过 JSON 中的 type 字段区分事件类型并渲染不同 UI 组件。
      */
@@ -161,7 +161,7 @@ public class ChatHandler {
         };
 
         try {
-            agentLoop.processDirectStream(message, images, sessionId, enhancedCallback);
+            agentRuntime.processDirectStream(message, images, sessionId, enhancedCallback);
         } catch (Exception e) {
             logger.error("Agent stream processing error", Map.of("error", e.getMessage()));
             try {

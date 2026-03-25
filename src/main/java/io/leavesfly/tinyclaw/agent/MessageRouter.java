@@ -18,7 +18,7 @@ import java.util.Map;
 /**
  * 消息路由器，负责将入站消息分发到不同的处理逻辑。
  *
- * <p>从 AgentLoop 中抽取的消息路由逻辑，包括指令处理、用户消息处理、
+ * <p>从 AgentRuntime 中抽取的消息路由逻辑，包括指令处理、用户消息处理、
  * 系统消息处理、流式输出支持等功能。</p>
  */
 class MessageRouter {

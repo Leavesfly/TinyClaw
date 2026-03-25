@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.CollaborationConfig;
 import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
 
@@ -20,7 +20,7 @@ public interface CollaborationStrategy {
      * @param config  协同配置
      * @return 最终结论/结果
      */
-    String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config);
+    String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config);
 
     /**
      * 判断是否应该结束协同

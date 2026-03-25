@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow.executor;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeExecutor;
@@ -39,7 +39,7 @@ public class AggregateNodeExecutor implements NodeExecutor {
         }
 
         AgentRole aggregatorRole = node.getAgents().get(0);
-        AgentExecutor aggregator = createAgentExecutor(aggregatorRole, executionContext);
+        RoleAgent aggregator = createAgentExecutor(aggregatorRole, executionContext);
 
         String aggregationPrompt = buildNodeInput(node, context)
                 + "\n\n" + rawResults
@@ -56,7 +56,7 @@ public class AggregateNodeExecutor implements NodeExecutor {
         ));
     }
 
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 

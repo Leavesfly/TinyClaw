@@ -35,7 +35,7 @@ import java.util.Set;
  * <p>将 LLM 调用委托给 {@link LLMExecutor}，会话摘要委托给 {@link SessionSummarizer}，
  * 消息路由委托给 {@link MessageRouter}，自身聚焦于生命周期管理与外部接口。</p>
  */
-public class AgentLoop {
+public class AgentRuntime {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("agent");
     private static final String PROVIDER_NOT_CONFIGURED_MSG =
@@ -69,7 +69,7 @@ public class AgentLoop {
 
     // ==================== 构造与初始化 ====================
 
-    public AgentLoop(Config config, MessageBus bus, LLMProvider provider) {
+    public AgentRuntime(Config config, MessageBus bus, LLMProvider provider) {
         this.bus = bus;
         this.config = config;
         this.workspace = config.getWorkspacePath();
@@ -127,7 +127,7 @@ public class AgentLoop {
     }
 
     /**
-     * 注入通道管理器，供 AgentLoop 在处理消息时查询通道能力（如流式输出支持）。
+     * 注入通道管理器，供 AgentRuntime 在处理消息时查询通道能力（如流式输出支持）。
      * 由 GatewayBootstrap 在初始化完成后调用。
      */
     public void setChannelManager(ChannelManager channelManager) {

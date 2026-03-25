@@ -1,12 +1,11 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.channels.DiscordChannel;
 import io.leavesfly.tinyclaw.channels.TelegramChannel;
 import io.leavesfly.tinyclaw.channels.WebhookServer;
-import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.heartbeat.HeartbeatService;
@@ -52,7 +51,7 @@ public class GatewayBootstrap {
 
     // 配置和核心组件
     private final Config config;           // 配置对象
-    private final AgentLoop agentLoop;     // Agent 主循环
+    private final AgentRuntime agentRuntime;     // Agent 主循环
     private final MessageBus bus;          // 消息总线
     private final String workspace;        // 工作空间路径
 
@@ -74,12 +73,12 @@ public class GatewayBootstrap {
      * 构造网关启动器。
      * 
      * @param config 配置对象
-     * @param agentLoop Agent 主循环
+     * @param agentRuntime Agent 主循环
      * @param bus 消息总线
      */
-    public GatewayBootstrap(Config config, AgentLoop agentLoop, MessageBus bus) {
+    public GatewayBootstrap(Config config, AgentRuntime agentRuntime, MessageBus bus) {
         this.config = config;
-        this.agentLoop = agentLoop;
+        this.agentRuntime = agentRuntime;
         this.bus = bus;
         this.workspace = config.getWorkspacePath();
     }
@@ -97,8 +96,8 @@ public class GatewayBootstrap {
         // 1. 初始化通道管理器
         channelManager = new ChannelManager(config, bus);
 
-        // 将通道管理器注入 AgentLoop，使其能感知各通道的能力（如流式输出）
-        agentLoop.setChannelManager(channelManager);
+        // 将通道管理器注入 AgentRuntime，使其能感知各通道的能力（如流式输出）
+        agentRuntime.setChannelManager(channelManager);
 
         // 2. 初始化语音转写器
         initializeTranscriber();
@@ -109,16 +108,16 @@ public class GatewayBootstrap {
 
         // 设置任务处理器：通过 CronTool 执行定时任务
         CronTool cronTool = new CronTool(cronService, (content, sessionKey, channel, chatId) ->
-                agentLoop.processDirectWithChannel(content, sessionKey, channel, chatId), bus);
+                agentRuntime.processDirectWithChannel(content, sessionKey, channel, chatId), bus);
         cronService.setOnJob(job -> cronTool.executeJob(job));
 
         // 4. 初始化心跳服务
         initializeHeartbeat();
 
         // 5. 初始化 Session 和 Skills
-        // 复用 AgentLoop 内部的 SessionManager，确保 Web Console 与 Agent 共享同一内存状态，
-        // 避免 AgentLoop 写入新会话后 WebConsoleServer 因持有独立实例而看不到新会话的问题。
-        sessionManager = agentLoop.getSessionManager();
+        // 复用 AgentRuntime 内部的 SessionManager，确保 Web Console 与 Agent 共享同一内存状态，
+        // 避免 AgentRuntime 写入新会话后 WebConsoleServer 因持有独立实例而看不到新会话的问题。
+        sessionManager = agentRuntime.getSessionManager();
         skillsLoader = new SkillsLoader(workspace, null, null);
 
         // 6. 初始化 Webhook Server（传入通道配置用于签名校验）
@@ -135,7 +134,7 @@ public class GatewayBootstrap {
                 config.getGateway().getHost(),
                 webPort,
                 config,
-                agentLoop,
+                agentRuntime,
                 sessionManager,
                 cronService,
                 skillsLoader
@@ -216,7 +215,7 @@ public class GatewayBootstrap {
         stopService("Cron", () -> cronService.stop(), cronService != null);
 
         // 2. 停止 Agent，不再产生新的出站消息
-        stopService("Agent Loop", () -> agentLoop.stop(), agentLoop != null);
+        stopService("Agent Loop", () -> agentRuntime.stop(), agentRuntime != null);
 
         // 3. 等待出站队列排空后关闭总线（最多等待 5 秒），确保已生成的回复都能发出去
         if (bus != null) {
@@ -342,7 +341,7 @@ public class GatewayBootstrap {
                         // 在心跳周期中触发记忆进化（提炼、整合、衰减归档）
                         triggerMemoryEvolution();
 
-                        return agentLoop.processDirect(prompt, HEARTBEAT_SESSION_KEY);
+                        return agentRuntime.processDirect(prompt, HEARTBEAT_SESSION_KEY);
                     } catch (Exception e) {
                         logger.error("Heartbeat processing error", Map.of("error", e.getMessage()));
                         return null;
@@ -364,14 +363,14 @@ public class GatewayBootstrap {
      * 4. 清理已结束会话的跟踪数据
      */
     private void triggerMemoryEvolution() {
-        if (!agentLoop.isProviderConfigured()) {
+        if (!agentRuntime.isProviderConfigured()) {
             return;
         }
 
         Thread evolutionThread = new Thread(() -> {
             try {
                 // 调用完整的进化周期（包含反馈驱动的进化 + Prompt 优化）
-                agentLoop.runEvolutionCycle();
+                agentRuntime.runEvolutionCycle();
             } catch (Exception e) {
                 logger.error("Evolution cycle failed", Map.of("error", e.getMessage()));
             }
@@ -457,7 +456,7 @@ public class GatewayBootstrap {
     private void startAgentLoop() {
         agentThread = new Thread(() -> {
             try {
-                agentLoop.run();
+                agentRuntime.run();
             } catch (Exception e) {
                 logger.error("Agent loop error", Map.of("error", e.getMessage()));
             }

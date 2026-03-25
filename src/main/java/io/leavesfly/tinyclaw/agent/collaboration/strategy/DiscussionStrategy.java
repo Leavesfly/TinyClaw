@@ -1,10 +1,11 @@
 package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentMessage;
 import io.leavesfly.tinyclaw.agent.collaboration.CollaborationConfig;
 import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMProvider;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -24,7 +25,7 @@ public class DiscussionStrategy implements CollaborationStrategy {
     private static final Pattern VOTE_PATTERN = Pattern.compile("\\[投票[:：]?\\s*([^\\]]+)\\]");
 
     @Override
-    public String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config) {
+    public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         if (agents.isEmpty()) {
             return "讨论至少需要 1 个参与者";
         }
@@ -49,10 +50,10 @@ public class DiscussionStrategy implements CollaborationStrategy {
                     : agents.size();
 
             for (int i = 0; i < speakerCount; i++) {
-                AgentExecutor speaker = agents.get(i);
+                RoleAgent speaker = agents.get(i);
                 String prompt = buildRoundPrompt(config, context, speaker, i, speakerCount);
-                String response = speaker.speak(context, prompt);
-                context.addMessage(speaker.getAgentId(), speaker.getRoleName(), response);
+                String response = speakWithStream(speaker, context, prompt);
+                addMessageWithStream(context, speaker.getAgentId(), speaker.getRoleName(), response);
 
                 logger.info("Agent 发言", Map.of(
                         "round", context.getCurrentRound(),
@@ -95,7 +96,7 @@ public class DiscussionStrategy implements CollaborationStrategy {
     // -------------------------------------------------------------------------
 
     private String buildRoundPrompt(CollaborationConfig config, SharedContext context,
-                                    AgentExecutor speaker, int speakerIndex, int totalSpeakers) {
+                                    RoleAgent speaker, int speakerIndex, int totalSpeakers) {
         return switch (config.getMode()) {
             case DEBATE -> buildDebatePrompt(context, speaker, speakerIndex);
             case ROLEPLAY -> buildRolePlayPrompt(speaker);
@@ -104,14 +105,14 @@ public class DiscussionStrategy implements CollaborationStrategy {
         };
     }
 
-    private String buildDebatePrompt(SharedContext context, AgentExecutor speaker, int speakerIndex) {
+    private String buildDebatePrompt(SharedContext context, RoleAgent speaker, int speakerIndex) {
         if (context.getCurrentRound() == 1 && context.getHistory().isEmpty()) {
             return "这是一场辩论，请先阐述你的核心观点和主要论据。";
         }
         return "这是一场辩论，请针对对方的观点进行反驳，并进一步强化你的论点。";
     }
 
-    private String buildRolePlayPrompt(AgentExecutor speaker) {
+    private String buildRolePlayPrompt(RoleAgent speaker) {
         return "这是一个角色扮演场景，你扮演的角色是：" + speaker.getRoleName() + "\n\n" +
                 "请完全代入这个角色进行对话，保持角色的语气和立场。\n" +
                 "如果对话已达到自然结束点，可在回复末尾加上 [对话结束] 标记。";
@@ -133,7 +134,7 @@ public class DiscussionStrategy implements CollaborationStrategy {
     // 结论构建
     // -------------------------------------------------------------------------
 
-    private String buildConclusion(SharedContext context, List<AgentExecutor> agents,
+    private String buildConclusion(SharedContext context, List<RoleAgent> agents,
                                    CollaborationConfig config) {
         return switch (config.getMode()) {
             case DEBATE -> buildDebateConclusion(context, agents);
@@ -143,14 +144,14 @@ public class DiscussionStrategy implements CollaborationStrategy {
         };
     }
 
-    private String buildDebateConclusion(SharedContext context, List<AgentExecutor> agents) {
+    private String buildDebateConclusion(SharedContext context, List<RoleAgent> agents) {
         // 如果有裁判（第 3 个及以后的 Agent），让裁判总结
         if (agents.size() > 2) {
-            AgentExecutor judge = agents.get(agents.size() - 1);
+            RoleAgent judge = agents.get(agents.size() - 1);
             String judgePrompt = "你是辩论的裁判。请根据以上双方的辩论内容，做出公正的评判和总结，" +
                     "说明哪一方论据更有说服力，并给出最终结论。";
-            String judgeConclusion = judge.speak(context, judgePrompt);
-            context.addMessage(judge.getAgentId(), judge.getRoleName(), judgeConclusion);
+            String judgeConclusion = speakWithStream(judge, context, judgePrompt);
+            addMessageWithStream(context, judge.getAgentId(), judge.getRoleName(), judgeConclusion);
             return judgeConclusion;
         }
         return "=== 辩论总结 ===\n\n主题：" + context.getTopic() +
@@ -200,7 +201,7 @@ public class DiscussionStrategy implements CollaborationStrategy {
     // 共识投票辅助方法
     // -------------------------------------------------------------------------
 
-    private Map<String, List<String>> collectVotes(List<AgentExecutor> agents, SharedContext context) {
+    private Map<String, List<String>> collectVotes(List<RoleAgent> agents, SharedContext context) {
         Map<String, List<String>> votes = new HashMap<>();
         List<AgentMessage> recentMessages = context.getRecentMessages(agents.size());
         for (AgentMessage msg : recentMessages) {
@@ -240,6 +241,36 @@ public class DiscussionStrategy implements CollaborationStrategy {
                 response.contains("[END]") ||
                 response.contains("[结束]")
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // 流式发言辅助方法
+    // -------------------------------------------------------------------------
+
+    /**
+     * 根据 SharedContext 是否持有流式回调，选择流式或非流式发言。
+     * <p>有回调时使用 {@code speakStream}，逐 chunk 输出 COLLABORATE_AGENT_CHUNK 事件；
+     * 无回调时退化为普通 {@code speak}。
+     */
+    private String speakWithStream(RoleAgent speaker, SharedContext context, String prompt) {
+        LLMProvider.EnhancedStreamCallback callback = context.getStreamCallback();
+        if (callback != null) {
+            return speaker.speakStream(context, prompt, callback);
+        }
+        return speaker.speak(context, prompt);
+    }
+
+    /**
+     * 根据是否已流式输出过，选择静默或普通方式添加消息到历史。
+     * <p>有流式回调时使用 {@code addMessageSilent}（chunk 已输出，不再重复推送完整消息）；
+     * 无回调时使用普通 {@code addMessage}（触发 COLLABORATE_AGENT 事件）。
+     */
+    private void addMessageWithStream(SharedContext context, String agentId, String roleName, String content) {
+        if (context.getStreamCallback() != null) {
+            context.addMessageSilent(new AgentMessage(agentId, roleName, content));
+        } else {
+            context.addMessage(agentId, roleName, content);
+        }
     }
 
     // -------------------------------------------------------------------------

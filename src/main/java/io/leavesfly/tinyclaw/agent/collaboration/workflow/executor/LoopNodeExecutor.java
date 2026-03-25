@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration.workflow.executor;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentExecutor;
+import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
 import io.leavesfly.tinyclaw.agent.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.agent.collaboration.ExecutionContext;
 import io.leavesfly.tinyclaw.agent.collaboration.workflow.NodeExecutor;
@@ -35,11 +35,11 @@ public class LoopNodeExecutor implements NodeExecutor {
 
             if (!node.getAgents().isEmpty()) {
                 AgentRole role = node.getAgents().get(0);
-                AgentExecutor agentExecutor = createAgentExecutor(role, executionContext);
+                RoleAgent roleAgent = createAgentExecutor(role, executionContext);
                 String loopPrompt = buildNodeInput(node, context)
                         + "\n\n当前循环次数: " + loopCount + " / " + maxLoops
                         + "\n\n如果任务已完成，请在回复末尾附上 JSON: {\"continue\": false, \"reason\": \"完成原因\"}";
-                String response = agentExecutor.answer(loopPrompt);
+                String response = roleAgent.answer(loopPrompt);
 
                 loopResults.append("【循环").append(loopCount).append("】\n");
                 loopResults.append(response).append("\n\n");
@@ -90,7 +90,7 @@ public class LoopNodeExecutor implements NodeExecutor {
         return "true".equalsIgnoreCase(value) || "done".equalsIgnoreCase(value);
     }
 
-    private AgentExecutor createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
+    private RoleAgent createAgentExecutor(AgentRole role, ExecutionContext executionContext) {
         return executionContext.createAgentExecutor(role);
     }
 

@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * 使用场景：
  * 1. 通道层：各个消息通道通过 publishInbound 发送消息，通过 subscribeOutbound(channel) 接收响应
- * 2. Agent 层：AgentLoop 通过 consumeInbound 接收消息进行处理
+ * 2. Agent 层：AgentRuntime 通过 consumeInbound 接收消息进行处理
  * 3. 响应路由：Agent 通过 publishOutbound 发送响应，消息自动路由到对应通道的队列
  */
 public class MessageBus {
@@ -101,7 +101,7 @@ public class MessageBus {
      * 从总线消费入站消息（阻塞式）
      *
      * 阻塞式地从入站队列中取出消息，如果没有消息可用则会一直等待。
-     * 这是 AgentLoop 主循环中使用的主要方法。
+     * 这是 AgentRuntime 主循环中使用的主要方法。
      *
      * @return 下一条入站消息，永远不会返回 null
      * @throws InterruptedException 如果线程在等待期间被中断

@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -19,7 +19,7 @@ import java.util.List;
  * 
  * 服务架构：
  * - MessageBus：消息总线，协调各组件通信
- * - AgentLoop：Agent 主循环，处理用户消息
+ * - AgentRuntime：Agent 主循环，处理用户消息
  * - ChannelManager：管理所有通道的生命周期
  * - WebhookServer：处理外部 Webhook 回调
  * - WebConsoleServer：提供 Web 管理界面
@@ -109,15 +109,15 @@ public class GatewayCommand extends CliCommand {
         
         // 创建消息总线和 Agent 循环
         MessageBus bus = new MessageBus();
-        AgentLoop agentLoop = new AgentLoop(config, bus, provider);
+        AgentRuntime agentRuntime = new AgentRuntime(config, bus, provider);
         
         // 注册工具，再打印 Agent 状态
         if (providerConfigured) {
-            registerTools(agentLoop, config, bus, provider);
-            printAgentStatus(agentLoop);
+            registerTools(agentRuntime, config, bus, provider);
+            printAgentStatus(agentRuntime);
         }
         
-        return new AgentContext(agentLoop, bus, providerConfigured);
+        return new AgentContext(agentRuntime, bus, providerConfigured);
     }
     
     /**
@@ -128,7 +128,7 @@ public class GatewayCommand extends CliCommand {
      * @return 网关实例
      */
     private GatewayBootstrap createAndStartGateway(Config config, AgentContext agentContext) {
-        return new GatewayBootstrap(config, agentContext.agentLoop, agentContext.bus)
+        return new GatewayBootstrap(config, agentContext.agentRuntime, agentContext.bus)
                 .initialize()
                 .start();
     }
@@ -236,6 +236,6 @@ public class GatewayCommand extends CliCommand {
      * 
      * 封装 Agent 相关的组件和状态。
      */
-    private record AgentContext(AgentLoop agentLoop, MessageBus bus, boolean providerConfigured) {
+    private record AgentContext(AgentRuntime agentRuntime, MessageBus bus, boolean providerConfigured) {
     }
 }

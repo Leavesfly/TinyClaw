@@ -1077,10 +1077,31 @@ class TinyClawConsole {
                     break;
                 }
                 case 'COLLABORATE_AGENT': {
+                    // 完整消息（非流式模式下使用）
+                    finalizeCurrentText();
                     const agentDiv = document.createElement('div');
                     agentDiv.className = 'thinking-block';
                     agentDiv.textContent = `[${event.agent || 'Agent'}]: ${event.content || ''}`;
                     contentDiv.appendChild(agentDiv);
+                    currentTextDiv = null;
+                    currentTextContent = '';
+                    break;
+                }
+                case 'COLLABORATE_AGENT_CHUNK': {
+                    // 流式增量：逐 chunk 追加到当前 Agent 的发言区域
+                    const chunkAgent = event.agent || 'Agent';
+                    const chunkContent = event.content || '';
+                    if (!currentTextDiv || currentTextDiv.dataset.collabAgent !== chunkAgent) {
+                        // 新 Agent 开始发言，创建新的发言区域
+                        finalizeCurrentText();
+                        currentTextDiv = document.createElement('div');
+                        currentTextDiv.className = 'thinking-block';
+                        currentTextDiv.dataset.collabAgent = chunkAgent;
+                        currentTextContent = `[${chunkAgent}]: `;
+                        contentDiv.appendChild(currentTextDiv);
+                    }
+                    currentTextContent += chunkContent;
+                    currentTextDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
                     break;
                 }
                 case 'COLLABORATE_END': {

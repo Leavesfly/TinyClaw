@@ -37,8 +37,10 @@ public class StreamEvent {
         SUBAGENT_END,
         /** 多 Agent 协同开始 */
         COLLABORATE_START,
-        /** 协同中的 Agent 发言 */
+        /** 协同中的 Agent 发言（完整消息） */
         COLLABORATE_AGENT,
+        /** 协同中的 Agent 发言增量（流式 chunk） */
+        COLLABORATE_AGENT_CHUNK,
         /** 多 Agent 协同结束 */
         COLLABORATE_END,
         /** 思考/推理过程 */
@@ -98,9 +100,15 @@ public class StreamEvent {
                 Map.of("mode", mode));
     }
     
-    /** 创建协同 Agent 发言事件 */
+    /** 创建协同 Agent 发言事件（完整消息） */
     public static StreamEvent collaborateAgent(String agentName, String content) {
         return new StreamEvent(EventType.COLLABORATE_AGENT, content,
+                Map.of("agent", agentName));
+    }
+    
+    /** 创建协同 Agent 发言增量事件（流式 chunk） */
+    public static StreamEvent collaborateAgentChunk(String agentName, String chunk) {
+        return new StreamEvent(EventType.COLLABORATE_AGENT_CHUNK, chunk,
                 Map.of("agent", agentName));
     }
     
@@ -144,7 +152,8 @@ public class StreamEvent {
     public boolean isContentEvent() {
         return type == EventType.CONTENT 
                 || type == EventType.SUBAGENT_CONTENT 
-                || type == EventType.COLLABORATE_AGENT;
+                || type == EventType.COLLABORATE_AGENT
+                || type == EventType.COLLABORATE_AGENT_CHUNK;
     }
     
     /**
@@ -192,6 +201,7 @@ public class StreamEvent {
                 String agent = getMeta("agent");
                 yield "\n💬 [" + agent + "]: " + content + "\n";
             }
+            case COLLABORATE_AGENT_CHUNK -> content;
             case COLLABORATE_END -> "\n🎯 协同完成\n";
             case THINKING -> "💭 " + content + "\n";
         };
@@ -267,6 +277,11 @@ public class StreamEvent {
                     node.put("topic", content != null ? content : "");
                 }
                 case COLLABORATE_AGENT -> {
+                    String agent = getMeta("agent");
+                    node.put("agent", agent != null ? agent : "");
+                    node.put("content", content != null ? content : "");
+                }
+                case COLLABORATE_AGENT_CHUNK -> {
                     String agent = getMeta("agent");
                     node.put("agent", agent != null ? agent : "");
                     node.put("content", content != null ? content : "");

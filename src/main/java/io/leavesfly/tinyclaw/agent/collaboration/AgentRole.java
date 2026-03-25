@@ -34,7 +34,7 @@ public class AgentRole {
 
     /**
      * 工具名称白名单（可选）。
-     * 非空时，该角色的 AgentExecutor 只能使用列表中的工具；
+     * 非空时，该角色的 RoleAgent 只能使用列表中的工具；
      * 为空时不限制，使用全量工具集。
      */
     private List<String> allowedTools;

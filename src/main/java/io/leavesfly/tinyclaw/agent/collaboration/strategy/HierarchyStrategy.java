@@ -2,6 +2,7 @@ package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
 import io.leavesfly.tinyclaw.agent.collaboration.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMProvider;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -28,7 +29,7 @@ public class HierarchyStrategy implements CollaborationStrategy {
     }
 
     @Override
-    public String execute(SharedContext context, List<AgentExecutor> agents, CollaborationConfig config) {
+    public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         HierarchyConfig hierarchy = config.getHierarchy();
 
         if (hierarchy == null || !hierarchy.isValid()) {
@@ -51,7 +52,7 @@ public class HierarchyStrategy implements CollaborationStrategy {
 
             logger.info("执行层级", Map.of("level", levelIndex, "agents", levelRoles.size()));
 
-            List<AgentExecutor> levelAgents = createLevelAgents(levelRoles);
+            List<RoleAgent> levelAgents = createLevelAgents(levelRoles);
             Map<String, String> lowerResults = levelIndex > 0 ? levelResults.get(levelIndex - 1) : null;
             String aggregationPrompt = hierarchy.getAggregationPrompt(levelIndex);
 
@@ -82,12 +83,12 @@ public class HierarchyStrategy implements CollaborationStrategy {
     }
 
     /**
-     * 为指定层的角色列表创建 AgentExecutor
+     * 为指定层的角色列表创建 RoleAgent
      */
-    private List<AgentExecutor> createLevelAgents(List<AgentRole> roles) {
-        List<AgentExecutor> agents = new ArrayList<>();
+    private List<RoleAgent> createLevelAgents(List<AgentRole> roles) {
+        List<RoleAgent> agents = new ArrayList<>();
         for (AgentRole role : roles) {
-            // 使用 ExecutionContext 的工厂方法统一创建 AgentExecutor
+            // 使用 ExecutionContext 的工厂方法统一创建 RoleAgent
             agents.add(executionContext.createAgentExecutor(role));
         }
         return agents;
@@ -96,7 +97,7 @@ public class HierarchyStrategy implements CollaborationStrategy {
     /**
      * 同层 Agent 并行执行，返回 roleName -> 输出 的映射
      */
-    private Map<String, String> executeLevelInParallel(List<AgentExecutor> agents,
+    private Map<String, String> executeLevelInParallel(List<RoleAgent> agents,
                                                         SharedContext context,
                                                         int levelIndex,
                                                         String aggregationPrompt,
@@ -104,7 +105,7 @@ public class HierarchyStrategy implements CollaborationStrategy {
         Map<String, String> results = new ConcurrentHashMap<>();
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        for (AgentExecutor agent : agents) {
+        for (RoleAgent agent : agents) {
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
                 String result = executeAgent(agent, context, levelIndex, aggregationPrompt, lowerResults);
                 results.put(agent.getRoleName(), result);
@@ -125,12 +126,12 @@ public class HierarchyStrategy implements CollaborationStrategy {
     /**
      * 执行单个 Agent，根据所在层级构建不同的提示词
      */
-    private String executeAgent(AgentExecutor agent, SharedContext context,
-                                 int levelIndex, String aggregationPrompt,
-                                 Map<String, String> lowerResults) {
+    private String executeAgent(RoleAgent agent, SharedContext context,
+                                int levelIndex, String aggregationPrompt,
+                                Map<String, String> lowerResults) {
         try {
             String prompt = buildPrompt(levelIndex, aggregationPrompt, lowerResults);
-            String result = agent.speak(context, prompt);
+            String result = speakWithStream(agent, context, prompt);
 
             logger.info("Agent执行完成", Map.of(
                     "agent", agent.getRoleName(),
@@ -209,6 +210,21 @@ public class HierarchyStrategy implements CollaborationStrategy {
         }
 
         return conclusion.toString();
+    }
+
+    // -------------------------------------------------------------------------
+    // 流式发言辅助方法
+    // -------------------------------------------------------------------------
+
+    /**
+     * 根据 SharedContext 是否持有流式回调，选择流式或非流式发言。
+     */
+    private String speakWithStream(RoleAgent speaker, SharedContext context, String prompt) {
+        LLMProvider.EnhancedStreamCallback callback = context.getStreamCallback();
+        if (callback != null) {
+            return speaker.speakStream(context, prompt, callback);
+        }
+        return speaker.speak(context, prompt);
     }
 
     @Override

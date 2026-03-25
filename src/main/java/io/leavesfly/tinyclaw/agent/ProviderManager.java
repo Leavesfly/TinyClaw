@@ -1,7 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
 import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
-import io.leavesfly.tinyclaw.agent.evolution.EvaluationFeedback;
 import io.leavesfly.tinyclaw.agent.evolution.EvolutionConfig;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.agent.evolution.MemoryEvolver;
@@ -17,14 +16,13 @@ import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
-import java.util.List;
 import java.util.Map;
 
 /**
  * Provider 管理器，负责 LLM Provider 的初始化、热重载和组件构建。
  *
- * <p>将 Provider 相关的职责从 {@link AgentLoop} 中抽取出来，
- * 使 AgentLoop 专注于消息路由和生命周期管理。</p>
+ * <p>将 Provider 相关的职责从 {@link AgentRuntime} 中抽取出来，
+ * 使 AgentRuntime 专注于消息路由和生命周期管理。</p>
  */
 class ProviderManager {
 

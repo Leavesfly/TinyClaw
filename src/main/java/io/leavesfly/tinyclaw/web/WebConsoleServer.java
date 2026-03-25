@@ -1,7 +1,7 @@
 package io.leavesfly.tinyclaw.web;
 
 import com.sun.net.httpserver.HttpServer;
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -30,19 +30,19 @@ public class WebConsoleServer {
     private final String host;
     private final int port;
     private final Config config;
-    private final AgentLoop agentLoop;
+    private final AgentRuntime agentRuntime;
     private final SessionManager sessionManager;
     private final CronService cronService;
     private final SkillsLoader skillsLoader;
     private HttpServer httpServer;
 
-    public WebConsoleServer(String host, int port, Config config, AgentLoop agentLoop,
+    public WebConsoleServer(String host, int port, Config config, AgentRuntime agentRuntime,
                             SessionManager sessionManager,
                             CronService cronService, SkillsLoader skillsLoader) {
         this.host = host;
         this.port = port;
         this.config = config;
-        this.agentLoop = agentLoop;
+        this.agentRuntime = agentRuntime;
         this.sessionManager = sessionManager;
         this.cronService = cronService;
         this.skillsLoader = skillsLoader;
@@ -78,7 +78,7 @@ public class WebConsoleServer {
 
     private void registerApiEndpoints(SecurityMiddleware security, ProvidersHandler providersHandler) {
         httpServer.createContext("/api/auth",          new AuthHandler(config, security)::handle);
-        httpServer.createContext(WebUtils.API_CHAT,      new ChatHandler(config, agentLoop, security)::handle);
+        httpServer.createContext(WebUtils.API_CHAT,      new ChatHandler(config, agentRuntime, security)::handle);
         httpServer.createContext(WebUtils.API_CHANNELS,  new ChannelsHandler(config, security)::handle);
         httpServer.createContext(WebUtils.API_SESSIONS,  new SessionsHandler(config, sessionManager, security)::handle);
         httpServer.createContext(WebUtils.API_CRON,      new CronHandler(config, cronService, security)::handle);
@@ -86,8 +86,8 @@ public class WebConsoleServer {
         httpServer.createContext(WebUtils.API_SKILLS,    new SkillsHandler(config, skillsLoader, security)::handle);
         httpServer.createContext(WebUtils.API_PROVIDERS, providersHandler::handle);
         httpServer.createContext(WebUtils.API_MODELS,    new ModelsHandler(config, security, providersHandler)::handle);
-        httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler, agentLoop)::handle);
-        httpServer.createContext(WebUtils.API_FEEDBACK,  new FeedbackHandler(config, agentLoop, security)::handle);
+        httpServer.createContext(WebUtils.API_CONFIG,    new ConfigHandler(config, security, providersHandler, agentRuntime)::handle);
+        httpServer.createContext(WebUtils.API_FEEDBACK,  new FeedbackHandler(config, agentRuntime, security)::handle);
         httpServer.createContext(WebUtils.API_MCP,       new MCPHandler(config, security)::handle);
         // 多模态支持：文件上传和静态文件服务
         httpServer.createContext(WebUtils.API_UPLOAD,    new UploadHandler(config, security)::handle);

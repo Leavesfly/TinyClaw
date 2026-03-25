@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentLoop;
+import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -59,16 +59,16 @@ public class AgentCommand extends CliCommand {
             return 1;
         }
         
-        AgentLoop agentLoop = createAndInitializeAgent(config);
-        if (agentLoop == null) {
+        AgentRuntime agentRuntime = createAndInitializeAgent(config);
+        if (agentRuntime == null) {
             return 1;
         }
         
         // 执行相应模式
         if (cmdArgs.hasMessage()) {
-            executeSingleMessageMode(agentLoop, cmdArgs);
+            executeSingleMessageMode(agentRuntime, cmdArgs);
         } else {
-            executeInteractiveMode(agentLoop, cmdArgs);
+            executeInteractiveMode(agentRuntime, cmdArgs);
         }
         
         return 0;
@@ -116,7 +116,7 @@ public class AgentCommand extends CliCommand {
      * @param config 配置对象
      * @return Agent 实例，失败时返回 null
      */
-    private AgentLoop createAndInitializeAgent(Config config) {
+    private AgentRuntime createAndInitializeAgent(Config config) {
         // 创建服务提供者
         LLMProvider provider = createProviderOrNull(config);
         if (provider == null) {
@@ -125,24 +125,24 @@ public class AgentCommand extends CliCommand {
         
         // 创建消息总线和 Agent 循环
         MessageBus bus = new MessageBus();
-        AgentLoop agentLoop = new AgentLoop(config, bus, provider);
+        AgentRuntime agentRuntime = new AgentRuntime(config, bus, provider);
         
         // 注册工具
-        registerTools(agentLoop, config, bus, provider);
+        registerTools(agentRuntime, config, bus, provider);
         
         // 打印启动信息
-        logStartupInfo(agentLoop);
+        logStartupInfo(agentRuntime);
         
-        return agentLoop;
+        return agentRuntime;
     }
     
     /**
      * 记录启动信息。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      */
-    private void logStartupInfo(AgentLoop agentLoop) {
-        Map<String, Object> startupInfo = agentLoop.getStartupInfo();
+    private void logStartupInfo(AgentRuntime agentRuntime) {
+        Map<String, Object> startupInfo = agentRuntime.getStartupInfo();
         @SuppressWarnings("unchecked")
         Map<String, Object> toolsInfo = (Map<String, Object>) startupInfo.get("tools");
         @SuppressWarnings("unchecked")
@@ -158,44 +158,44 @@ public class AgentCommand extends CliCommand {
     /**
      * 执行单条消息模式。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param cmdArgs 命令参数
      */
-    private void executeSingleMessageMode(AgentLoop agentLoop, CommandArgs cmdArgs) throws Exception {
+    private void executeSingleMessageMode(AgentRuntime agentRuntime, CommandArgs cmdArgs) throws Exception {
         System.out.println();
         System.out.print(LOGO + PROMPT_SEPARATOR);
         
         if (cmdArgs.stream) {
-            processStreamResponse(agentLoop, cmdArgs.message, cmdArgs.sessionKey);
+            processStreamResponse(agentRuntime, cmdArgs.message, cmdArgs.sessionKey);
         } else {
-            processNonStreamResponse(agentLoop, cmdArgs.message, cmdArgs.sessionKey);
+            processNonStreamResponse(agentRuntime, cmdArgs.message, cmdArgs.sessionKey);
         }
     }
     
     /**
      * 执行交互模式。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param cmdArgs 命令参数
      */
-    private void executeInteractiveMode(AgentLoop agentLoop, CommandArgs cmdArgs) {
+    private void executeInteractiveMode(AgentRuntime agentRuntime, CommandArgs cmdArgs) {
         System.out.println(LOGO + " 交互模式 (Ctrl+C to exit)");
         if (cmdArgs.stream) {
             System.out.println("🚀 流式输出已启用 (使用 --no-stream 关闭)");
         }
         System.out.println();
-        interactiveMode(agentLoop, cmdArgs.sessionKey, cmdArgs.stream);
+        interactiveMode(agentRuntime, cmdArgs.sessionKey, cmdArgs.stream);
     }
     
     /**
      * 处理流式响应。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param message 用户消息
      * @param sessionKey 会话键
      */
-    private void processStreamResponse(AgentLoop agentLoop, String message, String sessionKey) throws Exception {
-        agentLoop.processDirectStream(message, sessionKey, chunk -> {
+    private void processStreamResponse(AgentRuntime agentRuntime, String message, String sessionKey) throws Exception {
+        agentRuntime.processDirectStream(message, sessionKey, chunk -> {
             System.out.print(chunk);
             System.out.flush();
         });
@@ -205,23 +205,23 @@ public class AgentCommand extends CliCommand {
     /**
      * 处理非流式响应。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param message 用户消息
      * @param sessionKey 会话键
      */
-    private void processNonStreamResponse(AgentLoop agentLoop, String message, String sessionKey) throws Exception {
-        String response = agentLoop.processDirect(message, sessionKey);
+    private void processNonStreamResponse(AgentRuntime agentRuntime, String message, String sessionKey) throws Exception {
+        String response = agentRuntime.processDirect(message, sessionKey);
         System.out.println(response);
     }
     
     /**
      * 交互模式主循环。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param sessionKey 会话键
      * @param stream 是否启用流式输出
      */
-    private void interactiveMode(AgentLoop agentLoop, String sessionKey, boolean stream) {
+    private void interactiveMode(AgentRuntime agentRuntime, String sessionKey, boolean stream) {
         Scanner scanner = new Scanner(System.in);
         
         while (true) {
@@ -241,7 +241,7 @@ public class AgentCommand extends CliCommand {
                 break;
             }
             
-            processUserInput(agentLoop, input, sessionKey, stream);
+            processUserInput(agentRuntime, input, sessionKey, stream);
         }
     }
     
@@ -273,20 +273,20 @@ public class AgentCommand extends CliCommand {
     /**
      * 处理用户输入并显示响应。
      * 
-     * @param agentLoop Agent 实例
+     * @param agentRuntime Agent 实例
      * @param input 用户输入
      * @param sessionKey 会话键
      * @param stream 是否启用流式输出
      */
-    private void processUserInput(AgentLoop agentLoop, String input, String sessionKey, boolean stream) {
+    private void processUserInput(AgentRuntime agentRuntime, String input, String sessionKey, boolean stream) {
         try {
             System.out.println();
             System.out.print(LOGO + PROMPT_SEPARATOR);
             
             if (stream) {
-                processStreamResponse(agentLoop, input, sessionKey);
+                processStreamResponse(agentRuntime, input, sessionKey);
             } else {
-                processNonStreamResponse(agentLoop, input, sessionKey);
+                processNonStreamResponse(agentRuntime, input, sessionKey);
             }
             
             System.out.println();
