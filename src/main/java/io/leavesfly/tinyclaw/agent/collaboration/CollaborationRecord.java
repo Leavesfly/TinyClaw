@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.agent.collaboration;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
@@ -57,6 +58,7 @@ public class CollaborationRecord {
     /** Jackson ObjectMapper（静态，线程安全） */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT)
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .setSerializationInclusion(JsonInclude.Include.NON_NULL);
 
     /**
@@ -260,6 +262,77 @@ public class CollaborationRecord {
         variance /= counts.length;
         double cv = Math.sqrt(variance) / mean; // 变异系数
         return Math.max(0.0, 1.0 - cv); // 反转：cv 越小越均衡
+    }
+
+    /**
+     * 从 JSON 文件加载协同记录
+     *
+     * @param file JSON 文件
+     * @return 协同记录
+     * @throws IOException 读取或解析失败时抛出
+     */
+    public static CollaborationRecord loadFrom(File file) throws IOException {
+        return OBJECT_MAPPER.readValue(file, CollaborationRecord.class);
+    }
+
+    /**
+     * 从指定目录加载与给定 sessionId 匹配的最新协同记录。
+     * 协同记录文件名格式为 collab-{sessionId}-{timestamp}.json，
+     * 当存在多个匹配文件时返回时间戳最大（最新）的那个。
+     *
+     * @param directory 协同记录目录
+     * @param sessionId 会话 ID
+     * @return 最新的协同记录，未找到时返回 null
+     */
+    public static CollaborationRecord loadLatest(String directory, String sessionId) {
+        File dir = new File(directory);
+        if (!dir.exists() || !dir.isDirectory()) {
+            return null;
+        }
+
+        String prefix = "collab-" + sessionId + "-";
+        File[] matched = dir.listFiles((d, name) -> name.startsWith(prefix) && name.endsWith(".json"));
+        if (matched == null || matched.length == 0) {
+            return null;
+        }
+
+        // 按文件名排序取最新（文件名中含时间戳，字典序即时间序）
+        Arrays.sort(matched, Comparator.comparing(File::getName));
+        File latest = matched[matched.length - 1];
+
+        try {
+            return loadFrom(latest);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 从指定目录加载所有协同记录
+     *
+     * @param directory 协同记录目录
+     * @return 协同记录列表，目录不存在或无文件时返回空列表
+     */
+    public static List<CollaborationRecord> loadAll(String directory) {
+        File dir = new File(directory);
+        if (!dir.exists() || !dir.isDirectory()) {
+            return List.of();
+        }
+
+        File[] files = dir.listFiles((d, name) -> name.startsWith("collab-") && name.endsWith(".json"));
+        if (files == null || files.length == 0) {
+            return List.of();
+        }
+
+        List<CollaborationRecord> records = new ArrayList<>();
+        for (File file : files) {
+            try {
+                records.add(loadFrom(file));
+            } catch (IOException ignored) {
+                // 跳过无法解析的文件
+            }
+        }
+        return records;
     }
 
     /**

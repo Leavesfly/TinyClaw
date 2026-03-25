@@ -9,13 +9,18 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
+import io.leavesfly.tinyclaw.agent.collaboration.AgentMessage;
+import io.leavesfly.tinyclaw.agent.collaboration.CollaborationRecord;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -28,14 +33,23 @@ public class SessionsHandler {
     private final Config config;
     private final SessionManager sessionManager;
     private final SecurityMiddleware security;
+    private final String collaborationDir;
 
     /**
      * 构造 SessionsHandler，注入全局配置、会话管理器与安全中间件。
+     *
+     * @param config         全局配置
+     * @param sessionManager 会话管理器
+     * @param security       安全中间件
+     * @param workspacePath  工作区路径，用于加载协同记录（可为 null）
      */
-    public SessionsHandler(Config config, SessionManager sessionManager, SecurityMiddleware security) {
+    public SessionsHandler(Config config, SessionManager sessionManager,
+                           SecurityMiddleware security, String workspacePath) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.security = security;
+        this.collaborationDir = workspacePath != null
+                ? Paths.get(workspacePath, "collaboration").toString() : null;
     }
 
     /**
@@ -91,10 +105,10 @@ public class SessionsHandler {
                 var summary = sessionManager.getSummary(key);
 
                 // 按 messageIndex（assistant 消息在 history 中的绝对位置索引）分组工具调用记录
-                Map<Integer, java.util.List<ToolCallRecord>> recordsByIndex = new HashMap<>();
+                Map<Integer, List<ToolCallRecord>> recordsByIndex = new HashMap<>();
                 for (ToolCallRecord record : toolCallRecords) {
                     recordsByIndex
-                            .computeIfAbsent(record.getMessageIndex(), idx -> new java.util.ArrayList<>())
+                            .computeIfAbsent(record.getMessageIndex(), idx -> new ArrayList<>())
                             .add(record);
                 }
 
@@ -130,6 +144,10 @@ public class SessionsHandler {
                                 r.put("argsSummary", record.getArgsSummary());
                                 r.put("resultSummary", record.getResultSummary());
                                 r.put("success", record.isSuccess());
+                                // collaborate 工具调用：附带协同过程详情
+                                if ("collaborate".equals(record.getToolName())) {
+                                    appendCollaborationDetailToToolRecord(r, record.getArgsSummary());
+                                }
                                 toolCallsArray.add(r);
                             }
                         }
@@ -153,5 +171,105 @@ public class SessionsHandler {
             logger.error("Sessions API error", Map.of("error", e.getMessage()));
             WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
         }
+    }
+
+    /**
+     * 为 collaborate 工具调用记录附加协同过程详情。
+     * 从 collaboration 目录加载匹配的协同记录，将多 Agent 对话历史、
+     * 参与者、统计指标等嵌入到工具调用记录的 collaborationDetail 字段中。
+     *
+     * <p>匹配策略：从 collaborate 工具的 argsSummary 中提取 topic/goal，
+     * 与协同记录的 goal 进行匹配。
+     *
+     * @param toolRecordNode collaborate 工具调用记录的 JSON 节点
+     * @param argsSummary    工具调用参数摘要
+     */
+    private void appendCollaborationDetailToToolRecord(ObjectNode toolRecordNode, String argsSummary) {
+        if (collaborationDir == null) {
+            logger.info("collaborationDir is null, skip", Map.of());
+            return;
+        }
+
+        logger.info("Loading collaboration records", Map.of("dir", collaborationDir));
+        List<CollaborationRecord> allRecords = CollaborationRecord.loadAll(collaborationDir);
+        logger.info("Loaded collaboration records", Map.of("count", allRecords.size(), "dir", collaborationDir));
+        if (allRecords.isEmpty()) {
+            return;
+        }
+
+        // 从 argsSummary 中提取 topic 关键词进行匹配
+        // argsSummary 格式示例: {mode=debate, topic=AI 会毁灭人类, roles=[...]}
+        CollaborationRecord matchedRecord = null;
+        for (CollaborationRecord record : allRecords) {
+            if (record.getGoal() != null && argsSummary != null
+                    && argsSummary.contains(record.getGoal())) {
+                matchedRecord = record;
+                break;
+            }
+        }
+
+        // 降级：取最新的协同记录（按 endTime 排序）
+        if (matchedRecord == null && !allRecords.isEmpty()) {
+            matchedRecord = allRecords.stream()
+                    .max(java.util.Comparator.comparingLong(CollaborationRecord::getEndTime))
+                    .orElse(null);
+        }
+
+        if (matchedRecord == null) {
+            return;
+        }
+
+        ObjectNode detail = buildCollaborationDetailNode(matchedRecord);
+        toolRecordNode.set("collaborationDetail", detail);
+    }
+
+    /**
+     * 将 CollaborationRecord 构建为 JSON 节点，包含模式、目标、参与者、
+     * 多 Agent 对话历史和统计指标。
+     */
+    private ObjectNode buildCollaborationDetailNode(CollaborationRecord record) {
+        ObjectNode detail = WebUtils.MAPPER.createObjectNode();
+        detail.put("mode", record.getMode());
+        detail.put("goal", record.getGoal() != null ? record.getGoal() : "");
+        detail.put("conclusion", record.getConclusion() != null ? record.getConclusion() : "");
+        detail.put("totalRounds", record.getTotalRounds());
+        detail.put("status", record.getStatus() != null ? record.getStatus() : "");
+        detail.put("startTime", record.getStartTime());
+        detail.put("endTime", record.getEndTime());
+
+        // 参与者列表
+        if (record.getParticipants() != null && !record.getParticipants().isEmpty()) {
+            ArrayNode participantsArray = detail.putArray("participants");
+            for (String participant : record.getParticipants()) {
+                participantsArray.add(participant);
+            }
+        }
+
+        // 多 Agent 对话历史
+        if (record.getMessages() != null && !record.getMessages().isEmpty()) {
+            ArrayNode agentMessages = detail.putArray("agentMessages");
+            for (AgentMessage agentMsg : record.getMessages()) {
+                ObjectNode agentMsgNode = WebUtils.MAPPER.createObjectNode();
+                agentMsgNode.put("agentId", agentMsg.getAgentId() != null ? agentMsg.getAgentId() : "");
+                agentMsgNode.put("agentRole", agentMsg.getAgentRole() != null ? agentMsg.getAgentRole() : "");
+                agentMsgNode.put("content", agentMsg.getContent() != null ? agentMsg.getContent() : "");
+                agentMsgNode.put("timestamp", agentMsg.getTimestamp());
+                if (agentMsg.getMessageType() != null) {
+                    agentMsgNode.put("messageType", agentMsg.getMessageType().name());
+                }
+                if (agentMsg.getTargetRole() != null) {
+                    agentMsgNode.put("targetRole", agentMsg.getTargetRole());
+                }
+                agentMessages.add(agentMsgNode);
+            }
+        }
+
+        // 统计指标
+        if (record.getMetrics() != null && !record.getMetrics().isEmpty()) {
+            ObjectNode metricsNode = WebUtils.MAPPER.valueToTree(record.getMetrics());
+            detail.set("metrics", metricsNode);
+        }
+
+        return detail;
     }
 }

@@ -626,6 +626,74 @@ class TinyClawConsole {
         `;
 
         container.appendChild(card);
+
+        // collaborate 工具调用：在卡片后渲染协同过程的多 Agent 对话历史
+        if (toolName === 'collaborate' && record.collaborationDetail) {
+            this.appendCollaborationTimeline(container, record.collaborationDetail);
+        }
+    }
+
+    /**
+     * 渲染协同过程的多 Agent 对话时间线。
+     * 在 collaborate 工具卡片下方展示各 Agent 的逐轮发言，
+     * 使用不同颜色区分不同角色，支持折叠/展开。
+     *
+     * @param {HTMLElement} container - 消息容器
+     * @param {Object} detail - 协同详情 { mode, goal, participants, agentMessages, metrics, ... }
+     */
+    appendCollaborationTimeline(container, detail) {
+        const timeline = document.createElement('div');
+        timeline.className = 'collaboration-timeline';
+
+        const agentMessages = detail.agentMessages || [];
+        const participants = detail.participants || [];
+        const mode = detail.mode || '';
+        const totalRounds = detail.totalRounds || 0;
+
+        // 为每个参与者分配颜色
+        const roleColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444'];
+        const roleColorMap = {};
+        participants.forEach((name, index) => {
+            roleColorMap[name] = roleColors[index % roleColors.length];
+        });
+
+        // 标题栏（可折叠）
+        const headerHtml = `
+            <div class="collab-timeline-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <span class="collab-timeline-icon">🤝</span>
+                <span class="collab-timeline-title">协同过程 · ${this.escapeHtml(mode)} · ${totalRounds} 轮</span>
+                <span class="collab-timeline-participants">${participants.map(p =>
+                    `<span class="collab-participant-tag" style="background:${roleColorMap[p] || '#6366f1'}20;color:${roleColorMap[p] || '#6366f1'}">${this.escapeHtml(p)}</span>`
+                ).join('')}</span>
+                <span class="collab-timeline-toggle">▼</span>
+            </div>
+        `;
+
+        // 对话消息列表
+        let messagesHtml = '<div class="collab-timeline-body">';
+        for (const msg of agentMessages) {
+            const role = msg.agentRole || msg.agentId || 'Unknown';
+            const color = roleColorMap[role] || '#6366f1';
+            const content = msg.content || '';
+            // 使用 marked 渲染 Markdown（如果可用）
+            const renderedContent = (typeof marked !== 'undefined')
+                ? marked.parse(content)
+                : this.escapeHtml(content).replace(/\n/g, '<br>');
+
+            messagesHtml += `
+                <div class="collab-message">
+                    <div class="collab-message-role" style="color:${color}">
+                        <span class="collab-role-dot" style="background:${color}"></span>
+                        ${this.escapeHtml(role)}
+                    </div>
+                    <div class="collab-message-content">${renderedContent}</div>
+                </div>
+            `;
+        }
+        messagesHtml += '</div>';
+
+        timeline.innerHTML = headerHtml + messagesHtml;
+        container.appendChild(timeline);
     }
 
     /**

@@ -1775,6 +1775,128 @@ body {
     background: #fff5f5;
 }
 
+/* ==================== Collaboration Timeline ==================== */
+
+.collaboration-timeline {
+    margin: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--card);
+}
+
+.collab-timeline-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #f0f0ff 0%, #fdf2f8 100%);
+    cursor: pointer;
+    user-select: none;
+    flex-wrap: wrap;
+}
+
+.collab-timeline-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.collab-timeline-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.collab-timeline-participants {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-left: auto;
+}
+
+.collab-participant-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+
+.collab-timeline-toggle {
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.collaboration-timeline.collapsed .collab-timeline-toggle {
+    transform: rotate(-90deg);
+}
+
+.collab-timeline-body {
+    max-height: 500px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.collaboration-timeline.collapsed .collab-timeline-body {
+    display: none;
+}
+
+.collab-message {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.collab-message:last-child {
+    border-bottom: none;
+}
+
+.collab-message-role {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.collab-role-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.collab-message-content {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    padding-left: 14px;
+    word-break: break-word;
+}
+
+.collab-message-content p {
+    margin: 0 0 8px 0;
+}
+
+.collab-message-content p:last-child {
+    margin-bottom: 0;
+}
+
+.collab-message-content ul,
+.collab-message-content ol {
+    margin: 4px 0;
+    padding-left: 20px;
+}
+
+.collab-message-content li {
+    margin-bottom: 2px;
+}
+
+.collab-message-content strong {
+    font-weight: 600;
+}
+
 /* 工具调用加载动画 */
 .tool-call-spinner {
     display: inline-block;
