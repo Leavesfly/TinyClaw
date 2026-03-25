@@ -257,7 +257,7 @@ public abstract class CliCommand {
         // 文件工具
         agentLoop.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
         agentLoop.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
-        agentLoop.registerTool(securityGuard != null ? new AppendFileTool(securityGuard) : new AppendFileTool());
+
         agentLoop.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
         agentLoop.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
 
