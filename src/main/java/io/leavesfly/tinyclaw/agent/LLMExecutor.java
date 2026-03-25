@@ -433,8 +433,8 @@ public class LLMExecutor {
             // 用 session 里实际存储的消息数量 - 1 作为触发本次工具调用的 assistant 消息的绝对位置索引。
             // 注意：不能用 messages.size()-1，因为 messages 是发给 LLM 的上下文（可能被截断），
             // 与 session 里存储的完整历史长度不同。
-            String argsSummary = ToolCallRecord.truncate(args != null ? args.toString() : "", 200);
-            String resultSummary = ToolCallRecord.truncate(result, 200);
+            String argsSummary = ToolCallRecord.truncate(args != null ? args.toString() : "", 500);
+            String resultSummary = ToolCallRecord.truncate(result, 500);
             int messageIndex = sessions.getHistory(sessionKey).size() - 1;
             ToolCallRecord record = new ToolCallRecord(toolName, argsSummary, resultSummary, success, messageIndex);
             sessions.addToolCallRecord(sessionKey, record);

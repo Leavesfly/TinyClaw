@@ -15,10 +15,10 @@ public class ToolCallRecord {
     /** 工具名称，如 write_file、list_directory */
     private String toolName;
 
-    /** 参数摘要（截断到 200 字符），用于卡片展示 */
+    /** 参数摘要（截断到 500 字符），用于卡片展示 */
     private String argsSummary;
 
-    /** 结果摘要（截断到 200 字符），用于卡片展示 */
+    /** 结果摘要（截断到 500 字符），用于卡片展示 */
     private String resultSummary;
 
     /** 工具执行是否成功 */
