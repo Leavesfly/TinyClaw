@@ -21,6 +21,7 @@ public class SectionContext {
     public SectionContext(String currentMessage, String workspace, int contextWindow,
                          ToolRegistry tools, PromptOptimizer promptOptimizer,
                          SkillsLoader skillsLoader, MemoryStore memory) {
+
         this.currentMessage = currentMessage;
         this.workspace = workspace;
         this.contextWindow = contextWindow;

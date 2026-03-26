@@ -315,6 +315,7 @@ public class ContextBuilder {
      * @return 完整的系统提示词
      */
     private String buildSystemPromptWithSession(String currentMessage, String channel, String chatId, String summary) {
+
         StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt(currentMessage));
         
         // 添加当前会话信息
