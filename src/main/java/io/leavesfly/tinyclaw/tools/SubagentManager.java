@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.tools;
 
-import io.leavesfly.tinyclaw.agent.LLMExecutor;
+import io.leavesfly.tinyclaw.agent.ReActExecutor;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -195,17 +195,17 @@ public class SubagentManager {
         String sessionKey = "subagent:" + task.getId();
 
         try {
-            LLMExecutor llmExecutor = new LLMExecutor(provider, tools, subagentSessions, model, null, maxIterations);
+            ReActExecutor reActExecutor = new ReActExecutor(provider, tools, subagentSessions, model, null, maxIterations);
             String result;
             
             if (callback != null) {
                 // 使用流式执行，将子代理的输出通过回调传递
-                result = llmExecutor.executeStream(messages, sessionKey, chunk -> {
+                result = reActExecutor.executeStream(messages, sessionKey, chunk -> {
                     // 将子代理的内容包装为 subagentContent 事件
                     callback.onEvent(StreamEvent.subagentContent(task.getId(), chunk));
                 });
             } else {
-                result = llmExecutor.execute(messages, sessionKey);
+                result = reActExecutor.execute(messages, sessionKey);
             }
 
             task.setStatus("completed");
@@ -279,8 +279,8 @@ public class SubagentManager {
         String sessionKey = "subagent:" + task.getId();
         
         try {
-            // 使用 LLMExecutor 实现完整的工具调用和循环能力
-            LLMExecutor executor = new LLMExecutor(provider, tools, subagentSessions, model, null, maxIterations);
+            // 使用 ReActExecutor 实现完整的工具调用和循环能力
+            ReActExecutor executor = new ReActExecutor(provider, tools, subagentSessions, model, null, maxIterations);
             String result = executor.execute(messages, sessionKey);
             
             task.setStatus("completed");

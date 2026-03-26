@@ -1,12 +1,18 @@
 package io.leavesfly.tinyclaw.mcp;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 基于 Stdio 的 MCP 客户端实现。
@@ -17,24 +23,17 @@ import java.util.concurrent.*;
  * 3. 从 stdout 读取 JSON-RPC 响应（每条消息一行，以换行符分隔）
  * 4. stderr 用于服务器日志输出（不参与协议通信）
  */
-public class StdioMCPClient implements MCPClient {
-
-    private static final TinyClawLogger logger = TinyClawLogger.getLogger("mcp");
-    private static final int MAX_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB
+public class StdioMCPClient extends AbstractMCPClient {
 
     private final String command;
     private final List<String> args;
     private final Map<String, String> env;
-    private final int timeoutMs;
-    private final ObjectMapper objectMapper;
 
-    private volatile boolean connected = false;
     private volatile Process process;
     private volatile BufferedWriter stdinWriter;
     private volatile Thread readerThread;
     private volatile Thread stderrThread;
 
-    private final Map<String, CompletableFuture<MCPMessage>> pendingRequests = new ConcurrentHashMap<>();
     /** 保护 stdin 写入的锁，防止并发写入导致消息交错 */
     private final Object writeLock = new Object();
 
@@ -47,11 +46,10 @@ public class StdioMCPClient implements MCPClient {
      * @param timeoutMs 请求超时时间（毫秒）
      */
     public StdioMCPClient(String command, List<String> args, Map<String, String> env, int timeoutMs) {
+        super(timeoutMs);
         this.command = command;
         this.args = args != null ? args : Collections.emptyList();
         this.env = env != null ? env : Collections.emptyMap();
-        this.timeoutMs = timeoutMs;
-        this.objectMapper = new ObjectMapper();
     }
 
     @Override
@@ -108,61 +106,14 @@ public class StdioMCPClient implements MCPClient {
         ));
     }
 
-    @Override
-    public MCPMessage sendRequest(String method, Map<String, Object> params) throws Exception {
-        if (!connected) {
-            throw new IllegalStateException("Not connected to MCP server");
-        }
-
-        String requestId = UUID.randomUUID().toString();
-        MCPMessage request = MCPMessage.createRequest(requestId, method, params);
-
-        CompletableFuture<MCPMessage> future = new CompletableFuture<>();
-        pendingRequests.put(requestId, future);
-
-        try {
-            writeMessage(request);
-
-            MCPMessage response = future.get(timeoutMs, TimeUnit.MILLISECONDS);
-
-            if (response.isError()) {
-                throw new MCPException(
-                        response.getError().getCode(),
-                        response.getError().getMessage()
-                );
-            }
-
-            return response;
-
-        } catch (TimeoutException e) {
-            pendingRequests.remove(requestId);
-            throw new MCPException(-1, "Request timeout after " + timeoutMs + "ms for method: " + method);
-        } catch (MCPException e) {
-            throw e;
-        } catch (Exception e) {
-            pendingRequests.remove(requestId);
-            throw e;
-        }
-    }
-
-    @Override
-    public void sendNotification(String method, Map<String, Object> params) throws IOException {
-        if (!connected) {
-            throw new IllegalStateException("Not connected to MCP server");
-        }
-        MCPMessage notification = MCPMessage.createNotification(method, params);
-        writeMessage(notification);
-    }
-
     /**
-     * 将 JSON-RPC 消息写入子进程的 stdin（线程安全）
+     * 底层发送 JSON-RPC 消息（写入子进程的 stdin，线程安全）
      */
-    private void writeMessage(MCPMessage message) throws IOException {
-        String json = objectMapper.writeValueAsString(message);
-
+    @Override
+    protected void doSend(String jsonMessage) throws IOException {
         synchronized (writeLock) {
             try {
-                stdinWriter.write(json);
+                stdinWriter.write(jsonMessage);
                 stdinWriter.newLine();
                 stdinWriter.flush();
             } catch (IOException e) {
@@ -171,10 +122,7 @@ public class StdioMCPClient implements MCPClient {
             }
         }
 
-        logger.debug("Sent message via stdio", Map.of(
-                "method", message.getMethod() != null ? message.getMethod() : "response",
-                "id", message.getId() != null ? message.getId() : "notification"
-        ));
+        logger.debug("Sent message via stdio", Map.of("command", command));
     }
 
     /**
@@ -206,10 +154,7 @@ public class StdioMCPClient implements MCPClient {
             }
         } finally {
             connected = false;
-            for (CompletableFuture<MCPMessage> future : pendingRequests.values()) {
-                future.completeExceptionally(new IOException("MCP server process stdout closed"));
-            }
-            pendingRequests.clear();
+            clearPendingRequests("MCP server process stdout closed");
         }
     }
 
@@ -237,19 +182,14 @@ public class StdioMCPClient implements MCPClient {
      */
     private void handleMessage(String data) {
         try {
-            MCPMessage message = objectMapper.readValue(data, MCPMessage.class);
-
-            if (message.isResponse()) {
-                String id = message.getId();
-                CompletableFuture<MCPMessage> future = pendingRequests.remove(id);
-                if (future != null) {
-                    future.complete(message);
-                } else {
-                    logger.warn("Received response for unknown request", Map.of("id", id));
-                }
-            } else if (message.isNotification()) {
-                logger.debug("Received notification", Map.of("method", message.getMethod()));
+            if (data.length() > MAX_RESPONSE_SIZE) {
+                logger.warn("Response too large, ignoring", Map.of(
+                        "size", data.length(), "max", MAX_RESPONSE_SIZE));
+                return;
             }
+
+            MCPMessage message = objectMapper.readValue(data, MCPMessage.class);
+            handleResponse(message);
 
         } catch (Exception e) {
             logger.error("Failed to parse JSON-RPC message from stdout", Map.of(
@@ -257,19 +197,11 @@ public class StdioMCPClient implements MCPClient {
         }
     }
 
+    /**
+     * Stdio 特有的关闭清理逻辑
+     */
     @Override
-    public void close() {
-        if (!connected && process == null) {
-            return;
-        }
-
-        connected = false;
-
-        for (CompletableFuture<MCPMessage> future : pendingRequests.values()) {
-            future.completeExceptionally(new IOException("Connection closed"));
-        }
-        pendingRequests.clear();
-
+    protected void doClose() {
         // 关闭 stdin 以通知子进程退出
         if (stdinWriter != null) {
             try {

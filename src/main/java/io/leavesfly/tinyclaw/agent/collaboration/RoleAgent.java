@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration;
 
-import io.leavesfly.tinyclaw.agent.LLMExecutor;
+import io.leavesfly.tinyclaw.agent.ReActExecutor;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
@@ -23,7 +23,7 @@ public class RoleAgent {
     private final AgentRole role;
     
     /** LLM执行器 */
-    private final LLMExecutor llmExecutor;
+    private final ReActExecutor reActExecutor;
     
     /** 会话管理器 */
     private final SessionManager sessionManager;
@@ -68,7 +68,7 @@ public class RoleAgent {
                 ? tools.filter(role.getAllowedTools())
                 : tools;
 
-        this.llmExecutor = new LLMExecutor(provider, effectiveTools, sessionManager,
+        this.reActExecutor = new ReActExecutor(provider, effectiveTools, sessionManager,
                 effectiveModel, null, maxIterations);
     }
     
@@ -81,7 +81,7 @@ public class RoleAgent {
     public String speak(SharedContext context) {
         List<Message> messages = buildMessages(context);
         try {
-            return llmExecutor.execute(messages, sessionKey);
+            return reActExecutor.execute(messages, sessionKey);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }
@@ -97,7 +97,7 @@ public class RoleAgent {
     public String speak(SharedContext context, String customPrompt) {
         List<Message> messages = buildMessages(context, customPrompt);
         try {
-            return llmExecutor.execute(messages, sessionKey);
+            return reActExecutor.execute(messages, sessionKey);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }
@@ -132,7 +132,7 @@ public class RoleAgent {
             // 将 LLM 的流式 CONTENT chunk 转换为 COLLABORATE_AGENT_CHUNK 事件
             LLMProvider.StreamCallback chunkRelay = chunk ->
                     callback.onEvent(StreamEvent.collaborateAgentChunk(role.getRoleName(), chunk));
-            return llmExecutor.executeStream(messages, sessionKey, chunkRelay);
+            return reActExecutor.executeStream(messages, sessionKey, chunkRelay);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }
@@ -149,7 +149,7 @@ public class RoleAgent {
         messages.add(new Message("system", buildSystemPrompt(null)));
         messages.add(new Message("user", userMessage));
         try {
-            return llmExecutor.execute(messages, sessionKey);
+            return reActExecutor.execute(messages, sessionKey);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }

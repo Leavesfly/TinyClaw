@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.skills;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.config.ToolsConfig;
@@ -8,6 +9,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
+import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -275,8 +277,14 @@ public class SkillsSearcher {
             }
         } catch (GitHubRateLimitException e) {
             throw e;
+        } catch (JsonProcessingException e) {
+            // registry.json 解析失败
+            logger.debug("Failed to parse registry.json for " + registry.getRepo() + ": " + e.getMessage());
+        } catch (IOException e) {
+            // 网络或文件读取失败
+            logger.debug("IO error reading registry.json for " + registry.getRepo() + ": " + e.getMessage());
         } catch (Exception e) {
-            // registry.json 不存在或解析失败，忽略
+            // registry.json 不存在或其他意外错误，忽略
             logger.debug("No registry.json found for " + registry.getRepo() + ": " + e.getMessage());
         }
 
@@ -346,6 +354,8 @@ public class SkillsSearcher {
             }
         } catch (GitHubRateLimitException e) {
             throw e;
+        } catch (IOException e) {
+            logger.debug("IO error scanning directory for " + registry.getRepo() + ": " + e.getMessage());
         } catch (Exception e) {
             logger.debug("Directory scan failed for " + registry.getRepo() + ": " + e.getMessage());
         }
@@ -449,6 +459,8 @@ public class SkillsSearcher {
             String url = GITHUB_SEARCH_REPOS + "?q=" + encodeQuery(searchQuery)
                     + "&sort=stars&order=desc&per_page=" + limit;
             results.addAll(executeRepoSearch(url));
+        } catch (IOException e) {
+            logger.warn("Topic search IO error", Map.of("error", e.getMessage()));
         } catch (Exception e) {
             logger.warn("Topic search failed", Map.of("error", e.getMessage()));
         }
@@ -465,6 +477,8 @@ public class SkillsSearcher {
                         results.add(codeResult);
                     }
                 }
+            } catch (IOException e) {
+                logger.warn("Code search IO error", Map.of("error", e.getMessage()));
             } catch (Exception e) {
                 logger.warn("Code search failed", Map.of("error", e.getMessage()));
             }

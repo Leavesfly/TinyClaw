@@ -14,22 +14,22 @@ import java.util.Map;
  * 从工作空间加载 AGENTS.md、SOUL.md、USER.md、IDENTITY.md 等自定义配置文件。
  */
 public class BootstrapSection implements ContextSection {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("context");
-    
+
     private static final List<String> BOOTSTRAP_FILES = List.of(
-        "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"
+            "AGENTS.md", "SOUL.md", "USER.md"
     );
-    
+
     @Override
     public String name() {
         return "Bootstrap";
     }
-    
+
     @Override
     public String build(SectionContext context) {
         StringBuilder result = new StringBuilder();
-        
+
         for (String filename : BOOTSTRAP_FILES) {
             String content = loadBootstrapFile(context.getWorkspace(), filename);
             if (StringUtils.isNotBlank(content)) {
@@ -37,10 +37,10 @@ public class BootstrapSection implements ContextSection {
                 result.append(content).append("\n\n");
             }
         }
-        
+
         return result.toString();
     }
-    
+
     /**
      * 加载单个引导文件。
      */

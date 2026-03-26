@@ -1,16 +1,17 @@
 package io.leavesfly.tinyclaw.mcp;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import okhttp3.*;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
-import java.net.URI;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 基于 Streamable HTTP 的 MCP 客户端实现。
@@ -27,27 +28,21 @@ import java.util.concurrent.*;
  * - SSE 传输需要先 GET 建立长连接，等待 endpoint 事件，再 POST 消息
  * - Streamable HTTP 直接 POST 到 endpoint，响应在同一个 HTTP 响应中返回
  */
-public class StreamableHttpMCPClient implements MCPClient {
+public class StreamableHttpMCPClient extends AbstractMCPClient {
 
-    private static final TinyClawLogger logger = TinyClawLogger.getLogger("mcp");
-    private static final int MAX_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
 
     private final OkHttpClient httpClient;
-    private final ObjectMapper objectMapper;
     private final String endpoint;
     private final String apiKey;
-    private final int timeoutMs;
 
-    private volatile boolean connected = false;
     /** 服务器返回的 Mcp-Session-Id，后续请求需要携带 */
     private volatile String sessionId;
 
     public StreamableHttpMCPClient(String endpoint, String apiKey, int timeoutMs) {
+        super(timeoutMs);
         this.endpoint = endpoint;
         this.apiKey = apiKey;
-        this.timeoutMs = timeoutMs;
-        this.objectMapper = new ObjectMapper();
 
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
@@ -72,6 +67,12 @@ public class StreamableHttpMCPClient implements MCPClient {
         logger.info("Streamable HTTP MCP client ready", Map.of("endpoint", endpoint));
     }
 
+    /**
+     * 发送 JSON-RPC 请求并等待响应（同步 HTTP 请求模式）
+     *
+     * 覆盖基类实现，因为 Streamable HTTP 使用同步请求/响应模式，
+     * 不需要 pendingRequests 异步关联。
+     */
     @Override
     public MCPMessage sendRequest(String method, Map<String, Object> params) throws Exception {
         if (!connected) {
@@ -105,6 +106,9 @@ public class StreamableHttpMCPClient implements MCPClient {
         }
     }
 
+    /**
+     * 发送 JSON-RPC 通知（无需响应）
+     */
     @Override
     public void sendNotification(String method, Map<String, Object> params) throws IOException {
         if (!connected) {
@@ -141,6 +145,24 @@ public class StreamableHttpMCPClient implements MCPClient {
     }
 
     /**
+     * 底层发送方法（Streamable HTTP 不使用，因为 sendRequest/sendNotification 已覆盖）
+     */
+    @Override
+    protected void doSend(String jsonMessage) throws IOException {
+        // Streamable HTTP 使用同步 HTTP 请求模式，此方法不会被调用
+        throw new UnsupportedOperationException("StreamableHttpMCPClient uses synchronous HTTP request mode");
+    }
+
+    /**
+     * Streamable HTTP 特有的关闭清理逻辑
+     */
+    @Override
+    protected void doClose() {
+        sessionId = null;
+        logger.info("Disconnected from MCP server (Streamable HTTP)", Map.of("endpoint", endpoint));
+    }
+
+    /**
      * POST JSON-RPC 消息并解析响应
      * 支持两种响应格式：普通 JSON 和 SSE 流
      */
@@ -170,7 +192,7 @@ public class StreamableHttpMCPClient implements MCPClient {
             }
 
             if (responseBody.length() > MAX_RESPONSE_SIZE) {
-                throw new IOException("Response too large: " + responseBody.length() + " bytes");
+                throw new IOException("Response too large: " + responseBody.length() + " bytes (max: " + MAX_RESPONSE_SIZE + ")");
             }
 
             String contentType = response.header("Content-Type", "");
@@ -284,16 +306,9 @@ public class StreamableHttpMCPClient implements MCPClient {
         if (!connected) {
             return;
         }
-
         connected = false;
-        sessionId = null;
-
-        logger.info("Disconnected from MCP server (Streamable HTTP)", Map.of("endpoint", endpoint));
-    }
-
-    @Override
-    public boolean isConnected() {
-        return connected;
+        // Streamable HTTP 不使用 pendingRequests，无需调用基类的 close()
+        doClose();
     }
 
     private void validateEndpoint(String endpoint) throws IOException {

@@ -1,17 +1,19 @@
 package io.leavesfly.tinyclaw.channels;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.ChannelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import okhttp3.*;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
-import java.io.IOException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -40,17 +42,14 @@ import java.util.concurrent.TimeUnit;
 public class QQChannel extends BaseChannel {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("qq");
-    private static final ObjectMapper objectMapper = new ObjectMapper();
-    private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     
     private static final String API_BASE_URL = "https://api.sgroup.qq.com";
     
     private final ChannelsConfig.QQConfig config;
     private final OkHttpClient httpClient;
     
-    // 访问令牌
-    private String accessToken;
-    private long tokenExpireTime;
+    // 令牌管理器
+    private final TokenManager tokenManager;
     
     // 已处理消息 ID（去重）
     private final Set<String> processedIds = ConcurrentHashMap.newKeySet();
@@ -69,6 +68,9 @@ public class QQChannel extends BaseChannel {
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build();
+        
+        // 初始化令牌管理器
+        this.tokenManager = new TokenManager(this::fetchAccessToken);
     }
     
     @Override
@@ -82,7 +84,7 @@ public class QQChannel extends BaseChannel {
         
         // 获取访问令牌
         try {
-            refreshAccessToken();
+            tokenManager.getValidToken();
         } catch (Exception e) {
             throw new ChannelException("获取访问令牌失败", e);
         }
@@ -96,7 +98,7 @@ public class QQChannel extends BaseChannel {
     public void stop() {
         logger.info("正在停止 QQ 通道...");
         setRunning(false);
-        accessToken = null;
+        tokenManager.invalidate();
         processedIds.clear();
         logger.info("QQ 通道已停止");
     }
@@ -107,89 +109,62 @@ public class QQChannel extends BaseChannel {
             throw new IllegalStateException("QQ 通道未运行");
         }
         
-        // 确保令牌有效
-        if (accessToken == null || System.currentTimeMillis() >= tokenExpireTime) {
-            try {
-                refreshAccessToken();
-            } catch (Exception e) {
-                throw new ChannelException("刷新访问令牌失败", e);
-            }
+        // 获取有效令牌
+        String token;
+        try {
+            token = tokenManager.getValidToken();
+        } catch (Exception e) {
+            throw new ChannelException("刷新访问令牌失败", e);
         }
         
         // 构建消息体
-        ObjectNode body = objectMapper.createObjectNode();
+        ObjectNode body = MAPPER.createObjectNode();
         body.put("content", message.getContent());
         
         String jsonBody;
         try {
-            jsonBody = objectMapper.writeValueAsString(body);
-        } catch (JsonProcessingException e) {
+            jsonBody = MAPPER.writeValueAsString(body);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new ChannelException("序列化消息失败", e);
         }
         
         // 发送私聊消息
         String url = API_BASE_URL + "/v2/users/" + message.getChatId() + "/messages";
+        Request request = buildJsonPostRequest(url, jsonBody, "QQBot " + token);
         
-        Request request = new Request.Builder()
-            .url(url)
-            .header("Authorization", "QQBot " + accessToken)
-            .header("Content-Type", "application/json")
-            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
-            .build();
-        
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                String errorBody;
-                try {
-                    errorBody = response.body() != null ? response.body().string() : "";
-                } catch (IOException e) {
-                    errorBody = "无法读取错误响应";
-                }
-                throw new ChannelException("发送 QQ 消息失败: HTTP " + response.code() + " " + errorBody);
-            }
-            
+        try {
+            executeRequest(httpClient, request);
             logger.debug("QQ 消息发送成功", Map.of("chat_id", message.getChatId()));
-        } catch (IOException e) {
-            throw new ChannelException("发送 QQ 消息时发生网络错误", e);
+        } catch (java.io.IOException e) {
+            throw new ChannelException("发送 QQ 消息失败: " + e.getMessage(), e);
         }
     }
     
     /**
-     * 刷新访问令牌
+     * 获取访问令牌（供 TokenManager 调用）
      */
-    private void refreshAccessToken() throws Exception {
+    private TokenManager.TokenResult fetchAccessToken() throws Exception {
         String url = "https://bots.qq.com/app/getAppAccessToken";
         
-        ObjectNode body = objectMapper.createObjectNode();
+        ObjectNode body = MAPPER.createObjectNode();
         body.put("appId", config.getAppId());
         body.put("clientSecret", config.getAppSecret());
         
-        String jsonBody = objectMapper.writeValueAsString(body);
+        String jsonBody = MAPPER.writeValueAsString(body);
+        Request request = buildJsonPostRequest(url, jsonBody);
         
-        Request request = new Request.Builder()
-            .url(url)
-            .header("Content-Type", "application/json")
-            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
-            .build();
+        String responseBody = executeRequest(httpClient, request);
+        JsonNode json = MAPPER.readTree(responseBody);
         
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new Exception("获取 QQ 访问令牌失败: HTTP " + response.code());
-            }
-            
-            String responseBody = response.body() != null ? response.body().string() : "{}";
-            JsonNode json = objectMapper.readTree(responseBody);
-            
-            accessToken = json.path("access_token").asText(null);
-            int expiresIn = json.path("expires_in").asInt(7200);
-            tokenExpireTime = System.currentTimeMillis() + (expiresIn - 300) * 1000L;
-            
-            if (accessToken == null) {
-                throw new Exception("获取 QQ 访问令牌失败: 响应中无 access_token");
-            }
-            
-            logger.debug("QQ 访问令牌已刷新", Map.of("expires_in", expiresIn));
+        String token = json.path("access_token").asText(null);
+        int expiresIn = json.path("expires_in").asInt(7200);
+        
+        if (token == null) {
+            throw new Exception("获取 QQ 访问令牌失败: 响应中无 access_token");
         }
+        
+        logger.debug("QQ 访问令牌已刷新", Map.of("expires_in", expiresIn));
+        return new TokenManager.TokenResult(token, expiresIn);
     }
     
     /**
@@ -199,7 +174,7 @@ public class QQChannel extends BaseChannel {
      */
     public void handleIncomingMessage(String messageJson) {
         try {
-            JsonNode json = objectMapper.readTree(messageJson);
+            JsonNode json = MAPPER.readTree(messageJson);
             
             String messageId = json.path("id").asText(null);
             if (messageId == null) {

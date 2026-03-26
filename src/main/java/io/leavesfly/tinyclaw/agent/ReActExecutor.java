@@ -22,7 +22,7 @@ import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
  * - 支持流式和非流式两种模式
  * - 控制迭代次数避免无限循环
  */
-public class LLMExecutor {
+public class ReActExecutor {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("agent.llm");
     private static final int MAX_EMPTY_RESPONSE_RETRIES = 2;
@@ -63,8 +63,8 @@ public class LLMExecutor {
         void execute(List<Message> messages, List<ToolCall> toolCalls, String sessionKey, int iteration) throws Exception;
     }
     
-    public LLMExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions,
-                      String model, String providerName, int maxIterations) {
+    public ReActExecutor(LLMProvider provider, ToolRegistry tools, SessionManager sessions,
+                         String model, String providerName, int maxIterations) {
         this.provider = provider;
         this.tools = tools;
         this.sessions = sessions;

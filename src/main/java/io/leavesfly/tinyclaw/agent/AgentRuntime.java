@@ -32,7 +32,7 @@ import java.util.Set;
 /**
  * TinyClaw 核心执行引擎，协调消息路由、上下文构建、会话管理与 LLM 交互。
  *
- * <p>将 LLM 调用委托给 {@link LLMExecutor}，会话摘要委托给 {@link SessionSummarizer}，
+ * <p>将 LLM 调用委托给 {@link ReActExecutor}，会话摘要委托给 {@link SessionSummarizer}，
  * 消息路由委托给 {@link MessageRouter}，自身聚焦于生命周期管理与外部接口。</p>
  */
 public class AgentRuntime {
@@ -393,7 +393,7 @@ public class AgentRuntime {
 
         ProviderComponents comps = providerManager.getComponents();
         String response = ensureNonBlank(
-                comps.llmExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
+                comps.reActExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
 
         messageRouter.persistAndSummarize(sessionKey, response);
         return response;

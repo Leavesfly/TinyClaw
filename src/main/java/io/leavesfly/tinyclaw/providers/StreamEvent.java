@@ -21,6 +21,8 @@ import java.util.Map;
  * - THINKING: 思考/推理过程（可选展示）
  */
 public class StreamEvent {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     
     public enum EventType {
         /** 普通文本内容（主 Agent 的回复） */
@@ -218,8 +220,7 @@ public class StreamEvent {
      */
     public String toJson() {
         try {
-            ObjectMapper mapper = new ObjectMapper();
-            ObjectNode node = mapper.createObjectNode();
+            ObjectNode node = MAPPER.createObjectNode();
             node.put("type", type.name());
 
             switch (type) {
@@ -229,7 +230,7 @@ public class StreamEvent {
                     node.put("tool", content != null ? content : "");
                     Map<String, Object> args = getMeta("args");
                     if (args != null && !args.isEmpty()) {
-                        ObjectNode argsNode = mapper.createObjectNode();
+                        ObjectNode argsNode = MAPPER.createObjectNode();
                         args.forEach((key, value) -> {
                             if (value == null) {
                                 argsNode.put(key, "");
@@ -293,7 +294,7 @@ public class StreamEvent {
                 }
             }
 
-            return mapper.writeValueAsString(node);
+            return MAPPER.writeValueAsString(node);
         } catch (Exception e) {
             // 序列化失败时降级为纯文本内容，保证流不中断
             return "{\"type\":\"CONTENT\",\"content\":" + escapeJsonString(content) + "}";

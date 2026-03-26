@@ -17,7 +17,8 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -105,7 +106,9 @@ public class MaixCamChannel extends BaseChannel {
         for (Socket client : clients.keySet()) {
             try {
                 client.close();
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                logger.debug("关闭客户端连接时异常", Map.of("error", e.getMessage()));
+            }
         }
         clients.clear();
         
@@ -113,7 +116,9 @@ public class MaixCamChannel extends BaseChannel {
         if (serverSocket != null && !serverSocket.isClosed()) {
             try {
                 serverSocket.close();
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                logger.debug("关闭服务器时异常", Map.of("error", e.getMessage()));
+            }
         }
         
         logger.info("MaixCam 通道已停止");
@@ -206,7 +211,9 @@ public class MaixCamChannel extends BaseChannel {
             clients.remove(client);
             try {
                 client.close();
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                logger.debug("关闭连接时异常", Map.of("error", e.getMessage()));
+            }
         }
     }
     

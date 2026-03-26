@@ -15,7 +15,7 @@ import io.leavesfly.tinyclaw.tools.TokenUsageStore;
  */
 class ProviderComponents {
 
-    final LLMExecutor llmExecutor;
+    final ReActExecutor reActExecutor;
     final SessionSummarizer summarizer;
     final MemoryEvolver memoryEvolver;
     final TokenUsageStore tokenUsageStore;
@@ -28,14 +28,14 @@ class ProviderComponents {
     final AgentOrchestrator orchestrator;
 
     ProviderComponents(
-            LLMExecutor llmExecutor,
+            ReActExecutor reActExecutor,
             SessionSummarizer summarizer,
             MemoryEvolver memoryEvolver,
             TokenUsageStore tokenUsageStore,
             FeedbackManager feedbackManager,
             PromptOptimizer promptOptimizer,
             AgentOrchestrator orchestrator) {
-        this.llmExecutor = llmExecutor;
+        this.reActExecutor = reActExecutor;
         this.summarizer = summarizer;
         this.memoryEvolver = memoryEvolver;
         this.tokenUsageStore = tokenUsageStore;

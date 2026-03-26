@@ -167,7 +167,7 @@ class MessageRouter {
                                                    boolean usedStreaming) throws Exception {
         if (!usedStreaming) {
             ProviderComponents comps = providerManager.getComponents();
-            return comps.llmExecutor.execute(messages, sessionKey);
+            return comps.reActExecutor.execute(messages, sessionKey);
         }
 
         Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
@@ -175,7 +175,7 @@ class MessageRouter {
 
         logger.info("Using streaming output for channel", Map.of("channel", msg.getChannel()));
         ProviderComponents comps = providerManager.getComponents();
-        return comps.llmExecutor.executeStream(messages, sessionKey, streamingCallback);
+        return comps.reActExecutor.executeStream(messages, sessionKey, streamingCallback);
     }
 
     /**
@@ -214,7 +214,7 @@ class MessageRouter {
 
         ProviderComponents comps = providerManager.getComponents();
         String response = ensureNonBlank(
-                comps.llmExecutor.execute(messages, sessionKey), "Background task completed.");
+                comps.reActExecutor.execute(messages, sessionKey), "Background task completed.");
 
         persistAndSummarize(sessionKey, response);
         bus.publishOutbound(new OutboundMessage(originChannel, originChatId, response));

@@ -1,9 +1,16 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +23,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * 想理解“外部消息是怎样进入 MessageBus 的”，可以从各个具体通道的 handleMessage 调用链看起。</p>
  */
 public abstract class BaseChannel implements Channel {
+    
+    /** 共享的 Jackson ObjectMapper */
+    protected static final ObjectMapper MAPPER = new ObjectMapper();
+    
+    /** JSON 媒体类型 */
+    protected static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     
     protected final TinyClawLogger logger;
     protected final MessageBus bus;
@@ -121,5 +134,55 @@ public abstract class BaseChannel implements Channel {
     
     protected void setRunning(boolean running) {
         this.running = running;
+    }
+    
+    /**
+     * 构建 JSON POST 请求（无认证头）
+     * 
+     * @param url 请求 URL
+     * @param jsonBody JSON 请求体
+     * @return OkHttp Request 对象
+     */
+    protected Request buildJsonPostRequest(String url, String jsonBody) {
+        return new Request.Builder()
+            .url(url)
+            .header("Content-Type", "application/json")
+            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
+            .build();
+    }
+    
+    /**
+     * 构建 JSON POST 请求（带认证头）
+     * 
+     * @param url 请求 URL
+     * @param jsonBody JSON 请求体
+     * @param authHeader Authorization 头的值
+     * @return OkHttp Request 对象
+     */
+    protected Request buildJsonPostRequest(String url, String jsonBody, String authHeader) {
+        return new Request.Builder()
+            .url(url)
+            .header("Authorization", authHeader)
+            .header("Content-Type", "application/json")
+            .post(RequestBody.create(jsonBody, JSON_MEDIA_TYPE))
+            .build();
+    }
+    
+    /**
+     * 执行 HTTP 请求并返回响应体字符串
+     * 
+     * @param client OkHttpClient 实例
+     * @param request 请求对象
+     * @return 响应体字符串
+     * @throws IOException 网络错误或响应失败时抛出
+     */
+    protected String executeRequest(OkHttpClient client, Request request) throws IOException {
+        try (Response response = client.newCall(request).execute()) {
+            String body = response.body() != null ? response.body().string() : "";
+            if (!response.isSuccessful()) {
+                throw new IOException("HTTP " + response.code() + ": " + body);
+            }
+            return body;
+        }
     }
 }

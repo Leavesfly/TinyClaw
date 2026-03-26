@@ -59,9 +59,9 @@ class ProviderManager {
         }
         synchronized (providerLock) {
             applyProvider(provider);
+            logger.info("Provider configured dynamically", Map.of(
+                    "model", config.getAgent().getModel()));
         }
-        logger.info("Provider configured dynamically", Map.of(
-                "model", config.getAgent().getModel()));
     }
 
     /**
@@ -150,14 +150,14 @@ class ProviderManager {
         MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
 
         TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
-        LLMExecutor llmExecutor = new LLMExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
-        llmExecutor.setTokenUsageStore(tokenUsageStore);
+        ReActExecutor reActExecutor = new ReActExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
+        reActExecutor.setTokenUsageStore(tokenUsageStore);
 
         SessionSummarizer summarizer = new SessionSummarizer(
                 sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);
 
         this.components = buildOptionalComponents(
-                newProvider, model, maxIterations, llmExecutor, summarizer, memoryEvolver, tokenUsageStore);
+                newProvider, model, maxIterations, reActExecutor, summarizer, memoryEvolver, tokenUsageStore);
 
         this.providerConfigured = true;
     }
@@ -170,7 +170,7 @@ class ProviderManager {
      */
     private ProviderComponents buildOptionalComponents(
             LLMProvider newProvider, String model, int maxIterations,
-            LLMExecutor llmExecutor, SessionSummarizer summarizer,
+            ReActExecutor reActExecutor, SessionSummarizer summarizer,
             MemoryEvolver memoryEvolver, TokenUsageStore tokenUsageStore) {
 
         FeedbackManager feedbackManager = null;
@@ -182,7 +182,7 @@ class ProviderManager {
         if (evolutionConfig != null && evolutionConfig.isAnyEvolutionEnabled()) {
             if (evolutionConfig.isFeedbackEnabled()) {
                 feedbackManager = new FeedbackManager(workspace, evolutionConfig);
-                llmExecutor.setFeedbackManager(feedbackManager);
+                reActExecutor.setFeedbackManager(feedbackManager);
                 logger.info("Feedback collection enabled");
             }
             if (evolutionConfig.isPromptOptimizationEnabled() && feedbackManager != null) {
@@ -213,7 +213,7 @@ class ProviderManager {
             logger.debug("Collaboration features disabled");
         }
 
-        return new ProviderComponents(llmExecutor, summarizer, memoryEvolver, tokenUsageStore,
+        return new ProviderComponents(reActExecutor, summarizer, memoryEvolver, tokenUsageStore,
                 feedbackManager, promptOptimizer, orchestrator);
     }
 
