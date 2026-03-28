@@ -90,4 +90,9 @@ public interface LLMProvider {
      * 获取该提供者的默认模型
      */
     String getDefaultModel();
+
+    /**
+     * 获取该提供者的名称（如 dashscope、openai、ollama 等）
+     */
+    String getName();
 }

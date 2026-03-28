@@ -2,7 +2,7 @@ package io.leavesfly.tinyclaw.tools;
 
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,31 +34,33 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     
     @Override
     public String description() {
-        return "生成一个子代理处理任务。" +
-               "默认同步执行：子代理完成后直接返回结果，适合需要基于结果继续推理的场景。" +
-               "设置 async=true 可切换为异步模式：子代理在后台运行，完成后通知，适合耗时的后台任务。";
+        return "派生一个独立的子代理来执行指定任务。支持两种执行模式：\n" +
+               "- sync（默认）: 阻塞等待子代理完成并返回完整结果。当你需要基于子代理的输出继续推理、做决策或组合多个结果时使用。\n" +
+               "- async: 子代理在后台运行，立即返回确认信息，完成后通过消息通知。适合耗时较长且不需要立即使用结果的后台任务。\n" +
+               "适用场景：将复杂任务拆分为独立子任务、需要隔离上下文的专项处理、并行处理多个独立子问题。";
     }
     
     @Override
     public Map<String, Object> parameters() {
-        Map<String, Object> params = new HashMap<>();
+        Map<String, Object> params = new LinkedHashMap<>();
         params.put("type", "object");
         
-        Map<String, Object> properties = new HashMap<>();
+        Map<String, Object> properties = new LinkedHashMap<>();
         
-        Map<String, Object> task = new HashMap<>();
+        Map<String, Object> task = new LinkedHashMap<>();
         task.put("type", "string");
-        task.put("description", "子代理要完成的任务");
+        task.put("description", "子代理要执行的任务描述。应包含清晰的目标、必要的上下文信息和期望的输出格式，使子代理能独立完成任务而无需额外澄清。");
         properties.put("task", task);
         
-        Map<String, Object> label = new HashMap<>();
+        Map<String, Object> label = new LinkedHashMap<>();
         label.put("type", "string");
-        label.put("description", "任务的可选简短标签（用于显示）");
+        label.put("description", "任务的简短标签（3-10字），用于在执行过程中标识和显示该子任务。例如：'代码审查'、'数据分析'。");
         properties.put("label", label);
         
-        Map<String, Object> async = new HashMap<>();
+        Map<String, Object> async = new LinkedHashMap<>();
         async.put("type", "boolean");
-        async.put("description", "是否异步执行。默认 false（同步，等待子代理完成并返回结果）。设为 true 则在后台运行，立即返回确认信息。");
+        async.put("description", "执行模式。false（默认）: 同步阻塞，等待子代理完成并返回结果，适合需要基于结果继续推理的场景。true: 异步后台运行，立即返回确认信息，适合耗时的后台任务。");
+        async.put("default", false);
         properties.put("async", async);
         
         params.put("properties", properties);

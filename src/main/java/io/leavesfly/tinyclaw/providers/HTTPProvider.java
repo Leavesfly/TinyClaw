@@ -47,15 +47,21 @@ public class HTTPProvider implements LLMProvider {
     private static final String CHAT_COMPLETIONS_ENDPOINT = "/chat/completions";
     private static final String AUTHORIZATION_PREFIX = "Bearer ";
     
-    private final String apiKey;              // API 密钥
+    private final String apiKey;              // API 密鑰
     private final String apiBase;             // API 基础 URL
+    private final String name;               // Provider 名称
     private final OkHttpClient httpClient;    // HTTP 客户端
     private final LLMRequestBuilder requestBuilder;       // 请求构建器
     private final StreamResponseParser responseParser;    // 响应解析器
-    
+        
     public HTTPProvider(String apiKey, String apiBase) {
+        this(apiKey, apiBase, "unknown");
+    }
+    
+    public HTTPProvider(String apiKey, String apiBase, String name) {
         this.apiKey = apiKey;
         this.apiBase = apiBase;
+        this.name = name != null ? name : "unknown";
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -221,6 +227,11 @@ public class HTTPProvider implements LLMProvider {
     public String getDefaultModel() {
         return "";
     }
+
+    @Override
+    public String getName() {
+        return name;
+    }
     
     /**
      * 根据配置创建 HTTPProvider 实例。
@@ -262,7 +273,7 @@ public class HTTPProvider implements LLMProvider {
             "api_base", providerConfig.apiBase
         ));
         
-        return new HTTPProvider(providerConfig.apiKey, providerConfig.apiBase);
+        return new HTTPProvider(providerConfig.apiKey, providerConfig.apiBase, providerName);
     }
     
     /**

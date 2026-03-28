@@ -176,7 +176,7 @@ public abstract class CliCommand {
                 if (apiBase == null || apiBase.isEmpty()) {
                     apiBase = ProvidersConfig.getDefaultApiBase(providerName);
                 }
-                return new HTTPProvider(providerConfig.getApiKey(), apiBase);
+                return new HTTPProvider(providerConfig.getApiKey(), apiBase,modelDef.getProvider());
             }
             // model 对应的 provider 未配置 apiKey，抛出明确的错误提示
             throw new IllegalStateException(
