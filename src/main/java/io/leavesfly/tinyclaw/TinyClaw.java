@@ -51,7 +51,7 @@ public class TinyClaw {
     }
     
     /**
-     * 注册命令（主要用于测试）
+     * 注册命令
      * @param name 命令名称
      * @param supplier 命令工厂
      */
