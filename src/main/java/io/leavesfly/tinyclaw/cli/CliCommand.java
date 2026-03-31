@@ -291,7 +291,9 @@ public abstract class CliCommand {
         agentRuntime.registerTool(cronTool);
 
         // 子代理工具（传入 ToolRegistry 以支持工具调用和 Agent Loop）
-        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry());
+        String model = config.getAgent().getModel();
+        int maxIterations = config.getAgent().getMaxToolIterations();
+        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry(), model, maxIterations);
         agentRuntime.registerTool(new SpawnTool(subagentManager));
 
         // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
