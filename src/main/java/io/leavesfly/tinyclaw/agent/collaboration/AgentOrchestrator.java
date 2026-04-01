@@ -1,7 +1,6 @@
 package io.leavesfly.tinyclaw.agent.collaboration;
 
 import io.leavesfly.tinyclaw.agent.collaboration.strategy.*;
-import io.leavesfly.tinyclaw.agent.collaboration.strategy.DynamicRoutingStrategy;
 import io.leavesfly.tinyclaw.agent.evolution.EvaluationFeedback;
 import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -27,9 +26,6 @@ public class AgentOrchestrator {
     /** 公共线程池（统一管理所有策略的并发执行） */
     private final CollaborationExecutorPool executorPool;
 
-    /** 策略映射 */
-    private final Map<CollaborationConfig.Mode, CollaborationStrategy> strategies;
-
     /** 调用方的会话管理器（可选，用于将协同结论回流到主会话） */
     private volatile SessionManager callerSessionManager;
 
@@ -40,7 +36,6 @@ public class AgentOrchestrator {
                               String model, int maxIterations) {
         this.executionContext = new ExecutionContext(provider, tools, workspace, model, maxIterations);
         this.executorPool = new CollaborationExecutorPool();
-        this.strategies = new EnumMap<>(CollaborationConfig.Mode.class);
         initStrategies();
     }
 
@@ -58,20 +53,33 @@ public class AgentOrchestrator {
         this.feedbackManager = feedbackManager;
     }
 
+    // ----- 策略实例（每种 Mode 对应一个策略） -----
+    private DiscussionStrategy discussionStrategy;
+    private TasksStrategy tasksStrategy;
+    private WorkflowStrategy workflowStrategy;
+
     /**
      * 初始化所有协同策略
-     * 所有策略通过构造函数注入依赖，无需额外的 setXxx 调用
      */
     private void initStrategies() {
-        DiscussionStrategy discussionStrategy = new DiscussionStrategy();
-        strategies.put(CollaborationConfig.Mode.DEBATE, discussionStrategy);
-        strategies.put(CollaborationConfig.Mode.ROLEPLAY, discussionStrategy);
-        strategies.put(CollaborationConfig.Mode.CONSENSUS, discussionStrategy);
+        discussionStrategy = new DiscussionStrategy();
+        discussionStrategy.setExecutionContext(executionContext);
 
-        strategies.put(CollaborationConfig.Mode.TEAM, new TeamWorkStrategy(executorPool));
-        strategies.put(CollaborationConfig.Mode.HIERARCHY, new HierarchyStrategy(executionContext, executorPool));
-        strategies.put(CollaborationConfig.Mode.WORKFLOW, new WorkflowStrategy(executionContext, executorPool));
-        strategies.put(CollaborationConfig.Mode.DYNAMIC, new DynamicRoutingStrategy(executionContext));
+        tasksStrategy = new TasksStrategy(executorPool);
+        tasksStrategy.setExecutionContext(executionContext);
+
+        workflowStrategy = new WorkflowStrategy(executionContext, executorPool);
+    }
+
+    /**
+     * 根据 Mode 解析具体的策略实现
+     */
+    private CollaborationStrategy resolveStrategy(CollaborationConfig config) {
+        return switch (config.getMode()) {
+            case DISCUSS -> discussionStrategy;
+            case TASKS -> tasksStrategy;
+            case WORKFLOW -> workflowStrategy;
+        };
     }
     
     /**
@@ -138,23 +146,16 @@ public class AgentOrchestrator {
         // 2. 根据角色配置创建Agent执行器
         List<RoleAgent> agents = createAgents(config);
         
-        if (agents.isEmpty() && config.getMode() != CollaborationConfig.Mode.HIERARCHY) {
+        boolean isHierarchyStyle = config.getMode() == CollaborationConfig.Mode.TASKS
+                && config.getTasksStyle() == CollaborationConfig.TasksStyle.HIERARCHY;
+        if (agents.isEmpty() && !isHierarchyStyle) {
             return "未配置参与角色，无法启动协同";
         }
         
         // 3. 获取对应策略
-        CollaborationStrategy strategy = strategies.get(config.getMode());
-        if (strategy == null) {
-            return "不支持的协同模式: " + config.getMode();
-        }
+        CollaborationStrategy strategy = resolveStrategy(config);
         
-        // 4. 全局超时前置检查：在策略执行前拦截已超时的请求
-        if (config.getTimeoutMs() > 0 && context.getElapsedTime() > config.getTimeoutMs()) {
-            logger.warn("协同启动前已超时，跳过执行", Map.of("mode", modeStr));
-            return "协同超时，未能执行";
-        }
-
-        // 5. 执行协同流程
+        // 4. 执行协同流程
         try {
             String result = strategy.execute(context, agents, config);
 
@@ -280,11 +281,6 @@ public class AgentOrchestrator {
             // 回流协同结论
             flowbackContent.append(result);
 
-            // 回流 Artifact 摘要（如果有）
-            if (context != null && !context.getArtifacts().isEmpty()) {
-                flowbackContent.append("\n\n").append(context.buildArtifactsSummary());
-            }
-
             // 回流质量指标摘要（如果有）
             if (context != null) {
                 long tokensUsed = context.getTotalTokensUsed();
@@ -299,8 +295,7 @@ public class AgentOrchestrator {
 
             logger.debug("协同结论已回流到会话", Map.of(
                     "sessionKey", sessionKey,
-                    "resultLength", result.length(),
-                    "hasArtifacts", context != null && !context.getArtifacts().isEmpty()
+                    "resultLength", result.length()
             ));
         } catch (Exception e) {
             logger.warn("协同结论回流失败", Map.of("error", e.getMessage()));
@@ -385,9 +380,10 @@ public class AgentOrchestrator {
         
         List<AgentRole> roles = config.getRoles();
         if (roles == null || roles.isEmpty()) {
-            // 对于分层决策，角色在HierarchyConfig中定义
-            if (config.getMode() == CollaborationConfig.Mode.HIERARCHY) {
-                return agents; // 返回空列表，HierarchyStrategy会自己创建
+            // 对于分层决策，角色在 HierarchyConfig 中定义
+            if (config.getMode() == CollaborationConfig.Mode.TASKS
+                    && config.getTasksStyle() == CollaborationConfig.TasksStyle.HIERARCHY) {
+                return agents;
             }
             return agents;
         }
@@ -406,51 +402,6 @@ public class AgentOrchestrator {
         return agents;
     }
     
-    /**
-     * 便捷方法：启动辩论
-     */
-    public String debate(String topic, List<AgentRole> roles, int maxRounds) {
-        CollaborationConfig config = CollaborationConfig.debate(topic, maxRounds);
-        for (AgentRole role : roles) {
-            config.addRole(role);
-        }
-        return orchestrate(config, topic);
-    }
-
-    /**
-     * 便捷方法：启动团队协作
-     */
-    public String teamWork(String goal, List<TeamTask> tasks) {
-        CollaborationConfig config = CollaborationConfig.teamWork(goal);
-        for (TeamTask task : tasks) {
-            config.addTask(task);
-            // 自动添加任务负责人作为角色
-            if (task.getAssignee() != null) {
-                config.addRole(task.getAssignee());
-            }
-        }
-        return orchestrate(config, goal);
-    }
-
-    /**
-     * 便捷方法：启动分层决策
-     */
-    public String hierarchyDecision(String topic, HierarchyConfig hierarchy) {
-        CollaborationConfig config = CollaborationConfig.hierarchy(topic, hierarchy);
-        return orchestrate(config, topic);
-    }
-
-    /**
-     * 便捷方法：启动共识决策
-     */
-    public String consensus(String topic, List<AgentRole> roles, double threshold) {
-        CollaborationConfig config = CollaborationConfig.consensus(topic, threshold);
-        for (AgentRole role : roles) {
-            config.addRole(role);
-        }
-        return orchestrate(config, topic);
-    }
-
     /**
      * 获取支持的协同模式列表
      */

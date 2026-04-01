@@ -9,15 +9,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
  * 多 Agent 协同的共享上下文
- * <p>管理协同过程中的共享对话历史、终止状态、投票数据和最终结论。
- *
- * <p>高频使用的协同状态（终止标记、共识选项、投票结果等）已提升为一等字段，
- * 提供类型安全的访问方式，避免通过弱类型 metadata Map 传递。
+ * <p>管理协同过程中的共享对话历史、扩展元数据和最终结论。
+ * 策略特定的状态（投票、共识等）由各策略自行管理。
  */
 public class SharedContext {
     
@@ -45,45 +42,16 @@ public class SharedContext {
     /** 流式回调（用于输出 Agent 发言） */
     private volatile LLMProvider.EnhancedStreamCallback streamCallback;
 
-    // -------------------------------------------------------------------------
-    // 类型安全的协同状态字段（替代原 metadata 中的字符串 key）
-    // -------------------------------------------------------------------------
-
-    /** 角色扮演模式：主动结束对话的角色名称（非 null 表示已被主动结束） */
-    private volatile String endedByRole;
-
-    /** 共识模式：是否已达成共识 */
-    private volatile boolean consensusReached;
-
-    /** 共识模式：达成共识的选项 */
-    private volatile String consensusOption;
-
-    /** 共识模式：各轮投票结果（轮次 → 选项 → 投票者列表） */
-    private final Map<Integer, Map<String, List<String>>> votesByRound;
-
-    // -------------------------------------------------------------------------
-    // Artifact 工件存储（结构化中间产物共享）
-    // -------------------------------------------------------------------------
-
-    /** 工件存储（artifactId → 最新版本的 Artifact） */
-    private final Map<String, Artifact> artifacts;
-
-    // -------------------------------------------------------------------------
-    // Token 预算追踪
-    // -------------------------------------------------------------------------
-
-    /** 累计消耗的 token 数量（输入 + 输出） */
-    private final AtomicLong totalTokensUsed;
-
     /** Token 预算上限（0 表示不限制） */
     private long tokenBudget;
+
+    /** 累计消耗的 token 数量（输入 + 输出） */
+    private volatile long totalTokensUsed;
     
     public SharedContext() {
         this.history = new CopyOnWriteArrayList<>();
         this.metadata = new ConcurrentHashMap<>();
-        this.votesByRound = new ConcurrentHashMap<>();
-        this.artifacts = new ConcurrentHashMap<>();
-        this.totalTokensUsed = new AtomicLong(0);
+        this.totalTokensUsed = 0;
         this.tokenBudget = 0;
         this.currentRound = 0;
         this.startTime = System.currentTimeMillis();
@@ -107,13 +75,6 @@ public class SharedContext {
      */
     public void setContextSummary(String summary) {
         this.contextSummary = summary;
-    }
-
-    /**
-     * 获取主 Agent 的对话上下文摘要
-     */
-    public String getContextSummary() {
-        return contextSummary;
     }
     
     /**
@@ -259,160 +220,14 @@ public class SharedContext {
     }
 
     // -------------------------------------------------------------------------
-    // 类型安全的协同状态操作
-    // -------------------------------------------------------------------------
-
-    /**
-     * 标记对话被某角色主动结束（角色扮演模式）
-     */
-    public void markEndedBy(String roleName) {
-        this.endedByRole = roleName;
-    }
-
-    /**
-     * 获取主动结束对话的角色名称，未结束时返回 null
-     */
-    public String getEndedByRole() {
-        return endedByRole;
-    }
-
-    /**
-     * 判断对话是否已被主动结束
-     */
-    public boolean isEndedByRole() {
-        return endedByRole != null;
-    }
-
-    /**
-     * 标记共识已达成
-     *
-     * @param option 达成共识的选项
-     */
-    public void markConsensusReached(String option) {
-        this.consensusReached = true;
-        this.consensusOption = option;
-    }
-
-    /**
-     * 判断是否已达成共识
-     */
-    public boolean isConsensusReached() {
-        return consensusReached;
-    }
-
-    /**
-     * 获取达成共识的选项
-     */
-    public String getConsensusOption() {
-        return consensusOption;
-    }
-
-    /**
-     * 记录某轮的投票结果
-     *
-     * @param round 轮次
-     * @param votes 选项 → 投票者列表
-     */
-    public void setVotes(int round, Map<String, List<String>> votes) {
-        votesByRound.put(round, votes);
-    }
-
-    /**
-     * 获取某轮的投票结果
-     */
-    public Map<String, List<String>> getVotes(int round) {
-        return votesByRound.get(round);
-    }
-
-    /**
-     * 获取最新一轮的投票结果
-     */
-    public Map<String, List<String>> getLatestVotes() {
-        return votesByRound.get(currentRound);
-    }
-
-    // -------------------------------------------------------------------------
-    // Artifact 工件操作
-    // -------------------------------------------------------------------------
-
-    /**
-     * 发布工件到共享上下文
-     * <p>如果已存在同 ID 的工件，将被新版本覆盖。
-     *
-     * @param artifact 要发布的工件
-     */
-    public void publishArtifact(Artifact artifact) {
-        if (artifact == null || artifact.getArtifactId() == null) {
-            return;
-        }
-        artifacts.put(artifact.getArtifactId(), artifact);
-    }
-
-    /**
-     * 根据 ID 获取工件
-     */
-    public Artifact getArtifact(String artifactId) {
-        return artifacts.get(artifactId);
-    }
-
-    /**
-     * 根据类型获取所有工件
-     */
-    public List<Artifact> getArtifactsByType(Artifact.ArtifactType type) {
-        return artifacts.values().stream()
-                .filter(a -> type == a.getType())
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * 根据产出者获取所有工件
-     */
-    public List<Artifact> getArtifactsByProducer(String producer) {
-        return artifacts.values().stream()
-                .filter(a -> producer.equals(a.getProducer()))
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * 获取所有工件
-     */
-    public Map<String, Artifact> getArtifacts() {
-        return artifacts;
-    }
-
-    /**
-     * 构建所有工件的摘要文本（用于注入 Agent 上下文）
-     */
-    public String buildArtifactsSummary() {
-        if (artifacts.isEmpty()) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== 已产出工件 ===\n");
-        for (Artifact artifact : artifacts.values()) {
-            sb.append(artifact.toSummary()).append("\n");
-        }
-        return sb.toString();
-    }
-
-    // -------------------------------------------------------------------------
     // Token 预算追踪
     // -------------------------------------------------------------------------
-
-    /**
-     * 记录 token 消耗
-     *
-     * @param tokens 本次消耗的 token 数量
-     */
-    public void addTokensUsed(long tokens) {
-        totalTokensUsed.addAndGet(tokens);
-    }
 
     /**
      * 获取累计消耗的 token 数量
      */
     public long getTotalTokensUsed() {
-        return totalTokensUsed.get();
+        return totalTokensUsed;
     }
 
     /**
@@ -425,31 +240,12 @@ public class SharedContext {
     }
 
     /**
-     * 获取 token 预算上限
-     */
-    public long getTokenBudget() {
-        return tokenBudget;
-    }
-
-    /**
      * 检查是否已超出 token 预算
      *
      * @return 如果设置了预算且已超出则返回 true
      */
     public boolean isTokenBudgetExceeded() {
-        return tokenBudget > 0 && totalTokensUsed.get() >= tokenBudget;
-    }
-
-    /**
-     * 获取剩余 token 预算
-     *
-     * @return 剩余预算，未设置预算时返回 Long.MAX_VALUE
-     */
-    public long getRemainingTokenBudget() {
-        if (tokenBudget <= 0) {
-            return Long.MAX_VALUE;
-        }
-        return Math.max(0, tokenBudget - totalTokensUsed.get());
+        return tokenBudget > 0 && totalTokensUsed >= tokenBudget;
     }
 
     // -------------------------------------------------------------------------

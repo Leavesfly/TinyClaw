@@ -13,40 +13,62 @@ import java.util.Map;
  *
  * <p>推荐使用静态工厂方法创建，再通过链式方法补充角色/任务：
  * <pre>{@code
- * // 辩论
- * CollaborationConfig config = CollaborationConfig.debate("AI 是否会取代程序员", 3)
+ * // 讨论（辩论风格）
+ * CollaborationConfig config = CollaborationConfig.discuss("AI 是否会取代程序员", 3)
  *         .addRole("正方", "你认为 AI 会取代程序员...")
  *         .addRole("反方", "你认为 AI 不会取代程序员...");
  *
- * // 团队协作
- * CollaborationConfig config = CollaborationConfig.teamWork("开发一个登录模块")
+ * // 任务并行执行
+ * CollaborationConfig config = CollaborationConfig.tasks("开发一个登录模块")
  *         .addTask(task1).addTask(task2);
  * }</pre>
  */
 public class CollaborationConfig {
 
     /**
-     * 协同模式枚举
+     * 协同模式枚举（3 种核心模式）
      */
     public enum Mode {
-        /** 辩论模式：正反双方轮流发言 */
+        /** 讨论模式：多 Agent 轮流发言，通过 {@link DiscussStyle} 区分辩论/角色扮演/共识/动态路由 */
+        DISCUSS,
+        /** 任务模式：任务分解执行，通过 {@link TasksStyle} 区分扁平并行/层级汇报 */
+        TASKS,
+        /** 工作流模式：基于 DAG 的复杂流程编排，支持 LLM 动态生成 */
+        WORKFLOW
+    }
+
+    /**
+     * 讨论风格（DISCUSS 模式的子类型，影响提示词和终止条件）
+     */
+    public enum DiscussStyle {
+        /** 辩论：正反双方轮流发言，可设裁判 */
         DEBATE,
-        /** 团队协作模式：任务分解并行/串行执行 */
-        TEAM,
-        /** 角色扮演模式：多角色对话模拟 */
+        /** 角色扮演：多角色对话模拟，支持主动结束 */
         ROLEPLAY,
-        /** 共识决策模式：讨论后投票 */
+        /** 共识决策：讨论后投票，达到阈值即结束 */
         CONSENSUS,
-        /** 分层决策模式：层级汇报式决策 */
-        HIERARCHY,
-        /** 通用工作流模式：LLM 动态生成 Workflow */
-        WORKFLOW,
-        /** 动态路由模式：Router Agent 动态选择下一个发言者 */
+        /** 动态路由：Router Agent 动态选择下一个发言者 */
         DYNAMIC
+    }
+
+    /**
+     * 任务风格（TASKS 模式的子类型，影响任务组织方式）
+     */
+    public enum TasksStyle {
+        /** 扁平并行：任务按依赖图并行/串行执行 */
+        PARALLEL,
+        /** 层级汇报：金字塔式逐层汇报决策 */
+        HIERARCHY
     }
 
     /** 协同模式 */
     private Mode mode;
+
+    /** 讨论风格（仅 DISCUSS 模式有效，null 表示由策略自动选择） */
+    private DiscussStyle discussStyle;
+
+    /** 任务风格（仅 TASKS 模式有效，null 表示默认 PARALLEL） */
+    private TasksStyle tasksStyle;
 
     /** 协同目标/主题 */
     private String goal;
@@ -65,9 +87,6 @@ public class CollaborationConfig {
 
     /** 共识决策专用：共识阈值（0.0-1.0） */
     private double consensusThreshold;
-
-    /** 超时时间（毫秒），0 表示不限制 */
-    private long timeoutMs;
 
     /** 通用工作流定义 */
     private WorkflowDefinition workflow;
@@ -94,12 +113,11 @@ public class CollaborationConfig {
     private Map<String, String> metadata;
 
     public CollaborationConfig() {
-        this.mode = Mode.DEBATE;
+        this.mode = Mode.DISCUSS;
         this.maxRounds = 3;
         this.roles = new ArrayList<>();
         this.tasks = new ArrayList<>();
         this.consensusThreshold = 0.6;
-        this.timeoutMs = 0;
         this.maxTokenBudget = 0;
         this.fallbackEnabled = false;
         this.selfReflectionEnabled = false;
@@ -108,103 +126,47 @@ public class CollaborationConfig {
     }
 
     // -------------------------------------------------------------------------
-    // 静态工厂方法
+    // 静态工厂方法（推荐使用新的 discuss/tasks/workflow 三合一入口）
     // -------------------------------------------------------------------------
 
     /**
-     * 创建辩论配置
+     * 创建讨论配置（统一入口，风格由策略自动选择）
      *
-     * @param goal      辩论主题
-     * @param maxRounds 最大辩论轮次
+     * @param goal      讨论主题
+     * @param maxRounds 最大轮次
      */
-    public static CollaborationConfig debate(String goal, int maxRounds) {
+    public static CollaborationConfig discuss(String goal, int maxRounds) {
         CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.DEBATE;
+        config.mode = Mode.DISCUSS;
         config.goal = goal;
         config.maxRounds = maxRounds;
         return config;
     }
 
     /**
-     * 创建角色扮演配置
+     * 创建任务配置（统一入口，默认扁平并行）
      *
-     * @param scenario  角色扮演场景描述
-     * @param maxRounds 最大对话轮次
+     * @param goal 任务目标
      */
-    public static CollaborationConfig rolePlay(String scenario, int maxRounds) {
+    public static CollaborationConfig tasks(String goal) {
         CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.ROLEPLAY;
-        config.goal = scenario;
-        config.maxRounds = maxRounds;
-        return config;
-    }
-
-    /**
-     * 创建团队协作配置
-     *
-     * @param goal 团队协作目标
-     */
-    public static CollaborationConfig teamWork(String goal) {
-        CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.TEAM;
+        config.mode = Mode.TASKS;
         config.goal = goal;
+        config.tasksStyle = TasksStyle.PARALLEL;
         return config;
     }
 
     /**
-     * 创建分层决策配置
-     *
-     * @param goal            决策议题
-     * @param hierarchyConfig 层级结构配置
-     */
-    public static CollaborationConfig hierarchy(String goal, HierarchyConfig hierarchyConfig) {
-        CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.HIERARCHY;
-        config.goal = goal;
-        config.hierarchy = hierarchyConfig;
-        return config;
-    }
-
-    /**
-     * 创建共识决策配置
-     *
-     * @param goal      决策议题
-     * @param threshold 共识阈值（0.0-1.0，如 0.6 表示 60% 以上同意即达成共识）
-     */
-    public static CollaborationConfig consensus(String goal, double threshold) {
-        CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.CONSENSUS;
-        config.goal = goal;
-        config.consensusThreshold = threshold;
-        return config;
-    }
-
-    /**
-     * 创建通用工作流配置
+     * 创建工作流配置
      *
      * @param goal     工作流目标
-     * @param workflow 工作流定义
+     * @param workflow 工作流定义（可为 null，由 LLM 自动生成）
      */
     public static CollaborationConfig workflow(String goal, WorkflowDefinition workflow) {
         CollaborationConfig config = new CollaborationConfig();
         config.mode = Mode.WORKFLOW;
         config.goal = goal;
         config.workflow = workflow;
-        return config;
-    }
-
-    /**
-     * 创建动态路由配置
-     * <p>Router Agent 根据当前上下文动态选择下一个发言者，适合开放式协作场景。
-     *
-     * @param goal      协同目标
-     * @param maxRounds 最大轮次
-     */
-    public static CollaborationConfig dynamic(String goal, int maxRounds) {
-        CollaborationConfig config = new CollaborationConfig();
-        config.mode = Mode.DYNAMIC;
-        config.goal = goal;
-        config.maxRounds = maxRounds;
         return config;
     }
 
@@ -233,16 +195,6 @@ public class CollaborationConfig {
      */
     public CollaborationConfig addTask(TeamTask task) {
         tasks.add(task);
-        return this;
-    }
-
-    /**
-     * 设置超时时间
-     *
-     * @param timeoutMillis 超时毫秒数，0 表示不限制
-     */
-    public CollaborationConfig withTimeout(long timeoutMillis) {
-        this.timeoutMs = timeoutMillis;
         return this;
     }
 
@@ -307,6 +259,22 @@ public class CollaborationConfig {
         this.mode = mode;
     }
 
+    public DiscussStyle getDiscussStyle() {
+        return discussStyle;
+    }
+
+    public void setDiscussStyle(DiscussStyle discussStyle) {
+        this.discussStyle = discussStyle;
+    }
+
+    public TasksStyle getTasksStyle() {
+        return tasksStyle;
+    }
+
+    public void setTasksStyle(TasksStyle tasksStyle) {
+        this.tasksStyle = tasksStyle;
+    }
+
     public String getGoal() {
         return goal;
     }
@@ -353,14 +321,6 @@ public class CollaborationConfig {
 
     public void setConsensusThreshold(double consensusThreshold) {
         this.consensusThreshold = consensusThreshold;
-    }
-
-    public long getTimeoutMs() {
-        return timeoutMs;
-    }
-
-    public void setTimeoutMs(long timeoutMs) {
-        this.timeoutMs = timeoutMs;
     }
 
     public WorkflowDefinition getWorkflow() {

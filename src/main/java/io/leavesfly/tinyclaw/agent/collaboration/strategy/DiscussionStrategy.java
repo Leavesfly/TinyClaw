@@ -1,11 +1,7 @@
 package io.leavesfly.tinyclaw.agent.collaboration.strategy;
 
-import io.leavesfly.tinyclaw.agent.collaboration.RoleAgent;
-import io.leavesfly.tinyclaw.agent.collaboration.AgentMessage;
-import io.leavesfly.tinyclaw.agent.collaboration.CollaborationConfig;
-import io.leavesfly.tinyclaw.agent.collaboration.SharedContext;
+import io.leavesfly.tinyclaw.agent.collaboration.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import io.leavesfly.tinyclaw.providers.LLMProvider;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -13,39 +9,96 @@ import java.util.regex.Pattern;
 
 /**
  * 通用讨论策略
- * 合并了原 DebateStrategy、RolePlayStrategy、ConsensusStrategy 三种模式。
- * 三者本质相同：多 Agent 轮流发言若干轮，最后汇总结论。
- * 差异仅体现在提示词风格和是否开启投票，通过 CollaborationConfig.Mode 区分。
+ * <p>统一处理所有 DISCUSS 模式下的四种风格：
+ * <ul>
+ *   <li>DEBATE — 辩论式，正反方观点对决</li>
+ *   <li>ROLEPLAY — 角色扮演式对话</li>
+ *   <li>CONSENSUS — 共识投票式决策</li>
+ *   <li>DYNAMIC — 由 Router Agent 动态选择下一个发言者</li>
+ * </ul>
  */
-public class DiscussionStrategy implements CollaborationStrategy {
+public class DiscussionStrategy extends AbstractCollaborationStrategy {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("collaboration");
 
     /** 投票选项提取正则（共识模式使用） */
     private static final Pattern VOTE_PATTERN = Pattern.compile("\\[投票[:：]?\\s*([^\\]]+)\\]");
 
+    /** 路由指令提取正则：[NEXT:角色名]（动态路由使用） */
+    private static final Pattern NEXT_PATTERN = Pattern.compile("\\[NEXT[:：]\\s*([^\\]]+)\\]");
+
+    /** 结束标记（动态路由使用） */
+    private static final Pattern CONCLUDE_PATTERN = Pattern.compile("\\[CONCLUDE\\]");
+
+    /** 执行上下文（动态路由风格需要用来创建 Router Agent，可为 null） */
+    private ExecutionContext executionContext;
+
+    // -------------------------------------------------------------------------
+    // 策略内部状态（仅 DISCUSS 模式使用，不暴露到 SharedContext）
+    // -------------------------------------------------------------------------
+
+    /** 角色扮演模式：主动结束对话的角色名称 */
+    private volatile String endedByRole;
+
+    /** 共识模式：是否已达成共识 */
+    private volatile boolean consensusReached;
+
+    /** 共识模式：达成共识的选项 */
+    private volatile String consensusOption;
+
+    /** 共识模式：各轮投票结果（轮次 → 选项 → 投票者列表） */
+    private final Map<Integer, Map<String, List<String>>> votesByRound = new HashMap<>();
+
+    /** 最新投票结果缓存（用于结论生成） */
+    private Map<String, List<String>> latestVotes;
+
+    /**
+     * 注入执行上下文（动态路由风格需要）
+     */
+    public void setExecutionContext(ExecutionContext executionContext) {
+        this.executionContext = executionContext;
+    }
+
+    /**
+     * 重置策略内部状态（每次执行前调用，避免上次执行的状态残留）
+     */
+    private void resetState() {
+        this.endedByRole = null;
+        this.consensusReached = false;
+        this.consensusOption = null;
+        this.votesByRound.clear();
+        this.latestVotes = null;
+    }
+
     @Override
     public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         if (agents.isEmpty()) {
             return "讨论至少需要 1 个参与者";
         }
-        if (config.getMode() == CollaborationConfig.Mode.DEBATE && agents.size() < 2) {
+
+        // 重置策略内部状态
+        resetState();
+
+        // 动态路由风格走独立的执行路径
+        if (isDynamicStyle(config)) {
+            return executeDynamic(context, agents, config);
+        }
+
+        if (isDebateStyle(config) && agents.size() < 2) {
             return "辩论至少需要 2 个参与者";
         }
 
         logger.info("开始讨论", Map.of(
-                "mode", config.getMode().name(),
+                "style", String.valueOf(config.getDiscussStyle()),
                 "topic", context.getTopic(),
                 "participants", agents.size(),
                 "maxRounds", config.getMaxRounds()
         ));
 
-        // 统一由 shouldTerminate 控制循环终止，不在循环体内 break
         while (!shouldTerminate(context, config)) {
             context.nextRound();
 
-            // 确定本轮参与发言的 Agent 范围（辩论模式最后一个是裁判，不参与轮次发言）
-            int speakerCount = isDebateMode(config) && agents.size() > 2
+            int speakerCount = isDebateStyle(config) && agents.size() > 2
                     ? agents.size() - 1
                     : agents.size();
 
@@ -61,20 +114,20 @@ public class DiscussionStrategy implements CollaborationStrategy {
                         "responseLength", response.length()
                 ));
 
-                // 角色扮演模式：检测主动结束标记，写入类型安全字段
-                if (isRolePlayMode(config) && isConversationEnded(response)) {
-                    context.markEndedBy(speaker.getRoleName());
+                if (isRolePlayStyle(config) && isConversationEnded(response)) {
+                    endedByRole = speaker.getRoleName();
                     break;
                 }
             }
 
-            // 共识模式：每轮结束后收集投票，检查是否达成共识
-            if (isConsensusMode(config) && !context.isEndedByRole()) {
+            if (isConsensusStyle(config) && endedByRole == null) {
                 Map<String, List<String>> votes = collectVotes(agents, context);
-                context.setVotes(context.getCurrentRound(), votes);
+                votesByRound.put(context.getCurrentRound(), votes);
+                latestVotes = votes;
                 if (checkConsensus(votes, agents.size(), config.getConsensusThreshold())) {
                     String majorityOption = getMajorityOption(votes);
-                    context.markConsensusReached(majorityOption);
+                    consensusReached = true;
+                    consensusOption = majorityOption;
                     logger.info("达成共识", Map.of("option", majorityOption));
                 }
             }
@@ -97,11 +150,15 @@ public class DiscussionStrategy implements CollaborationStrategy {
 
     private String buildRoundPrompt(CollaborationConfig config, SharedContext context,
                                     RoleAgent speaker, int speakerIndex, int totalSpeakers) {
-        return switch (config.getMode()) {
+        CollaborationConfig.DiscussStyle style = config.getDiscussStyle();
+        if (style == null) {
+            return "请基于以上信息给出你的观点。";
+        }
+        return switch (style) {
             case DEBATE -> buildDebatePrompt(context, speaker, speakerIndex);
             case ROLEPLAY -> buildRolePlayPrompt(speaker);
             case CONSENSUS -> buildConsensusPrompt(context);
-            default -> "请基于以上信息给出你的观点。";
+            case DYNAMIC -> "请基于以上信息给出你的观点。";
         };
     }
 
@@ -136,11 +193,15 @@ public class DiscussionStrategy implements CollaborationStrategy {
 
     private String buildConclusion(SharedContext context, List<RoleAgent> agents,
                                    CollaborationConfig config) {
-        return switch (config.getMode()) {
+        CollaborationConfig.DiscussStyle style = config.getDiscussStyle();
+        if (style == null) {
+            return "讨论完成。";
+        }
+        return switch (style) {
             case DEBATE -> buildDebateConclusion(context, agents);
             case ROLEPLAY -> buildRolePlayConclusion(context);
             case CONSENSUS -> buildConsensusConclusion(context, agents.size());
-            default -> "讨论完成。";
+            case DYNAMIC -> "讨论完成。";
         };
     }
 
@@ -167,8 +228,8 @@ public class DiscussionStrategy implements CollaborationStrategy {
         }
         conclusion.append("---\n共 ").append(context.getCurrentRound()).append(" 轮对话，");
         conclusion.append(context.getHistory().size()).append(" 条消息。");
-        if (context.isEndedByRole()) {
-            conclusion.append("\n由【").append(context.getEndedByRole()).append("】主动结束对话。");
+        if (endedByRole != null) {
+            conclusion.append("\n由【").append(endedByRole).append("】主动结束对话。");
         }
         return conclusion.toString();
     }
@@ -179,13 +240,13 @@ public class DiscussionStrategy implements CollaborationStrategy {
         conclusion.append("参与人数：").append(totalVoters).append("\n");
         conclusion.append("讨论轮次：").append(context.getCurrentRound()).append("\n\n");
 
-        if (context.isConsensusReached()) {
-            conclusion.append("【结论】达成共识\n共识选项：").append(context.getConsensusOption()).append("\n");
+        if (consensusReached) {
+            conclusion.append("【结论】达成共识\n共识选项：").append(consensusOption).append("\n");
         } else {
             conclusion.append("【结论】未达成共识\n");
         }
 
-        Map<String, List<String>> lastVotes = context.getLatestVotes();
+        Map<String, List<String>> lastVotes = latestVotes;
         if (lastVotes != null && !lastVotes.isEmpty()) {
             conclusion.append("\n最终投票分布：\n");
             for (Map.Entry<String, List<String>> entry : lastVotes.entrySet()) {
@@ -244,49 +305,165 @@ public class DiscussionStrategy implements CollaborationStrategy {
     }
 
     // -------------------------------------------------------------------------
-    // 流式发言辅助方法
+    // 风格判断辅助（基于 DiscussStyle 而非 Mode）
+    // -------------------------------------------------------------------------
+
+    private boolean isDebateStyle(CollaborationConfig config) {
+        return config.getDiscussStyle() == CollaborationConfig.DiscussStyle.DEBATE;
+    }
+
+    private boolean isRolePlayStyle(CollaborationConfig config) {
+        return config.getDiscussStyle() == CollaborationConfig.DiscussStyle.ROLEPLAY;
+    }
+
+    private boolean isConsensusStyle(CollaborationConfig config) {
+        return config.getDiscussStyle() == CollaborationConfig.DiscussStyle.CONSENSUS;
+    }
+
+    private boolean isDynamicStyle(CollaborationConfig config) {
+        return config.getDiscussStyle() == CollaborationConfig.DiscussStyle.DYNAMIC;
+    }
+
+    // -------------------------------------------------------------------------
+    // 动态路由执行逻辑（原 DynamicRoutingStrategy）
     // -------------------------------------------------------------------------
 
     /**
-     * 根据 SharedContext 是否持有流式回调，选择流式或非流式发言。
-     * <p>有回调时使用 {@code speakStream}，逐 chunk 输出 COLLABORATE_AGENT_CHUNK 事件；
-     * 无回调时退化为普通 {@code speak}。
+     * 动态路由执行：Router Agent 根据上下文动态选择下一个发言者
      */
-    private String speakWithStream(RoleAgent speaker, SharedContext context, String prompt) {
-        LLMProvider.EnhancedStreamCallback callback = context.getStreamCallback();
-        if (callback != null) {
-            return speaker.speakStream(context, prompt, callback);
+    private String executeDynamic(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
+        RoleAgent routerAgent = createRouterAgent(config, agents);
+
+        logger.info("开始动态路由讨论", Map.of(
+                "topic", context.getTopic(),
+                "participants", agents.size(),
+                "maxRounds", config.getMaxRounds()
+        ));
+
+        while (!shouldTerminate(context, config)) {
+            context.nextRound();
+
+            // Router Agent 决定下一个发言者（不需要流式输出给用户）
+            String routingDecision = routerAgent.speak(context, buildRoutingPrompt(agents, context));
+            context.addMessageSilent(
+                    AgentMessage.builder(routerAgent.getAgentId(), routerAgent.getRoleName(), routingDecision)
+                            .type(AgentMessage.MessageType.SYSTEM)
+                            .build()
+            );
+
+            // 检查是否应该结束
+            if (CONCLUDE_PATTERN.matcher(routingDecision).find()) {
+                logger.info("Router 决定结束协同");
+                break;
+            }
+
+            // 解析下一个发言者
+            String nextRoleName = extractNextRole(routingDecision);
+            if (nextRoleName == null) {
+                int index = (context.getCurrentRound() - 1) % agents.size();
+                nextRoleName = agents.get(index).getRoleName();
+            }
+
+            // 找到对应的 Agent 并让其发言
+            RoleAgent selectedAgent = findAgentByRole(agents, nextRoleName);
+            if (selectedAgent == null) {
+                context.addMessage(AgentMessage.system("未找到角色 [" + nextRoleName + "]，跳过本轮"));
+                continue;
+            }
+
+            String response = speakWithStream(selectedAgent, context, null);
+            addMessageWithStream(context, selectedAgent.getAgentId(), selectedAgent.getRoleName(), response);
+
+            logger.info("Agent 发言", Map.of(
+                    "round", context.getCurrentRound(),
+                    "speaker", selectedAgent.getRoleName(),
+                    "responseLength", response.length()
+            ));
         }
-        return speaker.speak(context, prompt);
+
+        // 由 Router Agent 总结
+        String summaryPrompt = "协同讨论已结束。请综合所有参与者的观点，给出最终的结论和总结。\n"
+                + "要求：1. 概述核心议题 2. 总结各方主要观点 3. 给出综合结论和建议";
+        String conclusion = speakWithStream(routerAgent, context, summaryPrompt);
+        addMessageWithStream(context, routerAgent.getAgentId(), routerAgent.getRoleName(), conclusion);
+        context.setFinalConclusion(conclusion);
+
+        logger.info("动态路由讨论完成", Map.of(
+                "totalRounds", context.getCurrentRound(),
+                "totalMessages", context.getHistory().size()
+        ));
+
+        return conclusion;
     }
 
-    /**
-     * 根据是否已流式输出过，选择静默或普通方式添加消息到历史。
-     * <p>有流式回调时使用 {@code addMessageSilent}（chunk 已输出，不再重复推送完整消息）；
-     * 无回调时使用普通 {@code addMessage}（触发 COLLABORATE_AGENT 事件）。
-     */
-    private void addMessageWithStream(SharedContext context, String agentId, String roleName, String content) {
-        if (context.getStreamCallback() != null) {
-            context.addMessageSilent(new AgentMessage(agentId, roleName, content));
-        } else {
-            context.addMessage(agentId, roleName, content);
+    private RoleAgent createRouterAgent(CollaborationConfig config, List<RoleAgent> agents) {
+        AgentRole routerRole = config.getRouterRole();
+        if (routerRole == null) {
+            StringBuilder participantsDesc = new StringBuilder();
+            for (RoleAgent agent : agents) {
+                AgentRole role = agent.getRole();
+                participantsDesc.append("- ").append(role.getRoleName());
+                if (role.getDescription() != null && !role.getDescription().isEmpty()) {
+                    participantsDesc.append(": ").append(role.getDescription());
+                }
+                participantsDesc.append("\n");
+            }
+
+            String defaultRouterPrompt = "你是一个协同路由器（Router），负责协调多个 Agent 之间的对话。\n\n"
+                    + "你的职责：\n"
+                    + "1. 分析当前对话上下文和协同目标\n"
+                    + "2. 决定下一个最适合发言的角色\n"
+                    + "3. 在回复末尾用 [NEXT:角色名] 标记指定下一个发言者\n"
+                    + "4. 当你认为讨论已经充分、目标已达成时，用 [CONCLUDE] 标记结束协同\n\n"
+                    + "可选择的参与者：\n" + participantsDesc + "\n"
+                    + "决策原则：\n"
+                    + "- 确保每个参与者都有机会发言\n"
+                    + "- 当某个观点需要特定专业角色回应时，优先选择该角色\n"
+                    + "- 避免同一个角色连续发言超过 2 次\n"
+                    + "- 当讨论陷入重复时，主动引导或结束";
+
+            routerRole = AgentRole.of("Router", defaultRouterPrompt)
+                    .withDescription("协同路由器，负责动态选择下一个发言者");
         }
+
+        return executionContext.createAgentExecutor(routerRole);
     }
 
-    // -------------------------------------------------------------------------
-    // 模式判断辅助
-    // -------------------------------------------------------------------------
-
-    private boolean isDebateMode(CollaborationConfig config) {
-        return config.getMode() == CollaborationConfig.Mode.DEBATE;
+    private String buildRoutingPrompt(List<RoleAgent> agents, SharedContext context) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("请分析当前对话进展，决定下一步应该由哪个角色发言。\n\n");
+        prompt.append("可选角色：");
+        for (int i = 0; i < agents.size(); i++) {
+            if (i > 0) prompt.append("、");
+            prompt.append(agents.get(i).getRoleName());
+        }
+        prompt.append("\n\n各角色已发言次数：\n");
+        for (RoleAgent agent : agents) {
+            long count = context.getMessagesByRole(agent.getRoleName()).size();
+            prompt.append("- ").append(agent.getRoleName()).append(": ").append(count).append(" 次\n");
+        }
+        prompt.append("\n请在回复末尾用 [NEXT:角色名] 指定下一个发言者，或用 [CONCLUDE] 结束协同。");
+        return prompt.toString();
     }
 
-    private boolean isRolePlayMode(CollaborationConfig config) {
-        return config.getMode() == CollaborationConfig.Mode.ROLEPLAY;
+    private String extractNextRole(String decision) {
+        if (decision == null) return null;
+        Matcher matcher = NEXT_PATTERN.matcher(decision);
+        return matcher.find() ? matcher.group(1).trim() : null;
     }
 
-    private boolean isConsensusMode(CollaborationConfig config) {
-        return config.getMode() == CollaborationConfig.Mode.CONSENSUS;
+    private RoleAgent findAgentByRole(List<RoleAgent> agents, String roleName) {
+        for (RoleAgent agent : agents) {
+            if (roleName.equals(agent.getRoleName())) {
+                return agent;
+            }
+        }
+        for (RoleAgent agent : agents) {
+            if (agent.getRoleName().contains(roleName) || roleName.contains(agent.getRoleName())) {
+                return agent;
+            }
+        }
+        return null;
     }
 
     // -------------------------------------------------------------------------
@@ -298,15 +475,13 @@ public class DiscussionStrategy implements CollaborationStrategy {
         if (context.getCurrentRound() >= config.getMaxRounds()) {
             return true;
         }
-        if (config.getTimeoutMs() > 0 && context.getElapsedTime() > config.getTimeoutMs()) {
+        if (context.isTokenBudgetExceeded()) {
             return true;
         }
-        // 角色扮演：被主动结束
-        if (isRolePlayMode(config) && context.isEndedByRole()) {
+        if (isRolePlayStyle(config) && endedByRole != null) {
             return true;
         }
-        // 共识模式：已达成共识
-        if (isConsensusMode(config) && context.isConsensusReached()) {
+        if (isConsensusStyle(config) && consensusReached) {
             return true;
         }
         return false;
@@ -319,6 +494,6 @@ public class DiscussionStrategy implements CollaborationStrategy {
 
     @Override
     public String getDescription() {
-        return "通用讨论策略：支持辩论、角色扮演、共识决策三种讨论形式";
+        return "通用讨论策略：支持辩论、角色扮演、共识投票、动态路由四种讨论风格";
     }
 }
