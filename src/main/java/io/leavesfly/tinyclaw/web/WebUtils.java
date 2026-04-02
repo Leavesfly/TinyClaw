@@ -82,6 +82,8 @@ public class WebUtils {
     // ==================== API Paths ====================
     public static final String API_CHAT            = "/api/chat";
     public static final String API_CHAT_STREAM     = "/api/chat/stream";
+    public static final String API_CHAT_ABORT      = "/api/chat/abort";
+    public static final String API_CHAT_STATUS     = "/api/chat/status";
     public static final String API_CHANNELS        = "/api/channels";
     public static final String API_SESSIONS        = "/api/sessions";
     public static final String API_CRON            = "/api/cron";

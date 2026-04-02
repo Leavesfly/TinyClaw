@@ -407,6 +407,32 @@ public class AgentRuntime {
         return messageRouter.route(message);
     }
 
+    /**
+     * 中断当前正在执行的 LLM 任务。
+     * 设置 ReActExecutor 的中断标志位，使其在下一次迭代时提前退出。
+     *
+     * @return 是否成功发送中断信号（true 表示有活跃的执行器可以中断）
+     */
+    public boolean abortCurrentTask() {
+        ProviderComponents comps = providerManager.getComponents();
+        if (comps != null && comps.reActExecutor != null) {
+            comps.reActExecutor.abort();
+            logger.info("Abort signal sent to ReActExecutor");
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 查询当前是否有 LLM 任务正在运行。
+     *
+     * @return 如果有任务正在运行返回 true
+     */
+    public boolean isTaskRunning() {
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null && comps.reActExecutor != null && comps.reActExecutor.isRunning();
+    }
+
     // ==================== 消息分发 ====================
     // 已迁移到 MessageRouter
 

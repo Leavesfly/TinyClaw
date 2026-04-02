@@ -216,6 +216,8 @@ class TinyClawConsole {
 
     // 待上传的图片列表（存储 Base64 数据）
     pendingImages = [];
+    // 当前正在执行的任务的 AbortController（用于中断）
+    currentAbortController = null;
 
     bindChat() {
         const input = document.getElementById('chatInput');
@@ -577,9 +579,82 @@ class TinyClawConsole {
             }
             // 历史回放完成后滚到顶部，让用户从头阅读完整会话
             messagesDiv.scrollTop = 0;
+            
+            // 检查后端是否有任务正在运行（刷新页面后恢复运行状态）
+            this.checkAndRestoreRunningState();
         } catch (error) {
             console.error('Failed to load chat history:', error);
         }
+    }
+
+    /**
+     * 检查后端是否有任务正在运行，如果有则恢复前端的运行状态指示。
+     * 用于刷新页面后恢复运行状态，避免用户误以为任务已丢失。
+     */
+    async checkAndRestoreRunningState() {
+        try {
+            const response = await this.authFetch('/api/chat/status');
+            if (!response.ok) return;
+            const status = await response.json();
+            if (status.running) {
+                const sendBtn = document.getElementById('sendBtn');
+                if (sendBtn) {
+                    sendBtn.classList.add('loading');
+                    sendBtn.innerHTML = '⏹';
+                    sendBtn.title = '点击中断任务';
+                }
+                // 创建一个 AbortController 以支持中断
+                this.currentAbortController = new AbortController();
+                // 在消息区域底部添加运行中提示
+                const messagesDiv = document.getElementById('chatMessages');
+                const banner = document.createElement('div');
+                banner.className = 'running-task-banner';
+                banner.id = 'runningTaskBanner';
+                banner.innerHTML = `<span class="running-task-icon"><span class="tool-call-spinner"></span></span><span class="running-task-text">有任务正在后台运行中，SSE 连接已断开。点击停止按钮可中断任务。</span>`;
+                messagesDiv.appendChild(banner);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                // 轮询等待任务完成
+                this.pollTaskCompletion();
+            }
+        } catch (error) {
+            console.warn('Failed to check running state:', error);
+        }
+    }
+
+    /**
+     * 轮询后端任务状态，任务完成后恢复按钮状态并刷新历史。
+     */
+    async pollTaskCompletion() {
+        const pollInterval = 3000;
+        const poll = async () => {
+            try {
+                const response = await this.authFetch('/api/chat/status');
+                if (!response.ok) return;
+                const status = await response.json();
+                if (!status.running) {
+                    // 任务已完成，恢复按钮状态
+                    const sendBtn = document.getElementById('sendBtn');
+                    if (sendBtn) {
+                        sendBtn.classList.remove('loading');
+                        sendBtn.innerHTML = '➤';
+                        sendBtn.title = '发送消息';
+                    }
+                    this.currentAbortController = null;
+                    // 移除运行中提示
+                    const banner = document.getElementById('runningTaskBanner');
+                    if (banner) banner.remove();
+                    // 重新加载历史以获取最新的完整回复
+                    this.loadChatHistory();
+                    return;
+                }
+                // 继续轮询
+                setTimeout(poll, pollInterval);
+            } catch (error) {
+                console.warn('Poll task status failed:', error);
+                setTimeout(poll, pollInterval);
+            }
+        };
+        setTimeout(poll, pollInterval);
     }
 
     /**
@@ -865,6 +940,13 @@ class TinyClawConsole {
     async sendMessage() {
         const input = document.getElementById('chatInput');
         const sendBtn = document.getElementById('sendBtn');
+
+        // 如果正在执行中，点击按钮触发中断（必须在空消息检查之前）
+        if (this.currentAbortController) {
+            this.abortCurrentTask();
+            return;
+        }
+
         const message = input.value.trim();
         const hasImages = this.pendingImages.length > 0;
         
@@ -873,9 +955,12 @@ class TinyClawConsole {
         input.value = '';
         input.style.height = 'auto';
 
-        // 进入 loading 状态：禁用按钮，改为圆角方形
+        // 进入运行状态：按钮变为停止按钮
+        this.currentAbortController = new AbortController();
         sendBtn.classList.add('loading');
-        sendBtn.disabled = true;
+        sendBtn.disabled = false;
+        sendBtn.textContent = '■';
+        sendBtn.title = '停止生成';
 
         const messagesDiv = document.getElementById('chatMessages');
         
@@ -1035,7 +1120,7 @@ class TinyClawConsole {
             const displayName = label || task.substring(0, 40) || '子代理';
 
             const card = document.createElement('div');
-            card.className = 'subagent-card';
+            card.className = 'subagent-card expanded';
             card.innerHTML = `<div class="subagent-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">👤</span><span class="subagent-name">${this.escapeHtml(displayName)}</span><span class="subagent-status"><span class="tool-call-spinner"></span>执行中</span><span class="tool-call-toggle">▼</span></div><div class="subagent-body"></div>`;
 
             contentDiv.appendChild(card);
@@ -1056,7 +1141,13 @@ class TinyClawConsole {
             const cardInfo = subagentCardMap[taskId];
             if (cardInfo) {
                 cardInfo.contentBuffer += content;
-                cardInfo.bodyEl.textContent = cardInfo.contentBuffer;
+                if (typeof marked !== 'undefined') {
+                    cardInfo.bodyEl.classList.add('markdown-body');
+                    cardInfo.bodyEl.style.whiteSpace = '';
+                    cardInfo.bodyEl.innerHTML = marked.parse(cardInfo.contentBuffer) + '<span class="streaming-cursor"></span>';
+                } else {
+                    cardInfo.bodyEl.textContent = cardInfo.contentBuffer;
+                }
             }
         };
 
@@ -1070,6 +1161,13 @@ class TinyClawConsole {
             if (cardInfo) {
                 cardInfo.statusEl.className = `subagent-status ${success ? 'success' : 'error'}`;
                 cardInfo.statusEl.innerHTML = success ? '✅ 完成' : '❌ 失败';
+                // 最终渲染 Markdown 并移除流式光标
+                if (typeof marked !== 'undefined' && cardInfo.contentBuffer) {
+                    cardInfo.bodyEl.classList.add('markdown-body');
+                    cardInfo.bodyEl.style.whiteSpace = '';
+                    cardInfo.bodyEl.innerHTML = marked.parse(cardInfo.contentBuffer);
+                }
+                cardInfo.bodyEl.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
                 delete subagentCardMap[taskId];
             }
             currentTextDiv = null;
@@ -1137,20 +1235,35 @@ class TinyClawConsole {
                     break;
                 case 'COLLABORATE_START': {
                     finalizeCurrentText();
-                    const colDiv = document.createElement('div');
-                    colDiv.className = 'thinking-block';
-                    colDiv.textContent = `🤝 启动多 Agent 协同: ${event.topic || ''}`;
-                    contentDiv.appendChild(colDiv);
+                    // 创建协同卡片（类似子代理卡片，默认展开）
+                    const collabCard = document.createElement('div');
+                    collabCard.className = 'subagent-card expanded';
+                    collabCard.dataset.collabCard = 'true';
+                    const collabTopic = event.topic || '';
+                    const collabDisplayName = collabTopic.length > 40 ? collabTopic.substring(0, 40) + '…' : collabTopic;
+                    collabCard.innerHTML = `<div class="subagent-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">🤝</span><span class="subagent-name">${this.escapeHtml(collabDisplayName || '多 Agent 协同')}</span><span class="subagent-status"><span class="tool-call-spinner"></span>协同中</span><span class="tool-call-toggle">▼</span></div><div class="subagent-body" style="display:block"></div>`;
+                    contentDiv.appendChild(collabCard);
+                    // 将协同卡片的 body 作为后续 Agent 发言的容器
                     currentTextDiv = null;
+                    currentTextContent = '';
+                    // 保存协同卡片引用，供后续事件使用
+                    this._currentCollabCard = collabCard;
+                    this._currentCollabBody = collabCard.querySelector('.subagent-body');
                     break;
                 }
                 case 'COLLABORATE_AGENT': {
                     // 完整消息（非流式模式下使用）
                     finalizeCurrentText();
+                    const collabBody = this._currentCollabBody || contentDiv;
                     const agentDiv = document.createElement('div');
-                    agentDiv.className = 'thinking-block';
-                    agentDiv.textContent = `[${event.agent || 'Agent'}]: ${event.content || ''}`;
-                    contentDiv.appendChild(agentDiv);
+                    agentDiv.className = 'collab-agent-message';
+                    const agentName = event.agent || 'Agent';
+                    const agentContent = event.content || '';
+                    const renderedContent = (typeof marked !== 'undefined')
+                        ? marked.parse(agentContent)
+                        : this.escapeHtml(agentContent).replace(/\n/g, '<br>');
+                    agentDiv.innerHTML = `<div class="collab-agent-name">💬 ${this.escapeHtml(agentName)}</div><div class="collab-agent-content markdown-body">${renderedContent}</div>`;
+                    collabBody.appendChild(agentDiv);
                     currentTextDiv = null;
                     currentTextContent = '';
                     break;
@@ -1159,21 +1272,41 @@ class TinyClawConsole {
                     // 流式增量：逐 chunk 追加到当前 Agent 的发言区域
                     const chunkAgent = event.agent || 'Agent';
                     const chunkContent = event.content || '';
+                    const chunkCollabBody = this._currentCollabBody || contentDiv;
                     if (!currentTextDiv || currentTextDiv.dataset.collabAgent !== chunkAgent) {
                         // 新 Agent 开始发言，创建新的发言区域
                         finalizeCurrentText();
-                        currentTextDiv = document.createElement('div');
-                        currentTextDiv.className = 'thinking-block';
+                        const agentBlock = document.createElement('div');
+                        agentBlock.className = 'collab-agent-message';
+                        agentBlock.innerHTML = `<div class="collab-agent-name">💬 ${this.escapeHtml(chunkAgent)}</div><div class="collab-agent-content"></div>`;
+                        chunkCollabBody.appendChild(agentBlock);
+                        currentTextDiv = agentBlock.querySelector('.collab-agent-content');
                         currentTextDiv.dataset.collabAgent = chunkAgent;
-                        currentTextContent = `[${chunkAgent}]: `;
-                        contentDiv.appendChild(currentTextDiv);
+                        currentTextContent = '';
                     }
                     currentTextContent += chunkContent;
-                    currentTextDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                    if (typeof marked !== 'undefined') {
+                        currentTextDiv.classList.add('markdown-body');
+                        currentTextDiv.innerHTML = marked.parse(currentTextContent) + '<span class="streaming-cursor"></span>';
+                    } else {
+                        currentTextDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                    }
                     break;
                 }
                 case 'COLLABORATE_END': {
                     finalizeCurrentText();
+                    // 更新协同卡片状态
+                    if (this._currentCollabCard) {
+                        const statusEl = this._currentCollabCard.querySelector('.subagent-status');
+                        if (statusEl) {
+                            statusEl.className = 'subagent-status success';
+                            statusEl.innerHTML = '✅ 完成';
+                        }
+                        // 移除流式光标
+                        this._currentCollabCard.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+                        this._currentCollabCard = null;
+                        this._currentCollabBody = null;
+                    }
                     currentTextDiv = null;
                     break;
                 }
@@ -1198,7 +1331,8 @@ class TinyClawConsole {
                     message, 
                     sessionId: this.chatSessionId,
                     images: imagePaths.length > 0 ? imagePaths : undefined
-                })
+                }),
+                signal: this.currentAbortController?.signal
             });
 
             const reader = response.body.getReader();
@@ -1246,12 +1380,40 @@ class TinyClawConsole {
             // 刷新左侧会话列表
             this.loadChatSessions();
         } catch (error) {
-            const textDiv = getOrCreateTextDiv();
-            textDiv.textContent = 'Error: ' + error.message;
+            if (error.name === 'AbortError') {
+                // 用户主动中断，不显示错误
+                finalizeCurrentText();
+            } else {
+                const textDiv = getOrCreateTextDiv();
+                textDiv.textContent = 'Error: ' + error.message;
+            }
         } finally {
             // 恢复按钮状态：可点击，恢复圆形
+            this.currentAbortController = null;
             sendBtn.classList.remove('loading');
             sendBtn.disabled = false;
+            sendBtn.textContent = '↑';
+            sendBtn.title = '';
+        }
+    }
+
+    /**
+     * 中断当前正在执行的 LLM 任务。
+     * 同时发送 abort 请求到后端，并取消前端的 fetch 请求。
+     */
+    async abortCurrentTask() {
+        if (this.currentAbortController) {
+            // 先通知后端中断
+            try {
+                await this.authFetch('/api/chat/abort', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            } catch (e) {
+                console.warn('Failed to send abort to server:', e);
+            }
+            // 再取消前端 fetch
+            this.currentAbortController.abort();
         }
     }
 

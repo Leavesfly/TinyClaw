@@ -79,6 +79,8 @@ public class WebConsoleServer {
     private void registerApiEndpoints(SecurityMiddleware security, ProvidersHandler providersHandler) {
         httpServer.createContext("/api/auth",          new AuthHandler(config, security)::handle);
         httpServer.createContext(WebUtils.API_CHAT,      new ChatHandler(config, agentRuntime, security)::handle);
+        httpServer.createContext(WebUtils.API_CHAT_ABORT, new ChatHandler(config, agentRuntime, security)::handle);
+        httpServer.createContext(WebUtils.API_CHAT_STATUS, new ChatHandler(config, agentRuntime, security)::handle);
         httpServer.createContext(WebUtils.API_CHANNELS,  new ChannelsHandler(config, security)::handle);
         httpServer.createContext(WebUtils.API_SESSIONS,  new SessionsHandler(config, sessionManager, security, config.getWorkspacePath())::handle);
         httpServer.createContext(WebUtils.API_CRON,      new CronHandler(config, cronService, security)::handle);

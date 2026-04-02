@@ -47,6 +47,12 @@ public class ReActExecutor {
     /** 当前流式回调（用于传递给子代理和协同工具） */
     private volatile LLMProvider.EnhancedStreamCallback currentEnhancedCallback;
     
+    /** 中断标志位，用于外部请求中断当前执行循环 */
+    private volatile boolean aborted = false;
+    
+    /** 运行状态标志位，标记当前是否有执行循环正在运行 */
+    private volatile boolean running = false;
+    
     /**
      * LLM 调用器函数式接口，用于抽象不同执行模式的 LLM 调用行为。
      */
@@ -92,6 +98,32 @@ public class ReActExecutor {
     }
     
     /**
+     * 请求中断当前执行循环。
+     * 设置中断标志位后，executeLoop 会在下一次迭代开始时检测到并提前退出。
+     */
+    public void abort() {
+        this.aborted = true;
+    }
+
+    /**
+     * 检查当前执行是否已被中断。
+     *
+     * @return 如果已被中断返回 true
+     */
+    public boolean isAborted() {
+        return aborted;
+    }
+
+    /**
+     * 检查当前是否有执行循环正在运行。
+     *
+     * @return 如果正在运行返回 true
+     */
+    public boolean isRunning() {
+        return running;
+    }
+    
+    /**
      * 执行 LLM 迭代循环。
      * 
      * 处理流程：
@@ -107,10 +139,16 @@ public class ReActExecutor {
      */
     public String execute(List<Message> messages, String sessionKey) throws Exception {
         this.currentSessionKey = sessionKey;
-        return executeLoop(messages, sessionKey, null, 
-            msgs -> callLLM(msgs),
-            (msgs, toolCalls, sk, iter) -> executeToolCalls(msgs, toolCalls, sk, iter)
-        );
+        this.aborted = false;
+        this.running = true;
+        try {
+            return executeLoop(messages, sessionKey, null, 
+                msgs -> callLLM(msgs),
+                (msgs, toolCalls, sk, iter) -> executeToolCalls(msgs, toolCalls, sk, iter)
+            );
+        } finally {
+            this.running = false;
+        }
     }
     
     /**
@@ -128,6 +166,8 @@ public class ReActExecutor {
     public String executeStream(List<Message> messages, String sessionKey, 
                                LLMProvider.StreamCallback callback) throws Exception {
         this.currentSessionKey = sessionKey;
+        this.aborted = false;
+        this.running = true;
         this.currentEnhancedCallback = LLMProvider.EnhancedStreamCallback.wrap(callback);
         
         try {
@@ -136,6 +176,7 @@ public class ReActExecutor {
                 (msgs, toolCalls, sk, iter) -> executeToolCallsWithStream(msgs, toolCalls, sk, iter)
             );
         } finally {
+            this.running = false;
             this.currentEnhancedCallback = null;
         }
     }
@@ -163,6 +204,19 @@ public class ReActExecutor {
         int maxTotalAttempts = maxIterations + MAX_EMPTY_RESPONSE_RETRIES;
         
         while (iteration < maxIterations) {
+            // 检查中断标志
+            if (aborted) {
+                logger.info("LLM execution aborted by user", Map.of(
+                        "iteration", iteration,
+                        "sessionKey", sessionKey != null ? sessionKey : "unknown"
+                ));
+                String abortMessage = "⚠️ 任务已被用户中断。";
+                if (streamCallback != null) {
+                    streamCallback.onChunk(abortMessage);
+                }
+                finalContent = abortMessage;
+                break;
+            }
             totalAttempts++;
             if (totalAttempts > maxTotalAttempts) {
                 logger.error("LLM exceeded max total attempts (iterations + empty retries)", Map.of(

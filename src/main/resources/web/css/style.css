@@ -720,9 +720,19 @@ body {
 
 .btn-send.loading {
     border-radius: 10px;
-    opacity: 0.6;
-    cursor: not-allowed;
-    pointer-events: none;
+    background: #ef4444;
+    color: white;
+    opacity: 1;
+    cursor: pointer;
+    pointer-events: auto;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-send.loading:hover {
+    background: #dc2626;
 }
 
 /* 图片上传按钮 */
@@ -1964,9 +1974,33 @@ body {
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 300px;
+    max-height: 400px;
     overflow-y: auto;
     line-height: 1.6;
+}
+
+.subagent-body.markdown-body {
+    white-space: normal;
+}
+
+.subagent-body.markdown-body pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f8f8f8;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.subagent-body.markdown-body code {
+    font-size: 12px;
+    background: #f0f0f0;
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.subagent-body.markdown-body p {
+    margin: 4px 0;
 }
 
 .subagent-card.expanded .subagent-body {
@@ -1975,6 +2009,77 @@ body {
 
 .subagent-card.expanded .tool-call-toggle {
     transform: rotate(180deg);
+}
+
+/* 运行中任务提示横幅 */
+.running-task-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #fef3c7, #fde68a);
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #92400e;
+    animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+    0%, 100% { border-color: #f59e0b; }
+    50% { border-color: #d97706; }
+}
+
+.running-task-icon {
+    flex-shrink: 0;
+}
+
+.running-task-text {
+    line-height: 1.5;
+}
+
+/* 协同 Agent 消息 */
+.collab-agent-message {
+    margin: 6px 0;
+    padding: 8px 12px;
+    border-left: 3px solid #8b5cf6;
+    background: #faf5ff;
+    border-radius: 0 6px 6px 0;
+}
+
+.collab-agent-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #7c3aed;
+    margin-bottom: 4px;
+}
+
+.collab-agent-content {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.6;
+    word-break: break-word;
+}
+
+.collab-agent-content.markdown-body p {
+    margin: 4px 0;
+}
+
+.collab-agent-content.markdown-body pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f0ecf9;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.collab-agent-content.markdown-body code {
+    font-size: 12px;
+    background: #ede9fe;
+    padding: 1px 4px;
+    border-radius: 3px;
 }
 
 /* Thinking 块 */

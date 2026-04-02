@@ -52,6 +52,10 @@ public class ChatHandler {
                 handleChatNormal(exchange);
             } else if (WebUtils.API_CHAT_STREAM.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
                 handleChatStream(exchange);
+            } else if (WebUtils.API_CHAT_ABORT.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+                handleChatAbort(exchange);
+            } else if (WebUtils.API_CHAT_STATUS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+                handleChatStatus(exchange);
             } else {
                 WebUtils.sendNotFound(exchange, corsOrigin);
             }
@@ -59,6 +63,33 @@ public class ChatHandler {
             logger.error("Chat API error", Map.of("error", e.getMessage()));
             WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
         }
+    }
+
+    /**
+     * 处理中断请求：中断当前正在执行的 LLM 任务。
+     */
+    private void handleChatAbort(HttpExchange exchange) throws IOException {
+        String corsOrigin = config.getGateway().getCorsOrigin();
+        try {
+            boolean aborted = agentRuntime.abortCurrentTask();
+            ObjectNode result = WebUtils.MAPPER.createObjectNode();
+            result.put("success", aborted);
+            result.put("message", aborted ? "Abort signal sent" : "No active task to abort");
+            WebUtils.sendJson(exchange, 200, result, corsOrigin);
+        } catch (Exception e) {
+            logger.error("Abort error", Map.of("error", e.getMessage()));
+            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+        }
+    }
+
+    /**
+     * 处理运行状态查询：返回当前是否有任务正在运行。
+     */
+    private void handleChatStatus(HttpExchange exchange) throws IOException {
+        String corsOrigin = config.getGateway().getCorsOrigin();
+        ObjectNode result = WebUtils.MAPPER.createObjectNode();
+        result.put("running", agentRuntime.isTaskRunning());
+        WebUtils.sendJson(exchange, 200, result, corsOrigin);
     }
 
     /**
