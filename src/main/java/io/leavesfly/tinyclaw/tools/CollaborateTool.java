@@ -1,7 +1,10 @@
 package io.leavesfly.tinyclaw.tools;
 
-import io.leavesfly.tinyclaw.agent.collaboration.*;
-import io.leavesfly.tinyclaw.agent.collaboration.workflow.WorkflowGenerator;
+import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
+import io.leavesfly.tinyclaw.collaboration.AgentRole;
+import io.leavesfly.tinyclaw.collaboration.CollaborationConfig;
+import io.leavesfly.tinyclaw.collaboration.TeamTask;
+import io.leavesfly.tinyclaw.collaboration.workflow.WorkflowGenerator;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 

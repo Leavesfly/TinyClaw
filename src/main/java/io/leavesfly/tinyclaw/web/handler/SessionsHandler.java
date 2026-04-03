@@ -9,8 +9,8 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
-import io.leavesfly.tinyclaw.agent.collaboration.AgentMessage;
-import io.leavesfly.tinyclaw.agent.collaboration.CollaborationRecord;
+import io.leavesfly.tinyclaw.collaboration.AgentMessage;
+import io.leavesfly.tinyclaw.collaboration.CollaborationRecord;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 

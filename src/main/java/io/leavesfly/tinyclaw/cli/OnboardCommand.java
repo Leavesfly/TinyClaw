@@ -23,8 +23,9 @@ import java.util.Scanner;
  * 
  * 工作空间结构：
  * - workspace/：主工作目录
- *   - memory/：长期记忆和每日笔记
- *     - MEMORY.md：长期记忆文件
+ *   - memory/：记忆系统
+ *     - MEMORY.md：记忆索引文件
+ *     - topics/：主题记忆文件
  *     - HEARTBEAT.md：心跳上下文文件
  *   - skills/：技能目录
  *   - sessions/：会话历史
@@ -47,6 +48,7 @@ public class OnboardCommand extends CliCommand {
     private static final String READY_MESSAGE = " tinyclaw 已就绪！"; // 就绪消息
     
     private static final String DIR_MEMORY = "memory";      // 记忆目录
+    private static final String DIR_TOPICS = "topics";      // 主题记忆目录
     private static final String DIR_SKILLS = "skills";      // 技能目录
     private static final String DIR_SESSIONS = "sessions";  // 会话目录
     private static final String DIR_CRON = "cron";          // 定时任务目录
@@ -146,6 +148,7 @@ public class OnboardCommand extends CliCommand {
     private void createWorkspaceDirectories(String workspace) {
         createDirectory(workspace);
         createDirectory(workspace + "/" + DIR_MEMORY);
+        createDirectory(workspace + "/" + DIR_TOPICS);
         createDirectory(workspace + "/" + DIR_SKILLS);
         createDirectory(workspace + "/" + DIR_SESSIONS);
         createDirectory(workspace + "/" + DIR_CRON);
@@ -370,14 +373,13 @@ public class OnboardCommand extends CliCommand {
      * @return 模板内容
      */
     private String buildMemoryTemplate() {
-        return "# 长期记忆\n\n" +
-                "此文件存储应该在各会话之间持久化的重要信息。\n\n" +
-                "## 用户信息\n\n" +
-                "（关于用户的重要事实）\n\n" +
-                "## 偏好\n\n" +
-                "（随时间学习到的用户偏好）\n\n" +
-                "## 重要笔记\n\n" +
-                "（需要记住的事情）\n";
+        return "# Agent Memory Index\n\n" +
+                "## Topics\n\n" +
+                "(No topics yet. Topics will be created as you interact with the agent.)\n\n" +
+                "## Structured Memories\n\n" +
+                "- Total: 0 entries\n\n" +
+                "## Meta\n\n" +
+                "- Created: " + java.time.Instant.now().toString() + "\n";
     }
     
     /**
@@ -432,6 +434,6 @@ public class OnboardCommand extends CliCommand {
         System.out.println("  - 在 ~/.tinyclaw/config.json 创建默认配置");
         System.out.println("  - 在 ~/.tinyclaw/workspace 创建工作空间目录");
         System.out.println("  - 创建模板文件（AGENTS.md, SOUL.md, USER.md, IDENTITY.md, PROFILE.md 等）");
-        System.out.println("  - 在 memory/ 目录创建 MEMORY.md 和 HEARTBEAT.md");
+        System.out.println("  - 在 memory/ 目录创建 MEMORY.md（索引）、topics/ 目录和 HEARTBEAT.md");
     }
 }

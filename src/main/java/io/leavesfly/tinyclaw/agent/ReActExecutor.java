@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
-import io.leavesfly.tinyclaw.agent.evolution.FeedbackManager;
+import io.leavesfly.tinyclaw.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;

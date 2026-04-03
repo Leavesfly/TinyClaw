@@ -13,7 +13,7 @@ import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
+import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.tools.*;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 

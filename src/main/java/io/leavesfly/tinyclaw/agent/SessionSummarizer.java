@@ -1,7 +1,7 @@
 package io.leavesfly.tinyclaw.agent;
 
-import io.leavesfly.tinyclaw.agent.evolution.MemoryEvolver;
-import io.leavesfly.tinyclaw.agent.evolution.MemoryStore;
+import io.leavesfly.tinyclaw.memory.MemoryEvolver;
+import io.leavesfly.tinyclaw.memory.MemoryStore;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMResponse;
@@ -72,7 +72,7 @@ public class SessionSummarizer {
     private final String model;                 // 使用的模型
     private final int contextWindow;            // 上下文窗口大小
     private final Set<String> summarizing;      // 正在摘要的会话集合（防重复）
-    private final MemoryStore memoryStore;      // 记忆存储，用于写入每日笔记
+    private final MemoryStore memoryStore;      // 记忆存储，用于写入结构化记忆
     private final MemoryEvolver memoryEvolver;  // 记忆进化引擎，用于从摘要中提炼记忆
     
     /**
@@ -82,7 +82,7 @@ public class SessionSummarizer {
      * @param provider LLM 提供商
      * @param model 使用的模型
      * @param contextWindow 上下文窗口大小
-     * @param memoryStore 记忆存储（用于摘要完成后写入每日笔记）
+     * @param memoryStore 记忆存储（用于摘要完成后写入结构化记忆）
      * @param memoryEvolver 记忆进化引擎（用于从摘要中提炼结构化记忆）
      */
     public SessionSummarizer(SessionManager sessions, LLMProvider provider, 
@@ -384,25 +384,17 @@ public class SessionSummarizer {
             return; // 持久化失败时不继续写入记忆，避免数据不一致
         }
 
-        // 将摘要写入每日笔记，形成可追溯的对话记录
+        // 将摘要直接写入结构化记忆
         try {
-            String dailyNote = String.format("[%s] %s", sessionKey, summary);
-            memoryStore.appendToday(dailyNote);
+            String channel = "unknown";
+            if (sessionKey != null && sessionKey.contains(":")) {
+                channel = sessionKey.substring(0, sessionKey.indexOf(":"));
+            }
+            memoryStore.addEntry(summary, 0.4, List.of("session", channel), "session_summary");
         } catch (Exception e) {
-            logger.warn("Failed to write daily note for summary", Map.of(
+            logger.warn("Failed to write session summary to memory", Map.of(
                     "session_key", sessionKey,
                     "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
-        }
-
-        // 从摘要中快速提炼结构化记忆（轻量级，不调用 LLM）
-        if (memoryEvolver != null) {
-            try {
-                memoryEvolver.quickExtractFromSummary(sessionKey, summary);
-            } catch (Exception e) {
-                logger.warn("Failed to extract memory from summary", Map.of(
-                        "session_key", sessionKey,
-                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
-            }
         }
 
         logger.info("Session summarized", Map.of(

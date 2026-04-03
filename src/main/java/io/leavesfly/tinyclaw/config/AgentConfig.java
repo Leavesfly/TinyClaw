@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.config;
 
-import io.leavesfly.tinyclaw.agent.evolution.EvolutionConfig;
+import io.leavesfly.tinyclaw.evolution.EvolutionConfig;
 
 import java.util.ArrayList;
 import java.util.HashMap;

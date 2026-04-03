@@ -1,16 +1,19 @@
 package io.leavesfly.tinyclaw.agent;
 
-import io.leavesfly.tinyclaw.agent.collaboration.AgentOrchestrator;
-import io.leavesfly.tinyclaw.agent.evolution.*;
+import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
+
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
 
+import io.leavesfly.tinyclaw.evolution.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
 
+import io.leavesfly.tinyclaw.memory.MemoryEvolver;
+import io.leavesfly.tinyclaw.memory.MemoryStore;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -185,7 +188,7 @@ public class AgentRuntime {
         return contextBuilder.getSkillsLoader();
     }
 
-    /** 获取记忆存储实例，供外部组件（如工具层）调用 writeLongTerm / readToday 等能力 */
+    /** 获取记忆存储实例，供外部组件（如工具层）访问记忆读写能力 */
     public MemoryStore getMemoryStore() {
         return contextBuilder.getMemoryStore();
     }
