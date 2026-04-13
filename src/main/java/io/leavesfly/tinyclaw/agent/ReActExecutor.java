@@ -280,6 +280,7 @@ public class ReActExecutor {
             logToolCalls(response.getToolCalls(), iteration);
             addAssistantMessage(messages, response, sessionKey);
             toolExecutor.execute(messages, response.getToolCalls(), sessionKey, iteration);
+
             // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
             sessions.save(sessions.getOrCreate(sessionKey));
         }

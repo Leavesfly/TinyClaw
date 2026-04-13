@@ -27,6 +27,7 @@ public class ModelsConfig {
         // 通义千问系列
         definitions.put("qwen3-max", new ModelDefinition("dashscope", "qwen3-max", 200000));
         definitions.put("qwen3.5-plus", new ModelDefinition("dashscope", "qwen3.5-plus", 128000));
+        definitions.put("qwen3.6-plus", new ModelDefinition("dashscope", "qwen3.6-plus", 128000));
 
         // GPT 系列
         definitions.put("gpt-4o", new ModelDefinition("openai", "gpt-4o", 128000));
