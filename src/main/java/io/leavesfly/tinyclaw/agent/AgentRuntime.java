@@ -9,6 +9,7 @@ import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
 
 import io.leavesfly.tinyclaw.evolution.*;
+import io.leavesfly.tinyclaw.evolution.reflection.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
 
@@ -169,6 +170,16 @@ public class AgentRuntime {
     public void stop() {
         running = false;
         shutdownMCPServers();
+
+        // 关闭 Reflection 2.0 Recorder（释放后台线程和队列）
+        ProviderComponents comps = providerManager.getComponents();
+        if (comps != null && comps.recorder != null) {
+            try {
+                comps.recorder.close();
+            } catch (Exception e) {
+                logger.error("Failed to close ToolCallRecorder", Map.of("error", e.getMessage()));
+            }
+        }
     }
 
     // ==================== 工具注册 ====================
@@ -225,6 +236,24 @@ public class AgentRuntime {
     public PromptOptimizer getPromptOptimizer() {
         ProviderComponents comps = providerManager.getComponents();
         return comps != null ? comps.promptOptimizer : null;
+    }
+
+    /** 获取 Reflection 2.0 引擎，供外部组件（如 Web Handler）使用 */
+    public ReflectionEngine getReflectionEngine() {
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.reflectionEngine : null;
+    }
+
+    /** 获取 Reflection 2.0 健康聚合器，供外部组件使用 */
+    public ToolHealthAggregator getToolHealthAggregator() {
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.healthAggregator : null;
+    }
+
+    /** 获取 Reflection 2.0 修复应用器，供外部组件使用 */
+    public RepairApplier getRepairApplier() {
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null ? comps.repairApplier : null;
     }
     
     /**
@@ -288,6 +317,41 @@ public class AgentRuntime {
         // 4. 清理已结束会话的跟踪数据
         if (feedbackManager != null) {
             feedbackManager.cleanupEndedSessions();
+        }
+
+        // 5. Reflection 2.0：工具级自我调试周期
+        if (comps.reflectionEngine != null && comps.failureDetector != null) {
+            safeRun("reflection 2.0 cycle", () -> {
+                // 消费失败检测结果
+                List<FailureDetector.DetectionResult> detections = comps.failureDetector.drainDetections();
+                if (!detections.isEmpty()) {
+                    logger.info("Reflection 2.0: processing detections",
+                            Map.of("count", detections.size()));
+                    // 触发反思引擎
+                    List<RepairProposal> newProposals = comps.reflectionEngine.reflect(detections);
+                    // 自动应用已审批的提案
+                    if (comps.repairApplier != null) {
+                        for (RepairProposal proposal : newProposals) {
+                            if (proposal.getStatus() == RepairProposal.Status.APPROVED) {
+                                comps.repairApplier.apply(proposal);
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 清理过期事件日志
+            if (comps.logStore != null) {
+                safeRun("reflection event cleanup", () -> {
+                    EvolutionConfig evolutionConfig = config.getAgent().getEvolution();
+                    if (evolutionConfig != null) {
+                        ReflectionConfig reflectionConfig = evolutionConfig.getReflection();
+                        if (reflectionConfig != null) {
+                            comps.logStore.cleanup(reflectionConfig.getEventRetentionDays());
+                        }
+                    }
+                });
+            }
         }
     }
 

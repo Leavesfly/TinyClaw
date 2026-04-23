@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.agent;
 
 import io.leavesfly.tinyclaw.evolution.FeedbackManager;
+import io.leavesfly.tinyclaw.evolution.reflection.*;
 import io.leavesfly.tinyclaw.memory.MemoryEvolver;
 import io.leavesfly.tinyclaw.evolution.PromptOptimizer;
 import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
@@ -27,6 +28,15 @@ class ProviderComponents {
     /* ---------- 协同组件（可选） ---------- */
     final AgentOrchestrator orchestrator;
 
+    /* ---------- Reflection 2.0 组件（可选） ---------- */
+    final ToolCallRecorder recorder;
+    final ToolCallLogStore logStore;
+    final ToolHealthAggregator healthAggregator;
+    final FailureDetector failureDetector;
+    final PatternMiner patternMiner;
+    final ReflectionEngine reflectionEngine;
+    final RepairApplier repairApplier;
+
     ProviderComponents(
             ReActExecutor reActExecutor,
             SessionSummarizer summarizer,
@@ -34,7 +44,14 @@ class ProviderComponents {
             TokenUsageStore tokenUsageStore,
             FeedbackManager feedbackManager,
             PromptOptimizer promptOptimizer,
-            AgentOrchestrator orchestrator) {
+            AgentOrchestrator orchestrator,
+            ToolCallRecorder recorder,
+            ToolCallLogStore logStore,
+            ToolHealthAggregator healthAggregator,
+            FailureDetector failureDetector,
+            PatternMiner patternMiner,
+            ReflectionEngine reflectionEngine,
+            RepairApplier repairApplier) {
         this.reActExecutor = reActExecutor;
         this.summarizer = summarizer;
         this.memoryEvolver = memoryEvolver;
@@ -42,5 +59,12 @@ class ProviderComponents {
         this.feedbackManager = feedbackManager;
         this.promptOptimizer = promptOptimizer;
         this.orchestrator = orchestrator;
+        this.recorder = recorder;
+        this.logStore = logStore;
+        this.healthAggregator = healthAggregator;
+        this.failureDetector = failureDetector;
+        this.patternMiner = patternMiner;
+        this.reflectionEngine = reflectionEngine;
+        this.repairApplier = repairApplier;
     }
 }

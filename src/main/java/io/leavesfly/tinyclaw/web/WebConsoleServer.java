@@ -97,6 +97,16 @@ public class WebConsoleServer {
         // Token 消耗统计
         TokenUsageStore tokenUsageStore = new TokenUsageStore(config.getWorkspacePath());
         httpServer.createContext(WebUtils.API_TOKEN_STATS, new TokenStatsHandler(config, tokenUsageStore, security)::handle);
+
+        // Reflection 2.0：工具健康面板 + HITL 审批（仅在组件可用时注册）
+        ReflectionHandler reflectionHandler = new ReflectionHandler(config, security);
+        if (agentRuntime != null && agentRuntime.getToolHealthAggregator() != null) {
+            reflectionHandler.setComponents(
+                    agentRuntime.getToolHealthAggregator(),
+                    agentRuntime.getReflectionEngine(),
+                    agentRuntime.getRepairApplier());
+        }
+        httpServer.createContext(WebUtils.API_REFLECTION, reflectionHandler::handle);
     }
 
     private void registerStaticHandler() {

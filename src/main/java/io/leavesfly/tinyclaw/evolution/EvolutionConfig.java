@@ -1,5 +1,7 @@
 package io.leavesfly.tinyclaw.evolution;
 
+import io.leavesfly.tinyclaw.evolution.reflection.ReflectionConfig;
+
 /**
  * 进化能力配置，控制反馈收集和 Prompt 优化的行为。
  *
@@ -115,6 +117,11 @@ public class EvolutionConfig {
      * Self-Refine 策略：回顾的最近会话数量
      */
     private int selfRefineSessionCount = 5;
+
+    /**
+     * Reflection 2.0（工具级自我调试）配置。默认关闭。
+     */
+    private ReflectionConfig reflection = new ReflectionConfig();
 
     // ==================== Getters & Setters ====================
 
@@ -239,6 +246,17 @@ public class EvolutionConfig {
         this.selfRefineSessionCount = Math.max(1, selfRefineSessionCount);
     }
 
+    public ReflectionConfig getReflection() {
+        if (reflection == null) {
+            reflection = new ReflectionConfig();
+        }
+        return reflection;
+    }
+
+    public void setReflection(ReflectionConfig reflection) {
+        this.reflection = reflection != null ? reflection : new ReflectionConfig();
+    }
+
     // ==================== 便捷方法 ====================
 
     /**
@@ -247,7 +265,7 @@ public class EvolutionConfig {
      * @return 任一功能启用时返回 true
      */
     public boolean isAnyEvolutionEnabled() {
-        return feedbackEnabled || promptOptimizationEnabled;
+        return feedbackEnabled || promptOptimizationEnabled || getReflection().isEnabled();
     }
 
     /**

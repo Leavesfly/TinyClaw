@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.agent;
 import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.evolution.EvolutionConfig;
 import io.leavesfly.tinyclaw.evolution.FeedbackManager;
+import io.leavesfly.tinyclaw.evolution.reflection.*;
 import io.leavesfly.tinyclaw.memory.MemoryEvolver;
 import io.leavesfly.tinyclaw.memory.MemoryStore;
 import io.leavesfly.tinyclaw.evolution.PromptOptimizer;
@@ -213,8 +214,44 @@ class ProviderManager {
             logger.debug("Collaboration features disabled");
         }
 
+        // Reflection 2.0 组件（工具级自我调试）
+        ToolCallRecorder recorder = null;
+        ToolCallLogStore logStore = null;
+        ToolHealthAggregator healthAggregator = null;
+        FailureDetector failureDetector = null;
+        PatternMiner patternMiner = null;
+        ReflectionEngine reflectionEngine = null;
+        RepairApplier repairApplier = null;
+
+        if (evolutionConfig != null) {
+            ReflectionConfig reflectionConfig = evolutionConfig.getReflection();
+            if (reflectionConfig != null && reflectionConfig.isEnabled()) {
+                logStore = new ToolCallLogStore(workspace);
+                healthAggregator = new ToolHealthAggregator();
+                failureDetector = new FailureDetector(reflectionConfig, healthAggregator);
+                recorder = new ToolCallRecorder(logStore, healthAggregator);
+                patternMiner = new PatternMiner(logStore);
+                repairApplier = new RepairApplier(workspace);
+
+                reflectionEngine = new ReflectionEngine(
+                        newProvider, model, reflectionConfig,
+                        logStore, patternMiner, healthAggregator, tools);
+
+                // 连接 FailureDetector 到 ToolCallRecorder 的事件流
+                recorder.setFailureDetector(failureDetector);
+
+                // 注入到 ToolRegistry，使每次 execute() 自动记录事件
+                tools.setRecorder(recorder);
+                tools.setRepairApplier(repairApplier);
+
+                logger.info("Reflection 2.0 enabled (tool-level self-debugging)");
+            }
+        }
+
         return new ProviderComponents(reActExecutor, summarizer, memoryEvolver, tokenUsageStore,
-                feedbackManager, promptOptimizer, orchestrator);
+                feedbackManager, promptOptimizer, orchestrator,
+                recorder, logStore, healthAggregator, failureDetector,
+                patternMiner, reflectionEngine, repairApplier);
     }
 
     // ==================== Getter 方法 ====================

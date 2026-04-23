@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.tools;
 
+import io.leavesfly.tinyclaw.evolution.reflection.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.ToolDefinition;
 
@@ -35,9 +36,29 @@ public class ToolRegistry {
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("tools");
     
     private final Map<String, Tool> tools;
+
+    /** Reflection 2.0 事件记录器（可选，注入后每次 execute 自动记录事件）。 */
+    private volatile ToolCallRecorder recorder;
+
+    /** Reflection 2.0 修复应用器（可选，注入后 execute 前自动校验参数）。 */
+    private volatile RepairApplier repairApplier;
     
     public ToolRegistry() {
         this.tools = new ConcurrentHashMap<>();
+    }
+
+    /**
+     * 注入 Reflection 2.0 事件记录器。
+     */
+    public void setRecorder(ToolCallRecorder recorder) {
+        this.recorder = recorder;
+    }
+
+    /**
+     * 注入 Reflection 2.0 修复应用器（用于参数预校验和描述覆写）。
+     */
+    public void setRepairApplier(RepairApplier repairApplier) {
+        this.repairApplier = repairApplier;
     }
     
     /**
@@ -105,7 +126,35 @@ public class ToolRegistry {
         if (tool == null) {
             throw new IllegalArgumentException("Tool not found: " + name);
         }
+
+        // Reflection 2.0：构建事件（如果 recorder 已注入）
+        ToolCallRecorder currentRecorder = this.recorder;
+        ToolCallEvent event = null;
+        if (currentRecorder != null) {
+            event = ToolCallEvent.begin(name, args, null);
+            event.setArgsFingerprint(ArgsFingerprinter.fingerprint(args));
+        }
         
+        // Reflection 2.0：参数预校验（如果有校验规则）
+        RepairApplier currentApplier = this.repairApplier;
+        if (currentApplier != null) {
+            Map<String, String> rules = currentApplier.getValidationRules(name);
+            if (rules != null && !rules.isEmpty()) {
+                String validationError = validateArgs(name, args, rules);
+                if (validationError != null) {
+                    logger.warn("Tool args validation failed", Map.of(
+                            "tool", name, "violation", validationError));
+                    // 记录为校验失败事件
+                    if (event != null) {
+                        event.markFailure(ToolCallEvent.ErrorType.VALIDATION_ERROR,
+                                new IllegalArgumentException(validationError), 0);
+                        currentRecorder.record(event);
+                    }
+                    throw new IllegalArgumentException("Parameter validation failed: " + validationError);
+                }
+            }
+        }
+
         long start = System.currentTimeMillis();
         try {
             String result = tool.execute(args);
@@ -115,6 +164,13 @@ public class ToolRegistry {
                     "duration_ms", duration,
                     "result_length", result != null ? result.length() : 0
             ));
+
+            // Reflection 2.0：记录成功事件
+            if (event != null) {
+                event.markSuccess(duration);
+                currentRecorder.record(event);
+            }
+
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
@@ -123,6 +179,15 @@ public class ToolRegistry {
                     "duration_ms", duration,
                     "error", e.getMessage()
             ));
+
+            // Reflection 2.0：记录失败事件
+            if (event != null) {
+                ToolCallEvent.ErrorType errorType = ErrorClassifier.classify(e);
+                event.markFailure(errorType, e, duration);
+                event.setStackHash(ErrorClassifier.stackHash(e, 4));
+                currentRecorder.record(event);
+            }
+
             throw e;
         }
     }
@@ -134,6 +199,19 @@ public class ToolRegistry {
      * 
      * @return 工具名称列表
      */
+    /**
+     * 获取所有工具的 few-shot 示范（Reflection 2.0 进化产物）。
+     *
+     * @return toolName → few-shot 文本的不可变映射，无 few-shot 时返回空 map
+     */
+    public Map<String, String> getFewShotExamples() {
+        RepairApplier currentApplier = this.repairApplier;
+        if (currentApplier == null) {
+            return Collections.emptyMap();
+        }
+        return currentApplier.getAllFewShotExamples();
+    }
+
     public List<String> list() {
         return new ArrayList<>(tools.keySet());
     }
@@ -158,9 +236,18 @@ public class ToolRegistry {
      * @return 工具定义列表
      */
     public List<ToolDefinition> getDefinitions() {
+        RepairApplier currentApplier = this.repairApplier;
         List<ToolDefinition> definitions = new ArrayList<>();
         for (Tool tool : tools.values()) {
-            definitions.add(new ToolDefinition(tool.name(), tool.description(), tool.parameters()));
+            String description = tool.description();
+            // Reflection 2.0：若有描述覆写，优先使用进化后的描述
+            if (currentApplier != null) {
+                String override = currentApplier.getDescriptionOverride(tool.name());
+                if (override != null) {
+                    description = override;
+                }
+            }
+            definitions.add(new ToolDefinition(tool.name(), description, tool.parameters()));
         }
         return definitions;
     }
@@ -174,9 +261,18 @@ public class ToolRegistry {
      * @return 工具摘要列表
      */
     public List<String> getSummaries() {
+        RepairApplier currentApplier = this.repairApplier;
         List<String> summaries = new ArrayList<>();
         for (Tool tool : tools.values()) {
-            summaries.add("- `" + tool.name() + "` - " + tool.description());
+            String description = tool.description();
+            // Reflection 2.0：若有描述覆写，优先使用进化后的描述
+            if (currentApplier != null) {
+                String override = currentApplier.getDescriptionOverride(tool.name());
+                if (override != null) {
+                    description = override;
+                }
+            }
+            summaries.add("- `" + tool.name() + "` - " + description);
         }
         return summaries;
     }
@@ -190,6 +286,82 @@ public class ToolRegistry {
     public void clear() {
         tools.clear();
         logger.debug("All tools cleared");
+    }
+
+    // ==================== Reflection 2.0：参数校验 ====================
+
+    /**
+     * 根据校验规则验证工具参数。
+     *
+     * <p>支持的规则表达式：
+     * <ul>
+     *   <li>{@code required} — 参数必须存在且非空</li>
+     *   <li>{@code must_start_with: prefix} — 字符串参数必须以指定前缀开头</li>
+     *   <li>{@code must_end_with: suffix} — 字符串参数必须以指定后缀结尾</li>
+     *   <li>{@code range: min-max} — 数值参数必须在指定范围内</li>
+     *   <li>{@code max_length: N} — 字符串参数长度不超过 N</li>
+     * </ul>
+     *
+     * @return 首个违规信息，全部通过时返回 null
+     */
+    private String validateArgs(String toolName, Map<String, Object> args, Map<String, String> rules) {
+        for (Map.Entry<String, String> rule : rules.entrySet()) {
+            String paramName = rule.getKey();
+            String ruleExpr = rule.getValue();
+
+            // 跳过非标准规则（如 _raw fallback）
+            if (paramName.startsWith("_")) continue;
+
+            Object value = args != null ? args.get(paramName) : null;
+
+            if (ruleExpr.equals("required")) {
+                if (value == null || (value instanceof String && ((String) value).isBlank())) {
+                    return String.format("Parameter '%s' is required but missing or empty", paramName);
+                }
+                continue;
+            }
+
+            // 以下规则仅在参数存在时才校验
+            if (value == null) continue;
+
+            if (ruleExpr.startsWith("must_start_with:")) {
+                String prefix = ruleExpr.substring("must_start_with:".length()).trim();
+                if (value instanceof String && !((String) value).startsWith(prefix)) {
+                    return String.format("Parameter '%s' must start with '%s', got '%s'",
+                            paramName, prefix, truncateValue(value));
+                }
+            } else if (ruleExpr.startsWith("must_end_with:")) {
+                String suffix = ruleExpr.substring("must_end_with:".length()).trim();
+                if (value instanceof String && !((String) value).endsWith(suffix)) {
+                    return String.format("Parameter '%s' must end with '%s', got '%s'",
+                            paramName, suffix, truncateValue(value));
+                }
+            } else if (ruleExpr.startsWith("range:")) {
+                String rangeStr = ruleExpr.substring("range:".length()).trim();
+                String[] parts = rangeStr.split("-", 2);
+                if (parts.length == 2 && value instanceof Number) {
+                    double numValue = ((Number) value).doubleValue();
+                    double min = Double.parseDouble(parts[0].trim());
+                    double max = Double.parseDouble(parts[1].trim());
+                    if (numValue < min || numValue > max) {
+                        return String.format("Parameter '%s' must be in range [%s, %s], got %s",
+                                paramName, parts[0].trim(), parts[1].trim(), value);
+                    }
+                }
+            } else if (ruleExpr.startsWith("max_length:")) {
+                int maxLen = Integer.parseInt(ruleExpr.substring("max_length:".length()).trim());
+                if (value instanceof String && ((String) value).length() > maxLen) {
+                    return String.format("Parameter '%s' exceeds max length %d (actual: %d)",
+                            paramName, maxLen, ((String) value).length());
+                }
+            }
+        }
+        return null; // 全部通过
+    }
+
+    private static String truncateValue(Object value) {
+        String str = String.valueOf(value);
+        return str.length() > 60 ? str.substring(0, 60) + "..." : str;
     }
 
     /**
