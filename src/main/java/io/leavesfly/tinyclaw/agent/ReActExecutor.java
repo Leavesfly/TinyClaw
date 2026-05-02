@@ -1,6 +1,10 @@
 package io.leavesfly.tinyclaw.agent;
 
 import io.leavesfly.tinyclaw.evolution.FeedbackManager;
+import io.leavesfly.tinyclaw.hooks.HookContext;
+import io.leavesfly.tinyclaw.hooks.HookDecision;
+import io.leavesfly.tinyclaw.hooks.HookDispatcher;
+import io.leavesfly.tinyclaw.hooks.HookEvent;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.*;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -40,7 +44,10 @@ public class ReActExecutor {
 
     /** 反馈管理器（可选，用于进化模块） */
     private volatile FeedbackManager feedbackManager;
-    
+
+    /** Hook 调度器（可选，未注入时等价于无 hook 零开销） */
+    private volatile HookDispatcher hookDispatcher = HookDispatcher.noop();
+
     /** 当前会话标识（用于反馈记录） */
     private String currentSessionKey;
     
@@ -95,6 +102,15 @@ public class ReActExecutor {
      */
     public void setFeedbackManager(FeedbackManager feedbackManager) {
         this.feedbackManager = feedbackManager;
+    }
+
+    /**
+     * 设置 Hook 调度器，在工具执行前后触发 PreToolUse/PostToolUse 事件。
+     *
+     * @param hookDispatcher Hook 调度器实例，为 null 时退回 noop
+     */
+    public void setHookDispatcher(HookDispatcher hookDispatcher) {
+        this.hookDispatcher = hookDispatcher == null ? HookDispatcher.noop() : hookDispatcher;
     }
     
     /**
@@ -502,64 +518,111 @@ public class ReActExecutor {
     }
     
     /**
-     * 执行单个工具调用。
-     * 
-     * @param toolCall 工具调用信息
+     * 执行单个工具调用（非流式模式）。
+     *
+     * @param toolCall   工具调用信息
      * @param sessionKey 会话标识符
-     * @return 工具执行结果，如果执行失败返回错误信息
+     * @return 工具执行结果，如果执行失败返回以 "Error:" 开头的错误信息
      */
     private String executeToolCall(ToolCall toolCall, String sessionKey) {
-        String toolName = toolCall.getName();
-        boolean success = false;
-        String result;
-        
-        try {
-            // 设置工具上下文（从 sessionKey 解析 channel 和 chatId）
-            setToolContext(toolName, sessionKey, null);
-            result = tools.execute(toolName, toolCall.getArguments());
-            // 工具执行成功（没有以 "Error:" 开头）
-            success = result != null && !result.startsWith("Error:");
-        } catch (Exception e) {
-            result = "Error: " + e.getMessage();
-        }
-        
-        // 记录工具执行结果到反馈管理器
-        if (feedbackManager != null && currentSessionKey != null) {
-            feedbackManager.recordToolResult(currentSessionKey, toolName, success);
-        }
-        
-        return result;
+        return runToolWithHooks(toolCall, sessionKey, null);
     }
-    
+
     /**
-     * 执行单个工具调用（流式版本）。
-     * 
-     * 与普通版本类似，但会将流式回调传递给支持流式输出的工具（如 SpawnTool、CollaborateTool）。
-     * 
-     * @param toolCall 工具调用信息
+     * 执行单个工具调用（流式模式）。
+     *
+     * <p>与非流式版本的唯一差异在于会将当前的流式回调传递给支持流式输出的工具
+     * （如 SpawnTool、CollaborateTool）。</p>
+     *
+     * @param toolCall   工具调用信息
      * @param sessionKey 会话标识符
-     * @return 工具执行结果，如果执行失败返回错误信息
+     * @return 工具执行结果，如果执行失败返回以 "Error:" 开头的错误信息
      */
     private String executeToolCallWithStream(ToolCall toolCall, String sessionKey) {
+        return runToolWithHooks(toolCall, sessionKey, currentEnhancedCallback);
+    }
+
+    /**
+     * 工具执行的核心实现，统一处理 PreToolUse / PostToolUse 两个 Hook 切点，
+     * 供流式/非流式两个入口复用。
+     *
+     * <p>Hook 语义：</p>
+     * <ul>
+     *   <li><b>PreToolUse</b>：工具执行前触发。若 Hook 返回 DENY，则不调用工具，直接返回
+     *       {@code "Error: blocked by hook: <reason>"}；若返回 modifyInput，则用新参数调用工具。</li>
+     *   <li><b>PostToolUse</b>：工具执行后触发。若 Hook 返回 modifyOutput，则用新结果替换原 result。
+     *       PostToolUse 的 DENY 在本切点语义下等同于用 reason 覆盖 result，便于把"工具输出不合规"
+     *       这一信息反馈给 LLM 继续迭代。</li>
+     * </ul>
+     *
+     * <p>Hook 内部任何异常均由 {@link HookDispatcher} 吞掉并 fail-open，不会影响工具本身的执行。</p>
+     */
+    private String runToolWithHooks(ToolCall toolCall, String sessionKey,
+                                    LLMProvider.EnhancedStreamCallback streamCallback) {
         String toolName = toolCall.getName();
+        Map<String, Object> effectiveArgs = toolCall.getArguments();
+
+        // ---------- PreToolUse ----------
+        HookContext preCtx = HookContext.builder(HookEvent.PRE_TOOL_USE)
+                .sessionKey(sessionKey)
+                .toolName(toolName)
+                .toolInput(effectiveArgs)
+                .build();
+        HookDecision preDecision = hookDispatcher.fire(HookEvent.PRE_TOOL_USE, preCtx);
+
+        if (preDecision.isDeny()) {
+            String reason = preDecision.getReason() == null ? "blocked by hook" : preDecision.getReason();
+            String blocked = "Error: blocked by hook: " + reason;
+            if (feedbackManager != null && currentSessionKey != null) {
+                feedbackManager.recordToolResult(currentSessionKey, toolName, false);
+            }
+            return blocked;
+        }
+        if (preDecision.getModifiedInput() != null) {
+            effectiveArgs = preDecision.getModifiedInput();
+            logger.info("PreToolUse hook modified tool input", Map.of(
+                    "tool", toolName, "session_key", sessionKey == null ? "" : sessionKey));
+        }
+
+        // ---------- 工具执行 ----------
         boolean success = false;
         String result;
-        
         try {
-            // 设置工具上下文，并传递流式回调
-            setToolContext(toolName, sessionKey, currentEnhancedCallback);
-            result = tools.execute(toolName, toolCall.getArguments());
-            // 工具执行成功（没有以 "Error:" 开头）
+            setToolContext(toolName, sessionKey, streamCallback);
+            result = tools.execute(toolName, effectiveArgs);
             success = result != null && !result.startsWith("Error:");
         } catch (Exception e) {
             result = "Error: " + e.getMessage();
         }
-        
-        // 记录工具执行结果到反馈管理器
+
+        // ---------- PostToolUse ----------
+        HookContext postCtx = HookContext.builder(HookEvent.POST_TOOL_USE)
+                .sessionKey(sessionKey)
+                .toolName(toolName)
+                .toolInput(effectiveArgs)
+                .toolOutput(result)
+                .build();
+        HookDecision postDecision = hookDispatcher.fire(HookEvent.POST_TOOL_USE, postCtx);
+
+        if (postDecision.isDeny()) {
+            String reason = postDecision.getReason() == null ? "blocked by hook" : postDecision.getReason();
+            result = "Error: blocked by hook: " + reason;
+            success = false;
+            logger.info("PostToolUse hook denied result", Map.of(
+                    "tool", toolName, "reason", reason));
+        } else if (postDecision.getModifiedOutput() != null) {
+            result = postDecision.getModifiedOutput();
+            // 结果被 hook 改写后，重新判断 success
+            success = result != null && !result.startsWith("Error:");
+            logger.info("PostToolUse hook modified tool output", Map.of(
+                    "tool", toolName));
+        }
+
+        // ---------- 反馈记录 ----------
         if (feedbackManager != null && currentSessionKey != null) {
             feedbackManager.recordToolResult(currentSessionKey, toolName, success);
         }
-        
+
         return result;
     }
     

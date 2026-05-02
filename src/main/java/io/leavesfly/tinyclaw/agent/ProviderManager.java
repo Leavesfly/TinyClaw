@@ -10,6 +10,7 @@ import io.leavesfly.tinyclaw.evolution.PromptOptimizer;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.config.ProvidersConfig;
+import io.leavesfly.tinyclaw.hooks.HookDispatcher;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -42,6 +43,9 @@ class ProviderManager {
     private final Object providerLock = new Object();
     private volatile ProviderComponents components;
 
+    /** Hook 调度器，由 {@link AgentRuntime} 注入，供新构造的 ReActExecutor 使用。 */
+    private volatile HookDispatcher hookDispatcher = HookDispatcher.noop();
+
     ProviderManager(Config config, ContextBuilder contextBuilder, ToolRegistry tools,
                     SessionManager sessions, String workspace) {
         this.config = config;
@@ -49,6 +53,19 @@ class ProviderManager {
         this.tools = tools;
         this.sessions = sessions;
         this.workspace = workspace;
+    }
+
+    /**
+     * 注入 Hook 调度器。必须在 {@link #setProvider(LLMProvider)} 之前调用才能对首次构造的
+     * ReActExecutor 生效；后续 Provider 热重载时会自动沿用当前 dispatcher。
+     */
+    void setHookDispatcher(HookDispatcher hookDispatcher) {
+        this.hookDispatcher = hookDispatcher == null ? HookDispatcher.noop() : hookDispatcher;
+        // 若已经存在 ReActExecutor，补注入一次，避免首次调用顺序颠倒时 hook 不生效。
+        ProviderComponents current = this.components;
+        if (current != null && current.reActExecutor != null) {
+            current.reActExecutor.setHookDispatcher(this.hookDispatcher);
+        }
     }
 
     // ==================== Provider 管理 ====================
@@ -153,6 +170,7 @@ class ProviderManager {
         TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
         ReActExecutor reActExecutor = new ReActExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
         reActExecutor.setTokenUsageStore(tokenUsageStore);
+        reActExecutor.setHookDispatcher(hookDispatcher);
 
         SessionSummarizer summarizer = new SessionSummarizer(
                 sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);

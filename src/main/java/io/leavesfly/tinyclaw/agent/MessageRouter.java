@@ -6,6 +6,10 @@ import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.channels.Channel;
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
+import io.leavesfly.tinyclaw.hooks.HookContext;
+import io.leavesfly.tinyclaw.hooks.HookDecision;
+import io.leavesfly.tinyclaw.hooks.HookDispatcher;
+import io.leavesfly.tinyclaw.hooks.HookEvent;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
@@ -37,6 +41,9 @@ class MessageRouter {
 
     private volatile ChannelManager channelManager;
 
+    /** Hook 调度器；未注入时等价于无 hook 零开销。 */
+    private volatile HookDispatcher hookDispatcher = HookDispatcher.noop();
+
     MessageRouter(ProviderManager providerManager, MessageBus bus,
                   SessionManager sessions, ContextBuilder contextBuilder, Config config) {
         this.providerManager = providerManager;
@@ -48,6 +55,14 @@ class MessageRouter {
 
     void setChannelManager(ChannelManager channelManager) {
         this.channelManager = channelManager;
+    }
+
+    /**
+     * 注入 Hook 调度器。未注入时，{@link #routeUser} 中的 SessionStart/UserPromptSubmit/Stop
+     * 切点调用等价于直接放行，零副作用。
+     */
+    void setHookDispatcher(HookDispatcher hookDispatcher) {
+        this.hookDispatcher = hookDispatcher == null ? HookDispatcher.noop() : hookDispatcher;
     }
 
     // ==================== 主路由入口 ====================
@@ -111,6 +126,15 @@ class MessageRouter {
 
     /**
      * 路由用户消息到 LLM 处理。
+     *
+     * <p>本方法织入了 3 个 Hook 切点：</p>
+     * <ul>
+     *   <li><b>SessionStart</b>：当前 sessionKey 是否在本轮处理前已经存在于 {@link SessionManager} 内，
+     *       若不存在则视为新会话开始并触发。返回的 {@code additionalContext} 会被追加到会话 summary。</li>
+     *   <li><b>UserPromptSubmit</b>：消息被写入 session 之前。DENY 直接回复 reason；
+     *       modifyPrompt 改写 {@code msg.content}，后续流程使用改写后的内容。</li>
+     *   <li><b>Stop</b>：LLM 生成完整回复后、持久化与出站之前。modifyOutput 可改写最终回复。</li>
+     * </ul>
      */
     String routeUser(InboundMessage msg) throws Exception {
         if (!providerManager.isConfigured()) {
@@ -119,8 +143,42 @@ class MessageRouter {
         }
 
         String sessionKey = msg.getSessionKey();
+
+        // ---------- SessionStart（首次出现才触发） ----------
+        boolean sessionPreexists = sessions.getSessionKeys().contains(sessionKey);
+        if (!sessionPreexists) {
+            fireSessionStart(sessionKey);
+        }
+
+        // ---------- UserPromptSubmit ----------
+        String effectiveContent = msg.getContent();
+        HookContext promptCtx = HookContext.builder(HookEvent.USER_PROMPT_SUBMIT)
+                .sessionKey(sessionKey)
+                .prompt(effectiveContent)
+                .build();
+        HookDecision promptDecision = hookDispatcher.fire(HookEvent.USER_PROMPT_SUBMIT, promptCtx);
+        if (promptDecision.isDeny()) {
+            String reason = promptDecision.getReason() == null
+                    ? "Request blocked by hook"
+                    : promptDecision.getReason();
+            logger.info("UserPromptSubmit hook denied request", Map.of(
+                    "session_key", sessionKey == null ? "" : sessionKey,
+                    "reason", reason));
+            publishReplyIfNeeded(msg, reason);
+            return reason;
+        }
+        if (promptDecision.getModifiedPrompt() != null) {
+            effectiveContent = promptDecision.getModifiedPrompt();
+            msg.setContent(effectiveContent);
+            logger.info("UserPromptSubmit hook modified prompt", Map.of(
+                    "session_key", sessionKey == null ? "" : sessionKey));
+        }
+        if (promptDecision.getAdditionalContext() != null) {
+            appendSessionContext(sessionKey, promptDecision.getAdditionalContext());
+        }
+
         List<Message> messages = buildContext(sessionKey, msg);
-        sessions.addMessage(sessionKey, "user", msg.getContent());
+        sessions.addMessage(sessionKey, "user", effectiveContent);
         sessions.save(sessions.getOrCreate(sessionKey));
 
         ProviderComponents comps = providerManager.getComponents();
@@ -133,9 +191,63 @@ class MessageRouter {
                 executeWithStreamingIfSupported(msg, messages, sessionKey, usedStreaming),
                 DEFAULT_EMPTY_RESPONSE);
 
+        // ---------- Stop ----------
+        HookContext stopCtx = HookContext.builder(HookEvent.STOP)
+                .sessionKey(sessionKey)
+                .prompt(effectiveContent)
+                .toolOutput(response)
+                .build();
+        HookDecision stopDecision = hookDispatcher.fire(HookEvent.STOP, stopCtx);
+        if (stopDecision.isDeny()) {
+            String reason = stopDecision.getReason() == null
+                    ? "Response blocked by hook"
+                    : stopDecision.getReason();
+            logger.info("Stop hook denied response", Map.of(
+                    "session_key", sessionKey == null ? "" : sessionKey, "reason", reason));
+            response = reason;
+        } else if (stopDecision.getModifiedOutput() != null) {
+            response = stopDecision.getModifiedOutput();
+            logger.info("Stop hook modified response", Map.of(
+                    "session_key", sessionKey == null ? "" : sessionKey));
+        }
+
         persistAndSummarize(sessionKey, response);
         publishReplyIfNeeded(msg, response);
         return response;
+    }
+
+    /**
+     * 触发 SessionStart 事件：新会话首次出现时调用，将 Hook 返回的 additionalContext
+     * 追加到 session summary 作为持久化上下文。
+     */
+    private void fireSessionStart(String sessionKey) {
+        HookContext ctx = HookContext.builder(HookEvent.SESSION_START)
+                .sessionKey(sessionKey)
+                .build();
+        HookDecision decision = hookDispatcher.fire(HookEvent.SESSION_START, ctx);
+        if (decision.getAdditionalContext() != null) {
+            appendSessionContext(sessionKey, decision.getAdditionalContext());
+            logger.info("SessionStart hook injected context", Map.of(
+                    "session_key", sessionKey == null ? "" : sessionKey));
+        }
+    }
+
+    /**
+     * 将一段 hook 注入的上下文追加到会话 summary。为避免把 summary 撑爆，单次追加内容超过 4KB 会截断。
+     */
+    private void appendSessionContext(String sessionKey, String additionalContext) {
+        if (sessionKey == null || additionalContext == null || additionalContext.isEmpty()) {
+            return;
+        }
+        sessions.getOrCreate(sessionKey); // 确保 session 存在
+        String existing = sessions.getSummary(sessionKey);
+        String appended = additionalContext.length() > 4096
+                ? additionalContext.substring(0, 4096) + "..."
+                : additionalContext;
+        String merged = (existing == null || existing.isEmpty())
+                ? appended
+                : existing + "\n\n" + appended;
+        sessions.setSummary(sessionKey, merged);
     }
 
     /**

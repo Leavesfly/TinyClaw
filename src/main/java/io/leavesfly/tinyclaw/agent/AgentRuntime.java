@@ -10,6 +10,11 @@ import io.leavesfly.tinyclaw.config.Config;
 
 import io.leavesfly.tinyclaw.evolution.*;
 import io.leavesfly.tinyclaw.evolution.reflection.*;
+import io.leavesfly.tinyclaw.hooks.HookConfigLoader;
+import io.leavesfly.tinyclaw.hooks.HookContext;
+import io.leavesfly.tinyclaw.hooks.HookDispatcher;
+import io.leavesfly.tinyclaw.hooks.HookEvent;
+import io.leavesfly.tinyclaw.hooks.HookRegistry;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.mcp.MCPManager;
 
@@ -69,6 +74,12 @@ public class AgentRuntime {
     /* ---------- 通道管理器（可选，由 GatewayBootstrap 注入） ---------- */
     private volatile ChannelManager channelManager;
 
+    /**
+     * Hook 调度器。构造时从 {@code ~/.tinyclaw/hooks.json} 加载；文件不存在或加载失败时
+     * 退回为 {@link HookDispatcher#noop()}，保证主流程零开销。
+     */
+    private final HookDispatcher hookDispatcher;
+
     private volatile boolean running = false;
 
     // ==================== 构造与初始化 ====================
@@ -85,18 +96,27 @@ public class AgentRuntime {
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
 
+        // 初始化 Hook 调度器：从默认路径加载，必须在 providerManager.setProvider 之前，
+        // 以便 ReActExecutor 首次构造时就能拿到 dispatcher。
+        HookRegistry hookRegistry = HookConfigLoader.loadDefault();
+        this.hookDispatcher = new HookDispatcher(hookRegistry);
+
         this.providerManager = new ProviderManager(config, contextBuilder, tools, sessions, workspace);
+        this.providerManager.setHookDispatcher(this.hookDispatcher);
         this.messageRouter = new MessageRouter(providerManager, bus, sessions, contextBuilder, config);
+        this.messageRouter.setHookDispatcher(this.hookDispatcher);
 
         if (provider != null) {
             providerManager.setProvider(provider);
             logger.info("Agent initialized with provider", Map.of(
                     "model", config.getAgent().getModel(),
                     "workspace", workspace,
-                    "max_iterations", config.getAgent().getMaxToolIterations()));
+                    "max_iterations", config.getAgent().getMaxToolIterations(),
+                    "hooks_enabled", !hookRegistry.isEmpty()));
         } else {
             logger.info("Agent initialized without provider (configuration mode)", Map.of(
-                    "workspace", workspace));
+                    "workspace", workspace,
+                    "hooks_enabled", !hookRegistry.isEmpty()));
         }
 
         initializeMCPServers();
@@ -180,6 +200,19 @@ public class AgentRuntime {
                 logger.error("Failed to close ToolCallRecorder", Map.of("error", e.getMessage()));
             }
         }
+
+        // SessionEnd：通知外部 hook 一次性收尾。hook 返回的决策在此切点不改变行为，仅作通知。
+        try {
+            hookDispatcher.fire(HookEvent.SESSION_END,
+                    HookContext.builder(HookEvent.SESSION_END).build());
+        } catch (RuntimeException e) {
+            logger.error("SessionEnd hook threw exception, ignored", Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** 获取当前 Hook 调度器，供测试或外部组件按需触发自定义事件。 */
+    public HookDispatcher getHookDispatcher() {
+        return hookDispatcher;
     }
 
     // ==================== 工具注册 ====================
