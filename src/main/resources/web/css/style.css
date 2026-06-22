@@ -518,11 +518,14 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 24px;
 }
 
@@ -595,6 +598,8 @@ body {
 .message {
     margin-bottom: 16px;
     max-width: 80%;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .message.user {
@@ -606,7 +611,9 @@ body {
     border-radius: 12px;
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-wrap: break-word;
     line-height: 1.6;
+    overflow: hidden;
 }
 
 /* 包含工具卡片时，取消 pre-wrap 避免空白文本节点产生多余空行 */
@@ -662,6 +669,14 @@ body {
     border-radius: 3px;
     font-family: 'Monaco', 'Courier New', monospace;
     font-size: 0.9em;
+    word-break: break-all;
+}
+
+.message-content pre {
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-break: break-all;
 }
 
 .message.user .message-content {
@@ -2300,6 +2315,7 @@ body {
     font-size: 0.9em;
     overflow-x: auto;
     display: block;
+    max-width: 100%;
 }
 
 .markdown-body table th,
@@ -2307,7 +2323,8 @@ body {
     border: 1px solid var(--border);
     padding: 8px 14px;
     text-align: left;
-    white-space: nowrap;
+    white-space: normal;
+    word-break: break-word;
 }
 
 .markdown-body table thead tr {
