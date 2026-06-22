@@ -218,6 +218,11 @@ class TinyClawConsole {
     pendingImages = [];
     // 当前正在执行的任务的 AbortController（用于中断）
     currentAbortController = null;
+    // Slash command menu state
+    slashMenuVisible = false;
+    slashMenuIndex = -1;
+    slashMenuItems = [];
+    skillsCache = null;
 
     bindChat() {
         const input = document.getElementById('chatInput');
@@ -228,6 +233,24 @@ class TinyClawConsole {
 
         sendBtn.addEventListener('click', () => this.sendMessage());
         input.addEventListener('keydown', (e) => {
+            // Slash menu 键盘导航
+            if (this.slashMenuVisible) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Tab') {
+                    e.preventDefault();
+                    this.handleSlashMenuKey(e.key);
+                    return;
+                }
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.handleSlashMenuKey('Enter');
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.hideSlashMenu();
+                    return;
+                }
+            }
             // Ctrl+Enter (Windows/Linux) 或 Cmd+Enter (Mac) 发送消息
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
@@ -238,6 +261,17 @@ class TinyClawConsole {
         input.addEventListener('input', () => {
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+            this.handleSlashInput(input);
+        });
+
+        // 点击外部关闭 slash menu
+        document.addEventListener('click', (e) => {
+            if (this.slashMenuVisible) {
+                const menu = document.getElementById('slashMenu');
+                if (menu && !menu.contains(e.target) && e.target !== input) {
+                    this.hideSlashMenu();
+                }
+            }
         });
 
         newChatBtn.addEventListener('click', () => this.createNewChatSession());
@@ -2927,6 +2961,177 @@ class TinyClawConsole {
                 </tr>
             `).join('');
         }
+    }
+
+    // ==================== Slash Command Menu ====================
+
+    /**
+     * 从 API 获取技能列表（带缓存）
+     */
+    async fetchSkillsForSlash() {
+        if (this.skillsCache) return this.skillsCache;
+        try {
+            const resp = await this.authFetch('/api/skills');
+            if (resp.ok) {
+                this.skillsCache = await resp.json();
+            }
+        } catch (e) {
+            console.error('Failed to fetch skills for slash menu:', e);
+        }
+        return this.skillsCache || [];
+    }
+
+    /**
+     * 处理输入框中的 slash 命令检测
+     */
+    async handleSlashInput(input) {
+        const value = input.value;
+        const cursorPos = input.selectionStart;
+        const textBeforeCursor = value.substring(0, cursorPos);
+
+        // 只在行首输入 / 时触发
+        const lastNewline = textBeforeCursor.lastIndexOf('\n');
+        const lineStart = lastNewline + 1;
+        const lineText = textBeforeCursor.substring(lineStart);
+
+        if (lineText.startsWith('/') && lineStart === 0) {
+            const query = lineText.substring(1).toLowerCase();
+            const skills = await this.fetchSkillsForSlash();
+            const filtered = query
+                ? skills.filter(s =>
+                    s.name.toLowerCase().includes(query) ||
+                    (s.description && s.description.toLowerCase().includes(query))
+                )
+                : skills;
+
+            if (filtered.length > 0) {
+                this.showSlashMenu(filtered);
+            } else {
+                this.hideSlashMenu();
+            }
+        } else {
+            this.hideSlashMenu();
+        }
+    }
+
+    /**
+     * 显示 slash 命令菜单
+     */
+    showSlashMenu(skills) {
+        let menu = document.getElementById('slashMenu');
+        if (!menu) {
+            menu = document.createElement('div');
+            menu.id = 'slashMenu';
+            menu.className = 'slash-menu';
+            document.querySelector('.chat-input-container').appendChild(menu);
+        }
+
+        this.slashMenuItems = skills;
+        if (this.slashMenuIndex >= skills.length) {
+            this.slashMenuIndex = skills.length - 1;
+        }
+
+        const sourceIcon = (source) => {
+            switch (source) {
+                case 'builtin': return '📦';
+                case 'global': return '🌐';
+                case 'workspace': return '📁';
+                default: return '🧩';
+            }
+        };
+
+        menu.innerHTML = `<div class="slash-menu-header">🧩 Skills</div>`
+            + skills.map((s, i) => `
+                <div class="slash-menu-item${i === this.slashMenuIndex ? ' active' : ''}"
+                     data-name="${this.escapeHtml(s.name)}" data-index="${i}">
+                    <div class="slash-menu-item-icon">${sourceIcon(s.source)}</div>
+                    <div class="slash-menu-item-info">
+                        <div class="slash-menu-item-name">/${this.escapeHtml(s.name)}</div>
+                        <div class="slash-menu-item-desc">${this.escapeHtml(s.description || '')}</div>
+                    </div>
+                    <span class="slash-menu-item-source">${this.escapeHtml(s.source || '')}</span>
+                </div>
+            `).join('');
+
+        menu.style.display = 'block';
+        this.slashMenuVisible = true;
+
+        // 绑定点击和鼠标悬停事件
+        menu.querySelectorAll('.slash-menu-item').forEach((item, idx) => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.selectSlashSkill(item.dataset.name);
+            });
+            item.addEventListener('mouseenter', () => {
+                this.slashMenuIndex = idx;
+                this.updateSlashMenuHighlight();
+            });
+        });
+    }
+
+    /**
+     * 隐藏 slash 命令菜单
+     */
+    hideSlashMenu() {
+        const menu = document.getElementById('slashMenu');
+        if (menu) {
+            menu.style.display = 'none';
+        }
+        this.slashMenuVisible = false;
+        this.slashMenuIndex = -1;
+        this.slashMenuItems = [];
+    }
+
+    /**
+     * 处理 slash 菜单的键盘导航
+     */
+    handleSlashMenuKey(key) {
+        if (!this.slashMenuItems || this.slashMenuItems.length === 0) return;
+
+        if (key === 'ArrowDown' || key === 'Tab') {
+            this.slashMenuIndex = (this.slashMenuIndex + 1) % this.slashMenuItems.length;
+            this.updateSlashMenuHighlight();
+        } else if (key === 'ArrowUp') {
+            this.slashMenuIndex = this.slashMenuIndex <= 0
+                ? this.slashMenuItems.length - 1
+                : this.slashMenuIndex - 1;
+            this.updateSlashMenuHighlight();
+        } else if (key === 'Enter') {
+            const idx = this.slashMenuIndex >= 0 ? this.slashMenuIndex : 0;
+            this.selectSlashSkill(this.slashMenuItems[idx].name);
+        }
+    }
+
+    /**
+     * 更新 slash 菜单高亮项
+     */
+    updateSlashMenuHighlight() {
+        const menu = document.getElementById('slashMenu');
+        if (!menu) return;
+        menu.querySelectorAll('.slash-menu-item').forEach((item, i) => {
+            item.classList.toggle('active', i === this.slashMenuIndex);
+        });
+        const activeItem = menu.querySelector('.slash-menu-item.active');
+        if (activeItem) activeItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    /**
+     * 选择一个技能，插入到输入框
+     */
+    selectSlashSkill(name) {
+        const input = document.getElementById('chatInput');
+        input.value = '/' + name + ' ';
+        input.focus();
+
+        // 将光标移到末尾
+        const pos = input.value.length;
+        input.setSelectionRange(pos, pos);
+
+        // 自动调整高度
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+
+        this.hideSlashMenu();
     }
 
     /**

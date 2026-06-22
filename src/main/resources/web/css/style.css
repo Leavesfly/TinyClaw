@@ -676,11 +676,110 @@ body {
 }
 
 .chat-input-container {
+    position: relative;
     padding: 16px 24px;
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     gap: 12px;
+}
+
+/* Slash Command Menu */
+.slash-menu {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 16px;
+    right: 16px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08);
+    margin-bottom: 4px;
+    z-index: 100;
+    padding: 4px;
+}
+
+.slash-menu-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.slash-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.slash-menu-item:hover,
+.slash-menu-item.active {
+    background: var(--primary-light);
+}
+
+.slash-menu-item-icon {
+    font-size: 16px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.slash-menu-item.active .slash-menu-item-icon {
+    background: var(--primary);
+    color: white;
+}
+
+.slash-menu-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.slash-menu-item-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.slash-menu-item-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.slash-menu-item-source {
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.slash-menu-empty {
+    padding: 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-secondary);
 }
 
 .chat-input-row {
