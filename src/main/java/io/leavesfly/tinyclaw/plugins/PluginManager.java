@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.plugins;
 
+import io.leavesfly.tinyclaw.collaboration.AgentRole;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
 import io.leavesfly.tinyclaw.config.MCPServersConfig;
@@ -10,6 +11,7 @@ import io.leavesfly.tinyclaw.skills.SkillsLoader;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -36,12 +38,19 @@ public class PluginManager {
     private final PluginDiscovery discovery = new PluginDiscovery(new ManifestParser());
     private final McpComponentAdapter mcpAdapter = new McpComponentAdapter();
     private final HookComponentAdapter hookAdapter = new HookComponentAdapter();
+    private final AgentComponentAdapter agentAdapter = new AgentComponentAdapter();
 
     /** 从插件收集到的 MCP server 配置，待合并进全局 MCP 装配。 */
     private final List<MCPServersConfig.MCPServerConfig> collectedMcpServers = new ArrayList<>();
 
     /** 从插件收集并合并后的 hooks 注册表，待叠加进全局 HookDispatcher。 */
     private HookRegistry pluginHookRegistry = HookRegistry.EMPTY;
+
+    /** 从插件收集到的 agent 角色列表（保持发现顺序）。 */
+    private final List<AgentRole> pluginAgentRoles = new ArrayList<>();
+
+    /** 插件 agent 命名索引（roleName -&gt; 角色，先注册者优先，供 CollaborateTool 按名引用）。 */
+    private final Map<String, AgentRole> pluginAgentsByName = new LinkedHashMap<>();
 
     public PluginManager(Config config) {
         this.config = config;
@@ -77,13 +86,15 @@ public class PluginManager {
             injectSkills(manifest, skillsLoader);
             collectMcpServers(manifest, pc);
             collectHooks(manifest, pc);
+            collectAgents(manifest, pc);
         }
 
         logger.info("插件系统初始化完成", Map.of(
                 "discovered", discovered.size(),
                 "registered", registered,
                 "mcp_servers", collectedMcpServers.size(),
-                "hooks", pluginHookRegistry.isEmpty() ? "none" : "loaded"));
+                "hooks", pluginHookRegistry.isEmpty() ? "none" : "loaded",
+                "agents", pluginAgentRoles.size()));
     }
 
     /**
@@ -144,6 +155,26 @@ public class PluginManager {
     }
 
     /**
+     * 从插件收集 agent 角色并建立命名索引（同名先注册者优先）。
+     */
+    private void collectAgents(PluginManifest manifest, PluginsConfig pc) {
+        if (!manifest.hasAgents()) {
+            return;
+        }
+        VariableResolver resolver = buildResolver(manifest, pc);
+        for (AgentRole role : agentAdapter.adapt(manifest, resolver)) {
+            String name = role.getRoleName();
+            if (pluginAgentsByName.containsKey(name)) {
+                logger.info("插件 agent 同名已存在，已跳过", Map.of(
+                        "plugin", String.valueOf(manifest.getId()), "agent", name));
+                continue;
+            }
+            pluginAgentsByName.put(name, role);
+            pluginAgentRoles.add(role);
+        }
+    }
+
+    /**
      * 构建变量替换器：填充 CLAUDE_PLUGIN_ROOT / DATA / PROJECT_DIR / user_config。
      */
     private VariableResolver buildResolver(PluginManifest manifest, PluginsConfig pc) {
@@ -189,5 +220,15 @@ public class PluginManager {
     /** 获取从插件收集合并后的 hooks 注册表，供 AgentRuntime 叠加到 HookDispatcher。 */
     public HookRegistry getPluginHookRegistry() {
         return pluginHookRegistry;
+    }
+
+    /** 获取从插件收集的 agent 角色列表（供展示与批量注册）。 */
+    public List<AgentRole> getPluginAgentRoles() {
+        return pluginAgentRoles;
+    }
+
+    /** 获取插件 agent 命名索引（roleName -&gt; 角色），供 CollaborateTool 按名引用。 */
+    public Map<String, AgentRole> getPluginAgentsByName() {
+        return pluginAgentsByName;
     }
 }

@@ -20,6 +20,7 @@ TinyClaw 被刻意设计成**接口优先**：每个子系统都有一个 `inter
 | 语音转写 | `voice.Transcriber` | `GatewayBootstrap.initializeTranscriber` | [18](18-voice.md) |
 | Web Handler | 自定义类 | `WebConsoleServer.registerApiEndpoints` | [17](17-web-console.md) |
 | 技能 | Markdown 文件 | `SkillsLoader` | [13](13-skills-system.md) |
+| 插件（打包分发） | `.claude-plugin/plugin.json` 清单 | `PluginManager` | [22](22-plugins.md) |
 
 ---
 

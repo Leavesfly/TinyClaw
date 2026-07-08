@@ -1,6 +1,6 @@
 # 05 · CLI 命令参考
 
-> `TinyClaw.java` 注册了 8 个子命令 + `version`。本章逐一说明用法。
+> `TinyClaw.java` 注册了 9 个子命令 + `version`。本章逐一说明用法。
 
 ---
 
@@ -15,6 +15,7 @@
 | `cron` | `CronCommand` | 管理定时任务 |
 | `skills` | `SkillsCommand` | 管理技能插件 |
 | `mcp` | `McpCommand` | 管理 MCP 服务器连接 |
+| `plugins` | `PluginsCommand` | 管理插件（Claude Code / OpenClaw 兼容） |
 | `demo` | `DemoCommand` | 运行内置演示流程 |
 | `version` / `-v` / `--version` | 内置 | 显示版本号 |
 
@@ -260,7 +261,36 @@ tinyclaw demo agent-basic
 
 ---
 
-## 5.10 `version` / `-v` / `--version`
+## 5.10 `plugins` — 插件管理
+
+```bash
+tinyclaw plugins <list|inspect|install|marketplace> [args]
+```
+
+| 子命令 | 作用 |
+|--------|------|
+| `list` | 列出已发现插件（`✓` 允许 / `✗` 未在 `plugins.allow`） |
+| `inspect <id>` | 查看插件清单与组件（技能根 / MCP / hooks / agents） |
+| `install <source>` | 从本地路径 / GitHub / git 安装 |
+| `install <plugin>@<marketplace>` | 从已注册市场按名选装 |
+| `marketplace add <source>` | 注册插件市场 |
+| `marketplace list` | 列出已注册市场 |
+| `marketplace remove <name>` | 移除市场 |
+
+安装来源示例：
+
+```bash
+tinyclaw plugins install ./my-plugin                        # 本地路径
+tinyclaw plugins install owner/repo                         # GitHub 简短
+tinyclaw plugins install git:https://host/x/y.git@v1.0.0    # 指定 ref
+tinyclaw plugins install quality-review@my-plugins          # 市场选装
+```
+
+> 安装后需在 `config.json` 的 `plugins.allow` 中加入该 id 并重启网关以启用。完整机制见 [22 · 插件机制](22-plugins.md)。
+
+---
+
+## 5.11 `version` / `-v` / `--version`
 
 ```bash
 tinyclaw version
@@ -272,7 +302,7 @@ tinyclaw --version
 
 ---
 
-## 5.11 退出码约定
+## 5.12 退出码约定
 
 | 退出码 | 含义 |
 |--------|------|
@@ -283,7 +313,7 @@ tinyclaw --version
 
 ---
 
-## 5.12 新增子命令
+## 5.13 新增子命令
 
 见 [20 · 扩展开发](20-extending.md)：
 1. 继承 `CliCommand`
@@ -292,7 +322,7 @@ tinyclaw --version
 
 ---
 
-## 5.13 下一步
+## 5.14 下一步
 
 - 深入 Agent 引擎 → [06 · Agent 引擎](06-agent-engine.md)
 - 想了解网关引导流程 → [07 · 消息总线与通道](07-message-bus-and-channels.md)

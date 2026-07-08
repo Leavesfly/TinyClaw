@@ -320,6 +320,11 @@ public abstract class CliCommand {
         if (orchestrator != null) {
             CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
             collaborateTool.setLLMContext(provider, config.getAgent().getModel());
+            // 注入插件注册的 agent 角色库，使主 Agent 可在 collaborate 中按名复用插件 agent
+            io.leavesfly.tinyclaw.plugins.PluginManager pluginManager = agentRuntime.getPluginManager();
+            if (pluginManager != null && !pluginManager.getPluginAgentsByName().isEmpty()) {
+                collaborateTool.setPluginAgents(pluginManager.getPluginAgentsByName());
+            }
             agentRuntime.registerTool(collaborateTool);
         }
     }

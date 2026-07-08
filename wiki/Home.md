@@ -53,6 +53,7 @@
 |---|------|------|
 | 20 | [扩展开发指南](20-extending.md) | 如何新增通道 / 工具 / 策略 / Provider / MCP 服务器 |
 | 21 | [FAQ 与故障排查](21-faq-troubleshooting.md) | 常见问题与诊断步骤 |
+| 22 | [插件机制](22-plugins.md) | 兼容 Claude Code / OpenClaw 插件：发现 / 安装 / marketplace / 组件适配 |
 
 ---
 
@@ -92,6 +93,7 @@ java -jar target/tinyclaw-0.1.0.jar agent -m "你好，介绍一下你自己"
 | `web/` | Web 控制台 | [17](17-web-console.md) |
 | `voice/` | 语音转写 | [18](18-voice.md) |
 | `hooks/` | Hook 钩子 | [19](19-hooks.md) |
+| `plugins/` | 插件机制（Claude Code / OpenClaw 兼容） | [22](22-plugins.md) |
 | `config/` | 配置模型 | [04](04-configuration.md) |
 | `cli/` | 命令行入口 | [05](05-cli-commands.md) |
 

@@ -136,9 +136,16 @@ public class PluginsCommand extends CliCommand {
                     System.out.println("  MCP servers: " + m.getMcpServers().size() + " 个");
                 }
                 if (m.hasHooks()) {
-                    java.util.List<String> events = new ArrayList<>();
+                    List<String> events = new ArrayList<>();
                     m.getHooks().fieldNames().forEachRemaining(events::add);
                     System.out.println("  hooks   : " + String.join(", ", events));
+                }
+                if (m.hasAgents()) {
+                    List<String> names = new ArrayList<>();
+                    for (PluginManifest.AgentDefinition a : m.getAgents()) {
+                        names.add(a.getName());
+                    }
+                    System.out.println("  agents  : " + String.join(", ", names));
                 }
                 return 0;
             }

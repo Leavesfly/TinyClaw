@@ -96,7 +96,7 @@ public class MemoryEvolver {
             try {
                 gatherAndConsolidate();
             } catch (Exception e) {
-                logger.error("Gather and consolidate phase failed", Map.of("error", e.getMessage()));
+                logEvolutionFailure("Gather and consolidate phase failed", e);
             }
 
             lastEvolutionTimeMs.set(System.currentTimeMillis());
@@ -107,7 +107,7 @@ public class MemoryEvolver {
         try {
             pruneAndIndex();
         } catch (Exception e) {
-            logger.error("Prune and index phase failed", Map.of("error", e.getMessage()));
+            logEvolutionFailure("Prune and index phase failed", e);
         }
 
         logger.info("Memory evolution cycle completed",
@@ -167,8 +167,32 @@ public class MemoryEvolver {
                 }
             }
         } catch (Exception e) {
-            logger.error("Failed to consolidate memories", Map.of("error", e.getMessage()));
+            logEvolutionFailure("Failed to consolidate memories", e);
         }
+    }
+
+    /**
+     * 记录记忆进化阶段失败的详细日志，包含异常类型、根因及完整堆栈。
+     * 原日志仅含外层包装异常消息（如 LLMException 的 "执行请求失败"），会丢失底层网络根因。
+     */
+    private void logEvolutionFailure(String message, Exception e) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("error", e.getMessage());
+        fields.put("error_type", e.getClass().getName());
+        fields.put("root_cause", rootCauseMessage(e));
+        // 传入异常对象以输出完整调用堆栈
+        logger.error(message, fields, e);
+    }
+
+    /**
+     * 提取异常链最底层的根因信息（类名 + 消息）。
+     */
+    private static String rootCauseMessage(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getName() + ": " + cause.getMessage();
     }
 
     /**

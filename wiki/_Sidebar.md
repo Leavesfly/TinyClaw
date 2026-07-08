@@ -37,3 +37,4 @@
 
 - [20 · 扩展开发](20-extending.md)
 - [21 · FAQ](21-faq-troubleshooting.md)
+- [22 · 插件机制](22-plugins.md)

@@ -30,6 +30,12 @@ public class CollaborateTool implements Tool, StreamAwareTool {
     
     /** 流式回调（用于输出协同过程） */
     private volatile LLMProvider.EnhancedStreamCallback streamCallback;
+
+    /**
+     * 插件注册的 agent 命名索引（roleName -&gt; 角色）。
+     * 当调用方省略某角色的 prompt 时，按 name 从此处复用插件 agent 的提示词/模型/工具。
+     */
+    private volatile Map<String, AgentRole> pluginAgents = java.util.Collections.emptyMap();
     
     public CollaborateTool() {
         // orchestrator 需要在注册时设置
@@ -52,6 +58,15 @@ public class CollaborateTool implements Tool, StreamAwareTool {
     public void setLLMContext(LLMProvider provider, String model) {
         this.provider = provider;
         this.model = model;
+    }
+
+    /**
+     * 注入插件注册的 agent 命名索引，使主 Agent 可在 roles 中仅给出 name 即复用插件 agent。
+     *
+     * @param pluginAgents roleName -&gt; AgentRole 映射，可为 null（等价于空）
+     */
+    public void setPluginAgents(Map<String, AgentRole> pluginAgents) {
+        this.pluginAgents = pluginAgents != null ? pluginAgents : java.util.Collections.emptyMap();
     }
     
     /**
@@ -100,14 +115,15 @@ public class CollaborateTool implements Tool, StreamAwareTool {
         // roles：参与角色
         Map<String, Object> rolesParam = new LinkedHashMap<>();
         rolesParam.put("type", "array");
-        rolesParam.put("description", "参与角色列表，每个角色包含name(角色名)和prompt(角色系统提示词)");
+        rolesParam.put("description", "参与角色列表。每个角色含 name(角色名) 与 prompt(系统提示词)；"
+                + "若省略 prompt 且 name 命中已安装插件注册的 agent，则自动复用该插件 agent 的提示词/模型/工具");
         Map<String, Object> roleItem = new LinkedHashMap<>();
         roleItem.put("type", "object");
         Map<String, Object> roleProps = new LinkedHashMap<>();
         roleProps.put("name", Map.of("type", "string", "description", "角色名称"));
         roleProps.put("prompt", Map.of("type", "string", "description", "角色的系统提示词，定义角色的专业背景和行为"));
         roleItem.put("properties", roleProps);
-        roleItem.put("required", Arrays.asList("name", "prompt"));
+        roleItem.put("required", Arrays.asList("name"));
         rolesParam.put("items", roleItem);
         properties.put("roles", rolesParam);
 
@@ -220,10 +236,10 @@ public class CollaborateTool implements Tool, StreamAwareTool {
                     for (Map<String, Object> roleData : rolesData) {
                         String roleName = (String) roleData.get("name");
                         String rolePrompt = (String) roleData.get("prompt");
-                        if (roleName != null && rolePrompt != null) {
-                            AgentRole assignee = AgentRole.of(roleName, rolePrompt);
+                        AgentRole assignee = resolveRole(roleName, rolePrompt);
+                        if (assignee != null) {
                             TeamTask task = new TeamTask(roleName, roleName, assignee);
-                            task.setDescription(rolePrompt);
+                            task.setDescription(assignee.getSystemPrompt());
                             config.addTask(task);
                         }
                     }
@@ -246,15 +262,49 @@ public class CollaborateTool implements Tool, StreamAwareTool {
         for (Map<String, Object> roleData : rolesData) {
             String roleName = (String) roleData.get("name");
             String rolePrompt = (String) roleData.get("prompt");
-            if (roleName != null && rolePrompt != null) {
-                AgentRole role = AgentRole.of(roleName, rolePrompt);
-                List<String> allowedTools = (List<String>) roleData.get("allowed_tools");
-                if (allowedTools != null) {
-                    allowedTools.forEach(role::addAllowedTool);
-                }
-                config.addRole(role);
+            AgentRole role = resolveRole(roleName, rolePrompt);
+            if (role == null) {
+                logger.warn("跳过无效角色（缺少 prompt 且未匹配已注册插件 agent）",
+                        Map.of("role", String.valueOf(roleName)));
+                continue;
             }
+            List<String> allowedTools = (List<String>) roleData.get("allowed_tools");
+            if (allowedTools != null) {
+                allowedTools.forEach(role::addAllowedTool);
+            }
+            config.addRole(role);
         }
+    }
+
+    /**
+     * 解析单个角色：调用方显式提供 prompt 时直接构造；否则按 name 引用已注册的插件 agent。
+     *
+     * @param roleName   角色名
+     * @param rolePrompt 角色系统提示词（可为空，表示引用插件 agent）
+     * @return 解析出的角色副本；无法解析时返回 null
+     */
+    private AgentRole resolveRole(String roleName, String rolePrompt) {
+        if (roleName == null || roleName.isEmpty()) {
+            return null;
+        }
+        if (rolePrompt != null && !rolePrompt.isEmpty()) {
+            return AgentRole.of(roleName, rolePrompt);
+        }
+        // prompt 省略：尝试引用已注册的插件 agent（复制一份，避免污染共享实例）
+        AgentRole pluginRole = pluginAgents.get(roleName);
+        return pluginRole != null ? copyRole(pluginRole) : null;
+    }
+
+    /**
+     * 复制角色，避免后续 addAllowedTool 等修改污染插件角色库中的共享实例。
+     */
+    private AgentRole copyRole(AgentRole src) {
+        AgentRole role = AgentRole.of(src.getRoleName(), src.getSystemPrompt());
+        role.setRoleId(src.getRoleId());
+        role.setDescription(src.getDescription());
+        role.setModel(src.getModel());
+        role.setAllowedTools(new ArrayList<>(src.getAllowedTools()));
+        return role;
     }
 
     private CollaborationConfig.DiscussStyle parseDiscussStyle(String style) {

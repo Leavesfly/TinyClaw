@@ -179,4 +179,72 @@ class ManifestParserTest {
         assertNotNull(m);
         assertFalse(m.hasHooks());
     }
+
+    @Test
+    void testParseAgentsFromDefaultDir(@TempDir Path dir) throws IOException {
+        Path meta = Files.createDirectories(dir.resolve(".claude-plugin"));
+        Files.writeString(meta.resolve("plugin.json"), "{ \"name\": \"p\" }");
+        Path agentsDir = Files.createDirectories(dir.resolve("agents"));
+        Files.writeString(agentsDir.resolve("reviewer.md"),
+                "---\nname: code-reviewer\ndescription: Review code quality\nmodel: qwen-max\ntools: Read, Grep, Bash\n---\nYou are a strict code reviewer.");
+
+        PluginManifest m = parser.parse(dir);
+
+        assertNotNull(m);
+        assertTrue(m.hasAgents());
+        assertTrue(m.getDeclaredComponents().contains("agents"));
+        assertEquals(1, m.getAgents().size());
+        PluginManifest.AgentDefinition a = m.getAgents().get(0);
+        assertEquals("code-reviewer", a.getName());
+        assertEquals("Review code quality", a.getDescription());
+        assertEquals("qwen-max", a.getModel());
+        assertEquals(3, a.getTools().size());
+        assertTrue(a.getTools().contains("Read"));
+        assertTrue(a.getSystemPrompt().contains("strict code reviewer"));
+    }
+
+    @Test
+    void testAgentNameFallsBackToFileName(@TempDir Path dir) throws IOException {
+        Path meta = Files.createDirectories(dir.resolve(".claude-plugin"));
+        Files.writeString(meta.resolve("plugin.json"), "{ \"name\": \"p\" }");
+        Path agentsDir = Files.createDirectories(dir.resolve("agents"));
+        Files.writeString(agentsDir.resolve("planner.md"), "You plan tasks step by step.");
+
+        PluginManifest m = parser.parse(dir);
+
+        assertNotNull(m);
+        assertEquals(1, m.getAgents().size());
+        assertEquals("planner", m.getAgents().get(0).getName());
+        assertEquals("You plan tasks step by step.", m.getAgents().get(0).getSystemPrompt());
+    }
+
+    @Test
+    void testParseAgentsFieldAsFilePath(@TempDir Path dir) throws IOException {
+        Path meta = Files.createDirectories(dir.resolve(".claude-plugin"));
+        Files.writeString(meta.resolve("plugin.json"),
+                "{ \"name\": \"p\", \"agents\": \"experts/security.md\" }");
+        Path experts = Files.createDirectories(dir.resolve("experts"));
+        Files.writeString(experts.resolve("security.md"),
+                "---\nname: sec-auditor\n---\nYou audit security issues.");
+
+        PluginManifest m = parser.parse(dir);
+
+        assertNotNull(m);
+        assertTrue(m.hasAgents());
+        assertEquals("sec-auditor", m.getAgents().get(0).getName());
+    }
+
+    @Test
+    void testAgentWithoutBodySkipped(@TempDir Path dir) throws IOException {
+        Path meta = Files.createDirectories(dir.resolve(".claude-plugin"));
+        Files.writeString(meta.resolve("plugin.json"), "{ \"name\": \"p\" }");
+        Path agentsDir = Files.createDirectories(dir.resolve("agents"));
+        Files.writeString(agentsDir.resolve("empty.md"),
+                "---\nname: empty\ndescription: no body\n---\n");
+
+        PluginManifest m = parser.parse(dir);
+
+        assertNotNull(m);
+        assertFalse(m.hasAgents());
+    }
 }

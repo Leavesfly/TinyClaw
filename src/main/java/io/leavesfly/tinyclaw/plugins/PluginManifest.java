@@ -54,6 +54,13 @@ public class PluginManifest {
      */
     private JsonNode hooks;
 
+    /**
+     * 归一化后的 agent 定义列表（来自 {@code agents/*.md} 与清单 {@code agents} 引用）。
+     * 每个定义含 name / description / model / tools / systemPrompt，
+     * 由 {@code AgentComponentAdapter} 适配为 collaboration 的 AgentRole。
+     */
+    private final List<AgentDefinition> agents = new ArrayList<>();
+
     /** 声明的组件摘要（供 inspect 展示，如 "skills"、"mcpServers"）。 */
     private final List<String> declaredComponents = new ArrayList<>();
 
@@ -162,5 +169,87 @@ public class PluginManifest {
     /** 是否包含可注册的 hooks 组件。 */
     public boolean hasHooks() {
         return hooks != null && hooks.size() > 0;
+    }
+
+    public List<AgentDefinition> getAgents() {
+        return agents;
+    }
+
+    public void addAgent(AgentDefinition agent) {
+        if (agent != null && agent.getName() != null && !agent.getName().isEmpty()) {
+            agents.add(agent);
+        }
+    }
+
+    /** 是否包含可装配的 agent（子代理）组件。 */
+    public boolean hasAgents() {
+        return !agents.isEmpty();
+    }
+
+    /**
+     * 单个 agent（子代理）定义。
+     *
+     * <p>对齐 Claude Code subagent 的 {@code agents/*.md} 格式：YAML frontmatter 提供
+     * {@code name}/{@code description}/{@code model}/{@code tools}，正文（frontmatter 之后）
+     * 作为该子代理的系统提示词。{@code tools} 为空表示不限制工具集。</p>
+     */
+    public static class AgentDefinition {
+
+        /** 子代理名称（供主 Agent 按名引用）。 */
+        private String name;
+
+        /** 用途描述（供主 Agent 路由判断何时委派）。 */
+        private String description;
+
+        /** 指定模型（可选，缺省沿用编排器默认模型）。 */
+        private String model;
+
+        /** 允许使用的工具白名单（可选，空表示不限制）。 */
+        private final List<String> tools = new ArrayList<>();
+
+        /** 系统提示词（frontmatter 之后的正文）。 */
+        private String systemPrompt;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public String getModel() {
+            return model;
+        }
+
+        public void setModel(String model) {
+            this.model = model;
+        }
+
+        public List<String> getTools() {
+            return tools;
+        }
+
+        public void addTool(String tool) {
+            if (tool != null && !tool.isBlank()) {
+                tools.add(tool.trim());
+            }
+        }
+
+        public String getSystemPrompt() {
+            return systemPrompt;
+        }
+
+        public void setSystemPrompt(String systemPrompt) {
+            this.systemPrompt = systemPrompt;
+        }
     }
 }

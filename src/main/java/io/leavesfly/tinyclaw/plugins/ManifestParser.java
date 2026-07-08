@@ -10,7 +10,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 插件清单解析器。
@@ -37,6 +42,12 @@ public class ManifestParser {
 
     /** 默认 MCP 配置文件。 */
     private static final String DEFAULT_MCP_FILE = ".mcp.json";
+
+    /** 默认 agent（子代理）子目录。 */
+    private static final String DEFAULT_AGENTS_DIR = "agents";
+
+    /** YAML frontmatter 提取正则（{@code ---} 分隔符之间的内容）。 */
+    private static final Pattern FRONTMATTER_PATTERN = Pattern.compile("(?s)^---\\r?\\n(.*?)\\r?\\n---");
 
     /**
      * 解析给定插件目录，返回统一清单模型。
@@ -90,6 +101,7 @@ public class ManifestParser {
             m.addDeclaredComponent("skills");
             resolveMcpServers(pluginDir, null, m);
             resolveHooks(pluginDir, null, m);
+            resolveAgents(pluginDir, null, m);
             return m;
         }
 
@@ -137,8 +149,11 @@ public class ManifestParser {
             // hooks：默认 hooks/hooks.json + 清单 hooks（string|array|object）
             resolveHooks(pluginDir, root.get("hooks"), m);
 
+            // agents：默认 agents/*.md + 清单 agents（路径引用，指向 .md 文件或目录）
+            resolveAgents(pluginDir, root.get("agents"), m);
+
             // 其它组件仅登记（首期不执行）
-            for (String comp : new String[]{"commands", "agents", "lspServers"}) {
+            for (String comp : new String[]{"commands", "lspServers"}) {
                 if (root.has(comp)) {
                     m.addDeclaredComponent(comp);
                 }
@@ -369,5 +384,141 @@ public class ManifestParser {
             return node.get(field).asText();
         }
         return null;
+    }
+
+    /**
+     * 解析并登记 agent（子代理）：默认 {@code agents/*.md} + 清单 {@code agents} 路径引用。
+     *
+     * <p>每个 markdown 文件视为一个 Claude Code subagent：YAML frontmatter 提供
+     * name/description/model/tools，正文作为系统提示词。变量留待装配阶段替换。</p>
+     *
+     * @param pluginDir  插件根
+     * @param agentsNode 清单中的 agents 节点（string|array 路径），可为 null
+     * @param manifest   待填充的清单模型
+     */
+    private void resolveAgents(Path pluginDir, JsonNode agentsNode, PluginManifest manifest) {
+        int before = manifest.getAgents().size();
+
+        // 默认 agents/ 目录下所有 *.md
+        Path defaultDir = pluginDir.resolve(DEFAULT_AGENTS_DIR);
+        if (Files.isDirectory(defaultDir)) {
+            for (Path md : listMarkdown(defaultDir)) {
+                addAgentFromFile(md, manifest);
+            }
+        }
+
+        // 清单 agents 字段：路径引用（.md 文件或目录）
+        for (String rel : collectPaths(agentsNode)) {
+            Path p = safeResolve(pluginDir, rel);
+            if (p == null) {
+                continue;
+            }
+            if (Files.isDirectory(p)) {
+                for (Path md : listMarkdown(p)) {
+                    addAgentFromFile(md, manifest);
+                }
+            } else if (Files.isRegularFile(p)) {
+                addAgentFromFile(p, manifest);
+            }
+        }
+
+        if (manifest.getAgents().size() > before) {
+            manifest.addDeclaredComponent("agents");
+        }
+    }
+
+    /** 列出目录下的 *.md 文件（按文件名稳定排序，保证确定性）。 */
+    private List<Path> listMarkdown(Path dir) {
+        List<Path> result = new ArrayList<>();
+        try (java.util.stream.Stream<Path> stream = Files.list(dir)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().toLowerCase().endsWith(".md"))
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                    .forEach(result::add);
+        } catch (IOException e) {
+            logger.warn("读取插件 agents 目录失败: " + dir + " - " + e.getMessage());
+        }
+        return result;
+    }
+
+    /** 解析单个 agent markdown 文件并登记到清单。 */
+    private void addAgentFromFile(Path mdFile, PluginManifest manifest) {
+        try {
+            String content = Files.readString(mdFile);
+            Map<String, String> yaml = parseSimpleYaml(extractFrontmatter(content));
+            String body = stripFrontmatter(content).trim();
+
+            PluginManifest.AgentDefinition def = new PluginManifest.AgentDefinition();
+            String name = yaml.get("name");
+            if (name == null || name.isEmpty()) {
+                name = mdFile.getFileName().toString().replaceFirst("(?i)\\.md$", "");
+            }
+            def.setName(name);
+            def.setDescription(yaml.get("description"));
+            def.setModel(yaml.get("model"));
+            for (String tool : parseInlineList(yaml.get("tools"))) {
+                def.addTool(tool);
+            }
+            def.setSystemPrompt(body);
+
+            if (!body.isEmpty()) {
+                manifest.addAgent(def);
+            } else {
+                logger.warn("插件 agent 缺少系统提示词正文，已跳过: " + mdFile);
+            }
+        } catch (IOException e) {
+            logger.warn("读取插件 agent 文件失败: " + mdFile + " - " + e.getMessage());
+        }
+    }
+
+    /** 提取 YAML frontmatter（{@code ---} 分隔符之间的内容），无则返回空串。 */
+    private String extractFrontmatter(String content) {
+        Matcher matcher = FRONTMATTER_PATTERN.matcher(content);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    /** 去除 YAML frontmatter，返回正文。 */
+    private String stripFrontmatter(String content) {
+        return content.replaceFirst("(?s)^---\\r?\\n.*?\\r?\\n---\\r?\\n?", "");
+    }
+
+    /** 解析简单 {@code key: value} 形式的 YAML。 */
+    private Map<String, String> parseSimpleYaml(String content) {
+        Map<String, String> result = new HashMap<>();
+        if (content == null) {
+            return result;
+        }
+        for (String line : content.split("\\r?\\n")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            int colon = trimmed.indexOf(':');
+            if (colon > 0) {
+                String key = trimmed.substring(0, colon).trim();
+                String value = trimmed.substring(colon + 1).trim().replaceAll("^['\"]|['\"]$", "");
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    /** 解析内联列表：支持 {@code [a, b, c]} 或逗号分隔字符串。 */
+    private List<String> parseInlineList(String raw) {
+        List<String> result = new ArrayList<>();
+        if (raw == null || raw.trim().isEmpty()) {
+            return result;
+        }
+        String value = raw.trim();
+        if (value.startsWith("[") && value.endsWith("]")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        for (String part : value.split(",")) {
+            String item = part.trim().replaceAll("^['\"]|['\"]$", "");
+            if (!item.isEmpty()) {
+                result.add(item);
+            }
+        }
+        return result;
     }
 }
