@@ -1454,10 +1454,15 @@ class TinyClawConsole {
     addMessage(content, role, images = [], scroll = true) {
         const messagesDiv = document.getElementById('chatMessages');
         const div = document.createElement('div');
-        div.className = `message ${role}`;
-        
+
+        // 后台系统通知（如 subagent 异步任务完成结果）虽以 user 角色存储（作为触发 LLM 的输入），
+        // 但本质是系统/模型侧产出，应按模型输出样式展示，而非用户输入气泡样式
+        const isSystemNotice = role === 'user' && this.isSystemNoticeContent(content);
+        const displayRole = isSystemNotice ? 'assistant' : role;
+        div.className = `message ${displayRole}${isSystemNotice ? ' system-notice' : ''}`;
+
         let html = '';
-        
+
         // 显示图片（如果有）
         if (images && images.length > 0) {
             html += '<div class="message-images">';
@@ -1468,19 +1473,28 @@ class TinyClawConsole {
             }
             html += '</div>';
         }
-        
-        // assistant 消息使用 Markdown 渲染，user 消息纯文本
-        if (role === 'assistant' && typeof marked !== 'undefined') {
+
+        // assistant 消息（含系统通知）使用 Markdown 渲染，user 消息纯文本
+        if (displayRole === 'assistant' && typeof marked !== 'undefined') {
             html += `<div class="message-content markdown-body">${marked.parse(content || '')}</div>`;
         } else {
             html += `<div class="message-content">${this.escapeHtml(content || '')}</div>`;
         }
-        
+
         div.innerHTML = html;
         messagesDiv.appendChild(div);
         if (scroll) {
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
+    }
+
+    /**
+     * 判断消息内容是否为后台系统通知（如 subagent 异步任务完成回流的消息）。
+     * 这类消息由后端以 `[System: <sender>] ...` 前缀写入会话历史（角色为 user，用于触发 LLM），
+     * 前端据此将其按模型输出样式展示，避免误显示为用户输入。
+     */
+    isSystemNoticeContent(content) {
+        return typeof content === 'string' && /^\s*\[System:\s/.test(content);
     }
 
     // ==================== Channels ====================

@@ -43,4 +43,36 @@ public final class HookRegistry {
     public boolean isEmpty() {
         return entries.isEmpty();
     }
+
+    /**
+     * 合并另一个注册表，返回新的不可变注册表。
+     *
+     * <p>同事件下，本注册表的条目排在前、{@code other} 的排在后。
+     * 用于把插件提供的 hooks 叠加到用户 {@code hooks.json} 之后：
+     * 由于 {@link HookDispatcher} 对 deny 短路，用户自定义 hooks 优先生效。</p>
+     *
+     * @param other 待叠加的注册表，为 null 或空时直接返回当前实例
+     * @return 合并后的注册表
+     */
+    public HookRegistry mergedWith(HookRegistry other) {
+        if (other == null || other.isEmpty()) {
+            return this;
+        }
+        if (this.isEmpty()) {
+            return other;
+        }
+        Map<HookEvent, List<HookEntry>> map = new EnumMap<>(HookEvent.class);
+        for (HookEvent event : HookEvent.values()) {
+            List<HookEntry> a = this.getEntries(event);
+            List<HookEntry> b = other.getEntries(event);
+            if (a.isEmpty() && b.isEmpty()) {
+                continue;
+            }
+            List<HookEntry> combined = new ArrayList<>(a.size() + b.size());
+            combined.addAll(a);
+            combined.addAll(b);
+            map.put(event, combined);
+        }
+        return new HookRegistry(map);
+    }
 }

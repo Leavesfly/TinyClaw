@@ -146,7 +146,8 @@ public class SessionsHandler {
                                 r.put("success", record.isSuccess());
                                 // collaborate 工具调用：附带协同过程详情
                                 if ("collaborate".equals(record.getToolName())) {
-                                    appendCollaborationDetailToToolRecord(r, record.getArgsSummary());
+                                    appendCollaborationDetailToToolRecord(
+                                            r, record.getArgsSummary(), record.getResultSummary());
                                 }
                                 toolCallsArray.add(r);
                             }
@@ -178,49 +179,76 @@ public class SessionsHandler {
      * 从 collaboration 目录加载匹配的协同记录，将多 Agent 对话历史、
      * 参与者、统计指标等嵌入到工具调用记录的 collaborationDetail 字段中。
      *
-     * <p>匹配策略：从 collaborate 工具的 argsSummary 中提取 topic/goal，
-     * 与协同记录的 goal 进行匹配。
+     * <p>匹配策略（精确匹配本次调用对应的协同记录，避免展示其他会话的协同卡片）：
+     * <ul>
+     *   <li>resultSummary 是本次协同结论（conclusion）的截断前缀，与协同记录的 conclusion
+     *       同源，是最强的唯一匹配信号；</li>
+     *   <li>argsSummary 中含协同 topic，与记录的 goal 匹配作为辅助信号；</li>
+     *   <li>两者均未命中时不再降级取“全局最新记录”，杜绝跨会话污染。</li>
+     * </ul>
+     * 注意：协同记录的 sessionId 是协同内部生成的随机 UUID，与 Web 会话 key 无关，不能据此过滤。
      *
      * @param toolRecordNode collaborate 工具调用记录的 JSON 节点
      * @param argsSummary    工具调用参数摘要
+     * @param resultSummary  工具调用结果摘要（协同结论前缀）
      */
-    private void appendCollaborationDetailToToolRecord(ObjectNode toolRecordNode, String argsSummary) {
+    private void appendCollaborationDetailToToolRecord(ObjectNode toolRecordNode,
+                                                       String argsSummary, String resultSummary) {
         if (collaborationDir == null) {
-            logger.info("collaborationDir is null, skip", Map.of());
             return;
         }
 
-        logger.info("Loading collaboration records", Map.of("dir", collaborationDir));
         List<CollaborationRecord> allRecords = CollaborationRecord.loadAll(collaborationDir);
-        logger.info("Loaded collaboration records", Map.of("count", allRecords.size(), "dir", collaborationDir));
         if (allRecords.isEmpty()) {
             return;
         }
 
-        // 从 argsSummary 中提取 topic 关键词进行匹配
-        // argsSummary 格式示例: {mode=debate, topic=AI 会毁灭人类, roles=[...]}
-        CollaborationRecord matchedRecord = null;
+        String resultPrefix = stripEllipsis(resultSummary);
+
+        CollaborationRecord matched = null;
+        CollaborationRecord goalOnlyMatch = null;
+        int goalMatchCount = 0;
+
         for (CollaborationRecord record : allRecords) {
-            if (record.getGoal() != null && argsSummary != null
-                    && argsSummary.contains(record.getGoal())) {
-                matchedRecord = record;
-                break;
+            boolean goalMatch = record.getGoal() != null && argsSummary != null
+                    && argsSummary.contains(record.getGoal());
+            boolean resultMatch = record.getConclusion() != null && !resultPrefix.isEmpty()
+                    && record.getConclusion().startsWith(resultPrefix);
+
+            if (resultMatch) {
+                matched = record;
+                if (goalMatch) {
+                    break; // goal + result 双重命中，最精确
+                }
+            }
+            if (goalMatch) {
+                goalMatchCount++;
+                goalOnlyMatch = record;
             }
         }
 
-        // 降级：取最新的协同记录（按 endTime 排序）
-        if (matchedRecord == null && !allRecords.isEmpty()) {
-            matchedRecord = allRecords.stream()
-                    .max(java.util.Comparator.comparingLong(CollaborationRecord::getEndTime))
-                    .orElse(null);
+        // 结果摘要未命中时，仅当 goal 唯一命中才使用，避免多会话相同 topic 误配
+        if (matched == null && goalMatchCount == 1) {
+            matched = goalOnlyMatch;
         }
 
-        if (matchedRecord == null) {
+        if (matched == null) {
             return;
         }
 
-        ObjectNode detail = buildCollaborationDetailNode(matchedRecord);
+        ObjectNode detail = buildCollaborationDetailNode(matched);
         toolRecordNode.set("collaborationDetail", detail);
+    }
+
+    /**
+     * 去除截断产生的尾部省略号（{@link ToolCallRecord#truncate} 追加的 "…"），
+     * 得到可与协同记录 conclusion 做前缀匹配的结果摘要原文。
+     */
+    private static String stripEllipsis(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.endsWith("…") ? value.substring(0, value.length() - 1) : value;
     }
 
     /**

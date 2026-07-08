@@ -690,6 +690,11 @@ body {
     border-bottom-left-radius: 4px;
 }
 
+/* 后台系统通知（如 subagent 异步任务结果）：沿用模型输出样式，并附加左侧系统标识 */
+.message.assistant.system-notice .message-content {
+    border-left: 3px solid var(--primary);
+}
+
 .chat-input-container {
     position: relative;
     padding: 16px 24px;

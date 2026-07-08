@@ -3,13 +3,20 @@ package io.leavesfly.tinyclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import okhttp3.Cookie;
+import okhttp3.CookieJar;
+import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -32,6 +39,10 @@ public class WebFetchTool implements Tool {
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]+>");
     private static final Pattern WHITESPACE_PATTERN = Pattern.compile("\\s+");
     
+    // 重定向死循环通常源于服务端设置 Cookie 后重定向、再校验 Cookie；
+    // 默认 CookieJar.NO_COOKIES 不保存 Cookie，会导致无限重定向直至报 "Too many follow-up requests"。
+    private static final int MAX_RETRIES = 2;
+
     public WebFetchTool(int maxChars) {
         this.maxChars = maxChars > 0 ? maxChars : 50000;
         this.httpClient = new OkHttpClient.Builder()
@@ -39,6 +50,7 @@ public class WebFetchTool implements Tool {
                 .readTimeout(60, TimeUnit.SECONDS)
                 .followRedirects(true)
                 .followSslRedirects(true)
+                .cookieJar(new InMemoryCookieJar())
                 .build();
     }
     
@@ -112,21 +124,19 @@ public class WebFetchTool implements Tool {
         Request request = new Request.Builder()
                 .url(urlStr)
                 .header("User-Agent", USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                 .build();
         
-        try {
+        java.io.IOException lastError = null;
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
                     return "错误: HTTP " + response.code();
                 }
             
             String contentType = response.header("Content-Type", "");
-            String body;
-            try {
-                body = response.body() != null ? response.body().string() : "";
-            } catch (java.io.IOException e) {
-                throw new ToolException("读取响应体失败", e);
-            }
+            String body = response.body() != null ? response.body().string() : "";
             
             String text;
             String extractor;
@@ -171,10 +181,38 @@ public class WebFetchTool implements Tool {
             } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 throw new ToolException("序列化结果失败", e);
             }
+            } catch (java.io.InterruptedIOException e) {
+                // 连接/读取超时等瞬时问题，重试
+                lastError = e;
+                logger.warn("获取网页超时，重试中 (" + (attempt + 1) + "/" + (MAX_RETRIES + 1) + "): " + urlStr);
+            } catch (java.io.IOException e) {
+                throw new ToolException("获取网页内容失败: " + friendlyError(e), e);
             }
-        } catch (java.io.IOException e) {
-            throw new ToolException("获取网页内容失败: " + e.getMessage(), e);
         }
+        throw new ToolException("获取网页内容失败: " + friendlyError(lastError), lastError);
+    }
+    
+    /**
+     * 将底层网络异常转换为更易读的错误信息。
+     */
+    private String friendlyError(java.io.IOException e) {
+        if (e == null) {
+            return "未知错误";
+        }
+        String msg = e.getMessage();
+        if (e instanceof java.io.InterruptedIOException) {
+            return "连接或读取超时";
+        }
+        if (e instanceof java.net.ProtocolException && msg != null && msg.contains("Too many follow-up requests")) {
+            return "重定向次数过多（可能存在重定向循环）";
+        }
+        if (e instanceof javax.net.ssl.SSLPeerUnverifiedException || (msg != null && msg.contains("not verified"))) {
+            return "SSL 证书校验失败（证书与域名不匹配）: " + msg;
+        }
+        if (e instanceof java.net.UnknownHostException) {
+            return "无法解析域名: " + msg;
+        }
+        return msg != null ? msg : e.toString();
     }
     
     private String extractText(String html) {
@@ -189,5 +227,43 @@ public class WebFetchTool implements Tool {
         result = WHITESPACE_PATTERN.matcher(result.trim()).replaceAll(" ");
         
         return result;
+    }
+    
+    /**
+     * 简单的内存 CookieJar，按 host 保存 Cookie。
+     * 主要用于在重定向链中保留服务端下发的 Cookie，避免重定向死循环。
+     */
+    private static final class InMemoryCookieJar implements CookieJar {
+        private final Map<String, List<Cookie>> store = new ConcurrentHashMap<>();
+        
+        @Override
+        public void saveFromResponse(HttpUrl url, List<Cookie> cookies) {
+            List<Cookie> existing = store.computeIfAbsent(url.host(), k -> new ArrayList<>());
+            synchronized (existing) {
+                for (Cookie cookie : cookies) {
+                    // 同名 Cookie 覆盖旧值
+                    existing.removeIf(c -> c.name().equals(cookie.name()));
+                    existing.add(cookie);
+                }
+            }
+        }
+        
+        @Override
+        public List<Cookie> loadForRequest(HttpUrl url) {
+            List<Cookie> cookies = store.get(url.host());
+            if (cookies == null) {
+                return Collections.emptyList();
+            }
+            List<Cookie> valid = new ArrayList<>();
+            long now = System.currentTimeMillis();
+            synchronized (cookies) {
+                for (Cookie c : cookies) {
+                    if (c.expiresAt() >= now && c.matches(url)) {
+                        valid.add(c);
+                    }
+                }
+            }
+            return valid;
+        }
     }
 }

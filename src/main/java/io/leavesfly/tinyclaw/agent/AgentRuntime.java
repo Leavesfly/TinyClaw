@@ -20,6 +20,7 @@ import io.leavesfly.tinyclaw.mcp.MCPManager;
 
 import io.leavesfly.tinyclaw.memory.MemoryEvolver;
 import io.leavesfly.tinyclaw.memory.MemoryStore;
+import io.leavesfly.tinyclaw.plugins.PluginManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -65,6 +66,9 @@ public class AgentRuntime {
     /* ---------- 可热更新组件（volatile 保证线程可见性） ---------- */
     private volatile MCPManager mcpManager;
 
+    /** 插件管理器（可选，仅在 plugins.enabled=true 时初始化）。 */
+    private volatile PluginManager pluginManager;
+
     /**
      * Provider 切换时一次性替换的组件集合，通过 {@link ProviderComponents} 聚合，
      * 避免多个 volatile 字段在并发场景下出现部分更新的中间状态。
@@ -96,9 +100,17 @@ public class AgentRuntime {
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
 
-        // 初始化 Hook 调度器：从默认路径加载，必须在 providerManager.setProvider 之前，
+        // 初始化插件系统：发现插件并注入技能、收集 MCP 与 hooks。
+        // 必须在 HookDispatcher 与 MCP 初始化之前，使插件 hooks 能并入调度器、
+        // 插件 MCP server 能并入全局 MCP 配置。
+        initializePlugins();
+
+        // 初始化 Hook 调度器：默认 hooks.json 与插件 hooks 合并；必须在 providerManager.setProvider 之前，
         // 以便 ReActExecutor 首次构造时就能拿到 dispatcher。
         HookRegistry hookRegistry = HookConfigLoader.loadDefault();
+        if (pluginManager != null) {
+            hookRegistry = hookRegistry.mergedWith(pluginManager.getPluginHookRegistry());
+        }
         this.hookDispatcher = new HookDispatcher(hookRegistry);
 
         this.providerManager = new ProviderManager(config, contextBuilder, tools, sessions, workspace);
@@ -120,6 +132,34 @@ public class AgentRuntime {
         }
 
         initializeMCPServers();
+    }
+
+    // ==================== 插件系统 ====================
+
+    /**
+     * 初始化插件系统（兼容 Claude Code / OpenClaw 插件）。
+     *
+     * <p>必须在 {@link #initializeMCPServers()} 与 Hook 调度器构建之前调用：先发现插件、注入技能根，
+     * 把插件的 MCP server 合并进全局 MCP 配置（复用现有 MCPManager 连接逻辑），
+     * 并收集插件 hooks 供 Hook 调度器叠加。</p>
+     */
+    private void initializePlugins() {
+        try {
+            if (config.getPlugins() == null || !config.getPlugins().isEnabled()) {
+                return;
+            }
+            pluginManager = new PluginManager(config);
+            pluginManager.initialize(getSkillsLoader());
+            pluginManager.mergeMcpServersInto(config.getMcpServers());
+        } catch (Exception e) {
+            logger.error("Failed to initialize plugins", Map.of(
+                    "error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /** 获取插件管理器（可能为 null），供外部组件（如 Web Handler）查询已装插件。 */
+    public PluginManager getPluginManager() {
+        return pluginManager;
     }
 
     // ==================== Provider 管理 ====================

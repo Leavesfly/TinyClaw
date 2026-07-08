@@ -61,6 +61,7 @@ public class Config {
     private ToolsConfig tools;                  // 工具配置
     private SocialNetworkConfig socialNetwork;  // 社交网络配置
     private MCPServersConfig mcpServers;        // MCP 服务器配置
+    private PluginsConfig plugins;              // 插件系统配置
 
     /**
      * 构造默认配置。
@@ -76,6 +77,7 @@ public class Config {
         this.tools = new ToolsConfig();
         this.socialNetwork = new SocialNetworkConfig();
         this.mcpServers = new MCPServersConfig();
+        this.plugins = new PluginsConfig();
     }
 
     // Getters and Setters
@@ -144,6 +146,17 @@ public class Config {
 
     public void setMcpServers(MCPServersConfig mcpServers) {
         this.mcpServers = mcpServers;
+    }
+
+    public PluginsConfig getPlugins() {
+        if (plugins == null) {
+            plugins = new PluginsConfig();
+        }
+        return plugins;
+    }
+
+    public void setPlugins(PluginsConfig plugins) {
+        this.plugins = plugins;
     }
 
     /**

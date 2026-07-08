@@ -43,6 +43,11 @@ public class SkillsLoader {
     private final String globalSkills;
 
     /**
+     * 额外技能根（由插件系统注入），优先级低于 workspace、高于 global。
+     */
+    private final List<ExtraRoot> extraRoots = new ArrayList<>();
+
+    /**
      * 内置技能名称列表（从 classpath 加载）
      */
     private static final List<String> BUILTIN_SKILL_NAMES = Arrays.asList(
@@ -68,6 +73,35 @@ public class SkillsLoader {
     }
 
     /**
+     * 注册一个额外的技能根目录（供插件系统注入插件自带的 skills 目录）。
+     *
+     * @param path     技能根目录的绝对路径
+     * @param source   来源标识（如 {@code plugin:<id>}）
+     * @param pluginId 来源插件 id，可为 null
+     */
+    public void addSkillRoot(String path, String source, String pluginId) {
+        if (path == null || path.isEmpty()) {
+            return;
+        }
+        extraRoots.add(new ExtraRoot(path, source, pluginId));
+    }
+
+    /**
+     * 额外技能根描述。
+     */
+    private static class ExtraRoot {
+        final String path;
+        final String source;
+        final String pluginId;
+
+        ExtraRoot(String path, String source, String pluginId) {
+            this.path = path;
+            this.source = source;
+            this.pluginId = pluginId;
+        }
+    }
+
+    /**
      * 列出所有可用的技能
      * <p>
      * 按优先级顺序加载，同名技能高优先级覆盖低优先级
@@ -78,6 +112,11 @@ public class SkillsLoader {
         // 工作空间技能（最高优先级）
         if (workspaceSkills != null) {
             addSkillsFromDir(skills, workspaceSkills, "workspace");
+        }
+
+        // 插件技能（由插件系统注入，优先级低于 workspace）
+        for (ExtraRoot root : extraRoots) {
+            addSkillsFromDir(skills, root.path, root.source, root.pluginId);
         }
 
         // 全局技能
@@ -145,6 +184,13 @@ public class SkillsLoader {
      * 从指定目录添加技能到列表
      */
     private void addSkillsFromDir(List<SkillInfo> skills, String dirPath, String source) {
+        addSkillsFromDir(skills, dirPath, source, null);
+    }
+
+    /**
+     * 从指定目录添加技能到列表（可指定来源插件 id）
+     */
+    private void addSkillsFromDir(List<SkillInfo> skills, String dirPath, String source, String pluginId) {
         Path dir = Paths.get(dirPath);
         if (!Files.exists(dir) || !Files.isDirectory(dir)) return;
 
@@ -171,6 +217,8 @@ public class SkillsLoader {
                         if (description != null) {
                             info.setDescription(description);
                         }
+                        info.setPluginId(pluginId);
+                        enrichFromFrontmatter(info, skillFile);
 
                         skills.add(info);
                     }
@@ -188,6 +236,12 @@ public class SkillsLoader {
         // 优先尝试工作空间技能
         String content = loadSkillFromDir(workspaceSkills, name);
         if (content != null) return content;
+
+        // 尝试插件技能根
+        for (ExtraRoot root : extraRoots) {
+            content = loadSkillFromDir(root.path, name);
+            if (content != null) return content;
+        }
 
         // 尝试全局技能
         content = loadSkillFromDir(globalSkills, name);
@@ -257,6 +311,60 @@ public class SkillsLoader {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    /**
+     * 从 SKILL.md 的 YAML 前置元数据中解析 tags / triggers / model 并填充到 SkillInfo。
+     * <p>
+     * 尽力而为：tags/triggers 支持内联数组 {@code [a, b]} 或逗号分隔字符串。
+     */
+    private void enrichFromFrontmatter(SkillInfo info, Path skillPath) {
+        try {
+            String content = Files.readString(skillPath);
+            String frontmatter = extractFrontmatter(content);
+            if (frontmatter == null || frontmatter.isEmpty()) {
+                return;
+            }
+            Map<String, String> yaml = parseSimpleYAML(frontmatter);
+            String model = yaml.get("model");
+            if (model != null && !model.isEmpty()) {
+                info.setModel(model);
+            }
+            List<String> tags = parseInlineList(yaml.get("tags"));
+            if (tags != null) {
+                info.setTags(tags);
+            }
+            List<String> triggers = parseInlineList(yaml.get("triggers"));
+            if (triggers != null) {
+                info.setTriggers(triggers);
+            }
+        } catch (IOException e) {
+            // 忽略解析错误
+        }
+    }
+
+    /**
+     * 解析内联列表：支持 {@code [a, b, c]} 或逗号分隔字符串，返回去重前的字符串列表。
+     */
+    private List<String> parseInlineList(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String value = raw.trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        if (value.startsWith("[") && value.endsWith("]")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        List<String> result = new ArrayList<>();
+        for (String part : value.split(",")) {
+            String item = part.trim().replaceAll("^['\"]|['\"]$", "");
+            if (!item.isEmpty()) {
+                result.add(item);
+            }
+        }
+        return result.isEmpty() ? null : result;
     }
 
     /**

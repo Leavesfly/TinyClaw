@@ -13,6 +13,7 @@ import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -262,10 +263,7 @@ public class SubagentManager {
         } catch (Exception e) {
             task.setStatus("failed");
             task.setResult("子代理执行失败: " + e.getMessage());
-            logger.error("Sync subagent task failed", Map.of(
-                    "task_id", task.getId(),
-                    "error", e.getMessage()
-            ));
+            logTaskFailure("Sync subagent task failed", task, e);
         }
     }
 
@@ -337,14 +335,42 @@ public class SubagentManager {
         } catch (Exception e) {
             task.setStatus("failed");
             task.setResult("错误: " + e.getMessage());
-            logger.error("Subagent task failed", Map.of(
-                    "task_id", task.getId(),
-                    "error", e.getMessage()
-            ));
+            logTaskFailure("Subagent task failed", task, e);
         } finally {
             // 发送通知消息回主 Agent
             sendTaskCompletion(task);
         }
+    }
+
+    /**
+     * 记录子代理任务失败的详细日志，包含标签、来源、异常类型、根因及完整堆栈。
+     */
+    private void logTaskFailure(String message, SubagentTask task, Exception e) {
+        String taskText = task.getTask();
+        String taskPreview = taskText != null && taskText.length() > 100
+                ? taskText.substring(0, 100) + "..."
+                : taskText;
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("task_id", task.getId());
+        fields.put("label", task.getLabel());
+        fields.put("origin", task.getOriginChannel() + ":" + task.getOriginChatId());
+        fields.put("error", e.getMessage());
+        fields.put("error_type", e.getClass().getName());
+        fields.put("root_cause", rootCauseMessage(e));
+        fields.put("task_preview", taskPreview);
+        // 传入异常对象以输出完整调用堆栈
+        logger.error(message, fields, e);
+    }
+
+    /**
+     * 提取异常链最底层的根因信息（类名 + 消息）。
+     */
+    private static String rootCauseMessage(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getName() + ": " + cause.getMessage();
     }
 
     /**
