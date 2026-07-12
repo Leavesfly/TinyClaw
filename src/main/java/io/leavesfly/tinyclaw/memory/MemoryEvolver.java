@@ -1,3 +1,4 @@
+
 package io.leavesfly.tinyclaw.memory;
 
 import io.leavesfly.tinyclaw.evolution.EvaluationFeedback;
@@ -7,6 +8,9 @@ import io.leavesfly.tinyclaw.providers.LLMResponse;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
+import java.io.InterruptedIOException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,6 +52,12 @@ public class MemoryEvolver {
 
     /** 触发 autoDream 所需的最小新增记忆条目数 */
     private static final int MIN_NEW_ENTRIES_FOR_EVOLUTION = 5;
+
+    /** 整合 LLM 调用应对瞬时网络故障的最大尝试次数 */
+    private static final int CONSOLIDATION_MAX_ATTEMPTS = 3;
+
+    /** 整合 LLM 调用重试的基础退避间隔（毫秒），实际间隔按尝试次数线性放大 */
+    private static final long CONSOLIDATION_RETRY_BACKOFF_MS = 2000L;
 
     private final MemoryStore memoryStore;
     private final LLMProvider provider;
@@ -93,14 +103,22 @@ public class MemoryEvolver {
 
         // Phase 1+2: Gather + Consolidate（调用 LLM，受冷却保护）
         if (shouldRunFullEvolution) {
+            boolean consolidated = false;
             try {
-                gatherAndConsolidate();
+                consolidated = gatherAndConsolidate();
             } catch (Exception e) {
                 logEvolutionFailure("Gather and consolidate phase failed", e);
             }
 
-            lastEvolutionTimeMs.set(System.currentTimeMillis());
-            entryCountAtLastEvolution.set(memoryStore.getEntries().size());
+            // 仅在整合成功时推进冷却计时。瞬时网络故障（如 SocketTimeoutException）不应
+            // 烧掉 24h 冷却窗口，否则一次网络抖动会导致记忆整合被跳过一整天。失败时保持
+            // 计时不变，下一次心跳（默认 30 分钟后）会再次尝试。
+            if (consolidated) {
+                lastEvolutionTimeMs.set(System.currentTimeMillis());
+                entryCountAtLastEvolution.set(memoryStore.getEntries().size());
+            } else {
+                logger.warn("Consolidation did not complete; keeping cooldown open for retry on next heartbeat");
+            }
         }
 
         // Phase 3: Prune & Index（纯计算，每次心跳都执行）
@@ -125,50 +143,107 @@ public class MemoryEvolver {
      * - 合并重复记忆、解决矛盾、压缩冗余
      * - 生成或更新主题文件内容
      */
-    private void gatherAndConsolidate() {
+    private boolean gatherAndConsolidate() {
         List<MemoryEntry> currentEntries = memoryStore.getEntries();
         if (currentEntries.isEmpty()) {
             logger.debug("No entries to consolidate");
-            return;
+            return true;
         }
 
         boolean needsConsolidation = currentEntries.size() >= CONSOLIDATION_THRESHOLD;
         String prompt = buildConsolidatePrompt(currentEntries, needsConsolidation);
 
+        String result;
         try {
-            List<Message> messages = List.of(Message.user(prompt));
-            Map<String, Object> options = Map.of(
-                    "max_tokens", EVOLUTION_MAX_TOKENS,
-                    "temperature", EVOLUTION_TEMPERATURE
-            );
-            LLMResponse response = provider.chat(messages, null, model, options);
-            String result = response.getContent();
-
-            if (StringUtils.isBlank(result)) {
-                return;
-            }
-
-            // 解析主题文件输出
-            parseAndWriteTopics(result);
-
-            // 如果需要整合，解析整合后的记忆列表
-            if (needsConsolidation) {
-                List<MemoryEntry> consolidated = parseMemoryLines(result, "MEMORY", "evolution_consolidate");
-                if (!consolidated.isEmpty() && consolidated.size() < currentEntries.size()) {
-                    int maxAccessCount = currentEntries.stream()
-                            .mapToInt(MemoryEntry::getAccessCount)
-                            .max().orElse(0);
-                    for (MemoryEntry entry : consolidated) {
-                        entry.setAccessCount(Math.max(1, maxAccessCount / 2));
-                    }
-                    memoryStore.replaceEntries(consolidated);
-                    logger.info("Memories consolidated",
-                            Map.of("before", currentEntries.size(), "after", consolidated.size()));
-                }
-            }
+            result = callConsolidationLLM(prompt);
         } catch (Exception e) {
             logEvolutionFailure("Failed to consolidate memories", e);
+            return false;
         }
+
+        if (StringUtils.isBlank(result)) {
+            return true;
+        }
+
+        // 解析主题文件输出
+        parseAndWriteTopics(result);
+
+        // 如果需要整合，解析整合后的记忆列表
+        if (needsConsolidation) {
+            List<MemoryEntry> consolidated = parseMemoryLines(result, "MEMORY", "evolution_consolidate");
+            if (!consolidated.isEmpty() && consolidated.size() < currentEntries.size()) {
+                int maxAccessCount = currentEntries.stream()
+                        .mapToInt(MemoryEntry::getAccessCount)
+                        .max().orElse(0);
+                for (MemoryEntry entry : consolidated) {
+                    entry.setAccessCount(Math.max(1, maxAccessCount / 2));
+                }
+                memoryStore.replaceEntries(consolidated);
+                logger.info("Memories consolidated",
+                        Map.of("before", currentEntries.size(), "after", consolidated.size()));
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 调用 LLM 执行记忆整合，对瞬时网络故障（读超时、连接超时等）进行有限次退避重试。
+     *
+     * <p>记忆整合是后台任务，单次瞬时 {@link SocketTimeoutException} 不应直接判定失败。
+     * 仅对可恢复的网络异常重试；其他错误（如鉴权失败、参数错误）立即抛出，避免无谓等待。</p>
+     *
+     * @param prompt 整合提示词
+     * @return LLM 返回的文本内容
+     * @throws InterruptedException 线程在退避等待期间被中断
+     */
+    private String callConsolidationLLM(String prompt) throws InterruptedException {
+        List<Message> messages = List.of(Message.user(prompt));
+        Map<String, Object> options = Map.of(
+                "max_tokens", EVOLUTION_MAX_TOKENS,
+                "temperature", EVOLUTION_TEMPERATURE
+        );
+
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= CONSOLIDATION_MAX_ATTEMPTS; attempt++) {
+            try {
+                LLMResponse response = provider.chat(messages, null, model, options);
+                return response.getContent();
+            } catch (RuntimeException e) {
+                lastError = e;
+                boolean canRetry = isTransientNetworkError(e) && attempt < CONSOLIDATION_MAX_ATTEMPTS;
+                if (!canRetry) {
+                    throw e;
+                }
+                long backoffMs = CONSOLIDATION_RETRY_BACKOFF_MS * attempt;
+                logger.warn("Consolidation LLM call timed out, retrying", Map.of(
+                        "attempt", attempt,
+                        "max_attempts", CONSOLIDATION_MAX_ATTEMPTS,
+                        "backoff_ms", backoffMs,
+                        "root_cause", rootCauseMessage(e)));
+                Thread.sleep(backoffMs);
+            }
+        }
+        // 循环内必然 return 或 throw，此处仅为满足编译
+        throw lastError;
+    }
+
+    /**
+     * 判断异常链中是否包含可恢复的瞬时网络故障（读/连接超时、被中断的 IO 等）。
+     */
+    private static boolean isTransientNetworkError(Throwable e) {
+        Throwable cause = e;
+        while (cause != null) {
+            if (cause instanceof SocketTimeoutException
+                    || cause instanceof ConnectException
+                    || cause instanceof InterruptedIOException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 
     /**
