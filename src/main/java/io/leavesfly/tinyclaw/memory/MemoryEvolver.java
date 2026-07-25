@@ -1,6 +1,8 @@
 
 package io.leavesfly.tinyclaw.memory;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.evolution.EvaluationFeedback;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -8,9 +10,13 @@ import io.leavesfly.tinyclaw.providers.LLMResponse;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
+import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,8 +47,8 @@ public class MemoryEvolver {
     /** 活跃记忆的最大条目数 */
     private static final int MAX_ACTIVE_ENTRIES = 200;
 
-    /** LLM 整合的最大 token 数 */
-    private static final int EVOLUTION_MAX_TOKENS = 2048;
+    /** LLM 整合的最大 token 数（需容纳覆盖式输出的完整主题内容） */
+    private static final int EVOLUTION_MAX_TOKENS = 4096;
 
     /** LLM 整合的温度参数 */
     private static final double EVOLUTION_TEMPERATURE = 0.3;
@@ -59,9 +65,17 @@ public class MemoryEvolver {
     /** 整合 LLM 调用重试的基础退避间隔（毫秒），实际间隔按尝试次数线性放大 */
     private static final long CONSOLIDATION_RETRY_BACKOFF_MS = 2000L;
 
+    /** 单个已有主题注入整合提示词的最大字符数，防止历史膨胀的主题撑爆 prompt */
+    private static final int MAX_TOPIC_PROMPT_CHARS = 4000;
+
+    /** 进化状态持久化文件名（位于 memory 目录下） */
+    private static final String STATE_FILE = "evolution-state.json";
+
     private final MemoryStore memoryStore;
     private final LLMProvider provider;
     private final String model;
+    private final String stateFilePath;
+    private final ObjectMapper stateMapper = new ObjectMapper();
 
     /** 上次执行 autoDream 的时间戳 */
     private final AtomicLong lastEvolutionTimeMs = new AtomicLong(0);
@@ -73,6 +87,8 @@ public class MemoryEvolver {
         this.memoryStore = memoryStore;
         this.provider = provider;
         this.model = model;
+        this.stateFilePath = Paths.get(memoryStore.getMemoryDir(), STATE_FILE).toString();
+        loadState();
     }
 
     /**
@@ -116,6 +132,7 @@ public class MemoryEvolver {
             if (consolidated) {
                 lastEvolutionTimeMs.set(System.currentTimeMillis());
                 entryCountAtLastEvolution.set(memoryStore.getEntries().size());
+                saveState();
             } else {
                 logger.warn("Consolidation did not complete; keeping cooldown open for retry on next heartbeat");
             }
@@ -178,7 +195,12 @@ public class MemoryEvolver {
                 for (MemoryEntry entry : consolidated) {
                     entry.setAccessCount(Math.max(1, maxAccessCount / 2));
                 }
-                memoryStore.replaceEntries(consolidated);
+                // diff 式替换：仅移除整合快照中的条目，LLM 调用期间新增的记忆不受影响
+                Set<String> snapshotIds = currentEntries.stream()
+                        .map(MemoryEntry::getId)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toSet());
+                memoryStore.replaceEntries(snapshotIds, consolidated);
                 logger.info("Memories consolidated",
                         Map.of("before", currentEntries.size(), "after", consolidated.size()));
             }
@@ -277,16 +299,17 @@ public class MemoryEvolver {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是一个记忆管理系统。请分析以下结构化记忆，完成指定任务。\n\n");
 
-        // 任务一：归类到主题文件
-        prompt.append("## 任务一：归类到主题文件\n\n");
-        prompt.append("将下方记忆按主题归类，为每个主题生成一个 Markdown 内容块。\n");
+        // 任务一：整理主题文件（覆盖式）
+        prompt.append("## 任务一：整理主题文件\n\n");
+        prompt.append("将下方记忆与已有主题内容合并整理，为每个需要更新的主题输出完整的最新版本。\n");
+        prompt.append("注意：输出内容将直接覆盖原主题文件，因此必须包含该主题需要保留的全部要点。\n");
         prompt.append("每个主题按以下格式输出：\n");
         prompt.append("TOPIC|主题名称（英文短横线命名，如 user-preferences）\n");
         prompt.append("主题内容（Markdown 格式，简洁的要点列表）\n");
         prompt.append("END_TOPIC\n\n");
         prompt.append("常见主题示例：user-preferences, project-patterns, lessons-learned, key-facts\n");
-        prompt.append("- 每个主题应包含 2-10 条相关要点\n");
-        prompt.append("- 合并重复信息，保留最新/最准确的版本\n");
+        prompt.append("- 合并重复信息、解决矛盾、压缩冗余，保留最新/最准确的版本\n");
+        prompt.append("- 没有新内容需要合入的主题请不要输出，未输出的主题保持原样\n");
         prompt.append("- 如果某条记忆不属于任何主题，可以跳过\n\n");
 
         // 任务二：整合记忆（条件触发）
@@ -308,14 +331,16 @@ public class MemoryEvolver {
                     entry.getSource(), entry.getContent()));
         }
 
-        // 现有主题文件列表（避免重复创建）
+        // 现有主题文件全文（覆盖式更新的合并基准）
         List<String> existingTopics = memoryStore.listTopics();
         if (!existingTopics.isEmpty()) {
-            prompt.append("\n## 已有主题文件（请更新而非重复创建）\n\n");
+            prompt.append("\n## 已有主题文件（完整内容，输出时请在此基础上合并更新）\n\n");
             for (String topic : existingTopics) {
                 String content = memoryStore.readTopic(topic);
-                String firstLine = content.split("\n")[0];
-                prompt.append("- ").append(topic).append(": ").append(firstLine).append("\n");
+                if (content.length() > MAX_TOPIC_PROMPT_CHARS) {
+                    content = content.substring(0, MAX_TOPIC_PROMPT_CHARS) + "\n\n_(内容过长已截断，请优先压缩此主题)_";
+                }
+                prompt.append("### ").append(topic).append("\n\n").append(content).append("\n\n");
             }
         }
 
@@ -323,7 +348,11 @@ public class MemoryEvolver {
     }
 
     /**
-     * 解析 LLM 输出中的主题文件块并写入。
+     * 解析 LLM 输出中的主题文件块并覆盖写入。
+     *
+     * <p>prompt 已携带已有主题全文，LLM 输出的是合并后的完整版本，因此直接覆盖
+     * 而非追加，避免主题文件随每轮整合无限膨胀。未以 END_TOPIC 正常终止的块
+     * （如输出被截断）会被丢弃，不会用半截内容覆盖原文件。</p>
      */
     private void parseAndWriteTopics(String llmOutput) {
         String[] lines = llmOutput.split("\n");
@@ -341,11 +370,6 @@ public class MemoryEvolver {
             } else if ("END_TOPIC".equals(trimmed) && currentTopicName != null && currentTopicContent != null) {
                 String content = currentTopicContent.toString().trim();
                 if (StringUtils.isNotBlank(content)) {
-                    // 如果主题已存在，合并内容
-                    String existing = memoryStore.readTopic(currentTopicName);
-                    if (StringUtils.isNotBlank(existing)) {
-                        content = existing + "\n\n---\n\n" + content;
-                    }
                     memoryStore.writeTopic(currentTopicName, content);
                     topicsWritten++;
                 }
@@ -403,12 +427,54 @@ public class MemoryEvolver {
     // ==================== Phase 3: Prune & Index ====================
 
     /**
-     * 衰减归档低分记忆 + 重建索引。
+     * 衰减归档低分记忆 + 落盘访问计数 + 重建索引。
      * 纯计算操作，每次心跳都执行。
      */
     private void pruneAndIndex() {
         decayAndArchive();
+        // 读路径累积的访问计数变更在此统一落盘
+        memoryStore.flush();
         memoryStore.rebuildIndex();
+    }
+
+    // ==================== 进化状态持久化 ====================
+
+    /**
+     * 从 memory/evolution-state.json 加载上次进化状态。
+     * 避免进程重启后冷却计时归零，导致每次重启都立即触发一轮 LLM 整合。
+     */
+    private void loadState() {
+        try {
+            Path path = Paths.get(stateFilePath);
+            if (Files.exists(path)) {
+                Map<String, Object> state = stateMapper.readValue(
+                        Files.readString(path), new TypeReference<Map<String, Object>>() {});
+                Object lastTime = state.get("last_evolution_time_ms");
+                Object lastCount = state.get("entry_count_at_last_evolution");
+                if (lastTime instanceof Number time) {
+                    lastEvolutionTimeMs.set(time.longValue());
+                }
+                if (lastCount instanceof Number count) {
+                    entryCountAtLastEvolution.set(count.intValue());
+                }
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to load evolution state: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 保存当前进化状态，在每次整合成功后调用。
+     */
+    private void saveState() {
+        try {
+            Map<String, Object> state = Map.of(
+                    "last_evolution_time_ms", lastEvolutionTimeMs.get(),
+                    "entry_count_at_last_evolution", entryCountAtLastEvolution.get());
+            Files.writeString(Paths.get(stateFilePath), stateMapper.writeValueAsString(state));
+        } catch (IOException e) {
+            logger.warn("Failed to save evolution state: " + e.getMessage());
+        }
     }
 
     /**

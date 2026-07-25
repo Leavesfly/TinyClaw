@@ -25,7 +25,8 @@ public class ModelsConfig {
         // 添加常用模型的默认定义
 
         // 通义千问系列
-        definitions.put("qwen3-max", new ModelDefinition("dashscope", "qwen3-max", 200000));
+//        definitions.put("qwen-latest-series-invite-beta-v84", new ModelDefinition("dashscope", "qwen-latest-series-invite-beta-v84", 200000));
+        definitions.put("qwen-latest-series-invite-beta-v84", new ModelDefinition("dashscope", "qwen-latest-series-invite-beta-v84", 200000));
         definitions.put("qwen3.6-plus", new ModelDefinition("dashscope", "qwen3.6-plus", 128000));
         definitions.put("qwen3.7-plus", new ModelDefinition("dashscope", "qwen3.7-plus", 128000));
 

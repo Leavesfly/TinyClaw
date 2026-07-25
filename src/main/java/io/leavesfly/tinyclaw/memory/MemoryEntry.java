@@ -82,8 +82,9 @@ public class MemoryEntry {
 
     /**
      * 记录一次访问，更新访问计数和最后访问时间。
+     * 可能被多个会话线程并发调用，加同步避免计数丢失。
      */
-    public void recordAccess() {
+    public synchronized void recordAccess() {
         this.accessCount++;
         this.lastAccessedAt = Instant.now();
     }

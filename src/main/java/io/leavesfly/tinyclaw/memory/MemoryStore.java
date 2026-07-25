@@ -8,9 +8,11 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -124,17 +126,44 @@ public class MemoryStore {
     }
 
     /**
-     * 替换所有结构化记忆条目（用于进化引擎整合后的批量更新）。
+     * diff 式替换结构化记忆条目（用于进化引擎整合后的批量更新）。
+     *
+     * 仅移除整合快照中的旧条目，再追加整合结果。LLM 整合期间（可能长达数十秒）
+     * 并发写入的新记忆不在快照中，因此不会被误覆盖。
+     *
+     * @param replacedIds 被整合的原条目 ID 集合（整合前的快照）
+     * @param newEntries  整合后的新条目列表
      */
-    public void replaceEntries(List<MemoryEntry> newEntries) {
+    public void replaceEntries(Set<String> replacedIds, List<MemoryEntry> newEntries) {
         writeLock.lock();
         try {
-            entries.clear();
+            int removed = 0;
+            if (replacedIds != null && !replacedIds.isEmpty()) {
+                int before = entries.size();
+                entries.removeIf(entry -> replacedIds.contains(entry.getId()));
+                removed = before - entries.size();
+            }
             if (newEntries != null) {
                 entries.addAll(newEntries);
             }
             saveEntries();
-            logger.info("Replaced all memory entries", Map.of("count", entries.size()));
+            logger.info("Replaced memory entries", Map.of(
+                    "removed", removed,
+                    "added", newEntries != null ? newEntries.size() : 0,
+                    "total", entries.size()));
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    /**
+     * 将内存中的条目状态（如访问计数）落盘。
+     * 由 autoDream 的 Prune & Index 阶段周期性调用，避免在读路径上无锁写文件。
+     */
+    public void flush() {
+        writeLock.lock();
+        try {
+            saveEntries();
         } finally {
             writeLock.unlock();
         }
@@ -526,6 +555,8 @@ public class MemoryStore {
             usedTokens += entryTokens;
             selectedCount++;
 
+            // 仅更新内存状态，落盘由 autoDream 的 flush() 周期性完成，
+            // 避免读路径上无锁写文件与持锁写入交叉损坏 JSON
             scored.entry().recordAccess();
         }
 
@@ -539,7 +570,6 @@ public class MemoryStore {
                     selectedCount, totalEntries));
         }
 
-        saveEntriesAsync();
         return section.toString();
     }
 
@@ -620,21 +650,9 @@ public class MemoryStore {
         saveEntriesToFile(memoriesJsonFile, new ArrayList<>(entries));
     }
 
-    private void saveEntriesAsync() {
-        Thread saveThread = new Thread(() -> {
-            try {
-                saveEntries();
-            } catch (Exception e) {
-                logger.warn("Async save failed: " + e.getMessage());
-            }
-        });
-        saveThread.setDaemon(true);
-        saveThread.start();
-    }
-
     private List<MemoryEntry> loadEntriesFromFile(String filePath) {
+        Path path = Paths.get(filePath);
         try {
-            Path path = Paths.get(filePath);
             if (Files.exists(path)) {
                 String json = Files.readString(path);
                 if (StringUtils.isNotBlank(json)) {
@@ -642,15 +660,46 @@ public class MemoryStore {
                 }
             }
         } catch (IOException e) {
+            // 解析失败时备份损坏文件后再返回空列表，避免后续保存静默覆盖全部历史记忆
             logger.warn("Failed to load entries from " + filePath + ": " + e.getMessage());
+            backupCorruptFile(path);
         }
         return new ArrayList<>();
     }
 
+    /**
+     * 将无法解析的记忆文件重命名为 .corrupt.<时间戳> 备份，便于事后人工恢复。
+     */
+    private void backupCorruptFile(Path path) {
+        try {
+            if (!Files.exists(path)) {
+                return;
+            }
+            Path backup = path.resolveSibling(
+                    path.getFileName() + ".corrupt." + System.currentTimeMillis());
+            Files.move(path, backup, StandardCopyOption.REPLACE_EXISTING);
+            logger.error("Backed up corrupt memory file", Map.of(
+                    "source", path.toString(),
+                    "backup", backup.toString()));
+        } catch (IOException e) {
+            logger.error("Failed to backup corrupt memory file: " + path, Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * 原子写入条目文件：先写临时文件再原子重命名，避免进程中途退出留下半个 JSON。
+     */
     private void saveEntriesToFile(String filePath, List<MemoryEntry> entriesToSave) {
         try {
             String json = objectMapper.writeValueAsString(entriesToSave);
-            Files.writeString(Paths.get(filePath), json);
+            Path target = Paths.get(filePath);
+            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
+            Files.writeString(temp, json);
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             logger.error("Failed to save entries to " + filePath, Map.of("error", e.getMessage()));
         }
@@ -681,6 +730,13 @@ public class MemoryStore {
     }
 
     // ==================== 工具方法 ====================
+
+    /**
+     * 获取记忆目录路径，供进化引擎存放状态文件。
+     */
+    public String getMemoryDir() {
+        return memoryDir;
+    }
 
     private void ensureDirectoryExists(Path path) {
         try {
