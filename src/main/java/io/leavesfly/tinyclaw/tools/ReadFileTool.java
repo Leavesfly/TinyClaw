@@ -36,11 +36,10 @@ public class ReadFileTool implements Tool {
     
     private final SecurityGuard securityGuard;
     
-    public ReadFileTool() {
-        this.securityGuard = null;
-    }
-    
     public ReadFileTool(SecurityGuard securityGuard) {
+        if (securityGuard == null) {
+            throw new IllegalArgumentException("SecurityGuard is required for ReadFileTool");
+        }
         this.securityGuard = securityGuard;
     }
     
@@ -71,6 +70,17 @@ public class ReadFileTool implements Tool {
         return params;
     }
     
+    /**
+     * 将相对路径解析为相对于 workspace 的绝对路径。
+     * 与 WriteFileTool 保持一致，防止相对路径被 JVM 解析到工作目录而非 workspace。
+     */
+    private String resolveAgainstWorkspace(String path) {
+        if (Paths.get(path).isAbsolute()) {
+            return path;
+        }
+        return Paths.get(securityGuard.getWorkspace(), path).normalize().toString();
+    }
+
     @Override
     public String execute(Map<String, Object> args) throws ToolException {
         String path = (String) args.get("path");
@@ -78,16 +88,17 @@ public class ReadFileTool implements Tool {
             throw new IllegalArgumentException("路径参数是必需的");
         }
         
+        // 将相对路径解析为相对于 workspace 的绝对路径
+        String resolvedPath = resolveAgainstWorkspace(path);
+        
         // 安全检查
-        if (securityGuard != null) {
-            String error = securityGuard.checkFilePath(path);
-            if (error != null) {
-                throw new SecurityException(error);
-            }
+        String error = securityGuard.checkFilePath(resolvedPath);
+        if (error != null) {
+            throw new SecurityException(error);
         }
         
         try {
-            Path filePath = Paths.get(path);
+            Path filePath = Paths.get(resolvedPath);
             
             // 检查文件是否存在
             if (!Files.exists(filePath)) {

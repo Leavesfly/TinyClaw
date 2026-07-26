@@ -267,7 +267,7 @@ public class Config {
      * @param config 配置对象
      */
     private static void setGatewayDefaults(Config config) {
-        config.getGateway().setHost("0.0.0.0");
+        config.getGateway().setHost("127.0.0.1");
         config.getGateway().setPort(18790);
     }
 

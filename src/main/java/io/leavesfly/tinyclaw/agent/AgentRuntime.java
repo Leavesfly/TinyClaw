@@ -38,6 +38,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * TinyClaw 核心执行引擎，协调消息路由、上下文构建、会话管理与 LLM 交互。
@@ -85,6 +86,9 @@ public class AgentRuntime {
     private final HookDispatcher hookDispatcher;
 
     private volatile boolean running = false;
+
+    /** 停机时执行的资源清理钩子（如线程池 shutdown），多线程注册/遍历安全 */
+    private final List<Runnable> shutdownHooks = new CopyOnWriteArrayList<>();
 
     // ==================== 构造与初始化 ====================
 
@@ -231,13 +235,25 @@ public class AgentRuntime {
         running = false;
         shutdownMCPServers();
 
-        // 关闭 Reflection 2.0 Recorder（释放后台线程和队列）
+        // 关闭 Reflection 2.0 Recorder（释放后台线程和队列）与会话摘要线程池
         ProviderComponents comps = providerManager.getComponents();
         if (comps != null && comps.recorder != null) {
             try {
                 comps.recorder.close();
             } catch (Exception e) {
                 logger.error("Failed to close ToolCallRecorder", Map.of("error", e.getMessage()));
+            }
+        }
+        if (comps != null && comps.summarizer != null) {
+            comps.summarizer.shutdown();
+        }
+
+        // 执行注册的资源清理钩子（如 SubagentManager 线程池 shutdown）
+        for (Runnable hook : shutdownHooks) {
+            try {
+                hook.run();
+            } catch (Exception e) {
+                logger.error("Shutdown hook failed", Map.of("error", e.getMessage()));
             }
         }
 
@@ -248,6 +264,15 @@ public class AgentRuntime {
         } catch (RuntimeException e) {
             logger.error("SessionEnd hook threw exception, ignored", Map.of("error", e.getMessage()));
         }
+    }
+
+    /**
+     * 注册停机清理钩子（如线程池 shutdown）。
+     *
+     * @param hook 停机时执行的清理逻辑
+     */
+    public void registerShutdownHook(Runnable hook) {
+        shutdownHooks.add(hook);
     }
 
     /** 获取当前 Hook 调度器，供测试或外部组件按需触发自定义事件。 */

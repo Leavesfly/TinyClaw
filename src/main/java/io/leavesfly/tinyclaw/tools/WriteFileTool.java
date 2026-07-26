@@ -38,11 +38,10 @@ public class WriteFileTool implements Tool {
     
     private final SecurityGuard securityGuard;
     
-    public WriteFileTool() {
-        this.securityGuard = null;
-    }
-    
     public WriteFileTool(SecurityGuard securityGuard) {
+        if (securityGuard == null) {
+            throw new IllegalArgumentException("SecurityGuard is required for WriteFileTool");
+        }
         this.securityGuard = securityGuard;
     }
     
@@ -87,7 +86,7 @@ public class WriteFileTool implements Tool {
      * 此方法确保相对路径始终基于 workspace 解析。
      */
     private String resolveAgainstWorkspace(String path) {
-        if (securityGuard == null || Paths.get(path).isAbsolute()) {
+        if (Paths.get(path).isAbsolute()) {
             return path;
         }
         return Paths.get(securityGuard.getWorkspace(), path).normalize().toString();
@@ -109,11 +108,9 @@ public class WriteFileTool implements Tool {
         String resolvedPathString = resolveAgainstWorkspace(path);
 
         // 安全检查
-        if (securityGuard != null) {
-            String error = securityGuard.checkFilePath(resolvedPathString);
-            if (error != null) {
-                throw new SecurityException(error);
-            }
+        String error = securityGuard.checkFilePath(resolvedPathString);
+        if (error != null) {
+            throw new SecurityException(error);
         }
         
         // 检查内容大小

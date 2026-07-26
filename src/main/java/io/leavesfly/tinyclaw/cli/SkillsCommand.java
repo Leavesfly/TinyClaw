@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.cli;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
 import io.leavesfly.tinyclaw.skills.SkillsInstaller;
+import io.leavesfly.tinyclaw.skills.SkillsLoader;
 
 import java.io.File;
 import java.io.IOException;
@@ -76,14 +77,8 @@ public class SkillsCommand extends CliCommand {
     private static final String REMOVE_ERROR_PREFIX = "✗ 移除技能失败: ";
     private static final String READ_ERROR_PREFIX = "✗ 读取技能失败: ";
     
-    // 内置技能列表 - 这些是预定义的技能模板
-    private static final List<String> BUILTIN_SKILLS = List.of(
-        "weather",      // 天气查询技能
-        "github",       // GitHub 操作技能
-        "summarize",    // 文本摘要技能
-        "tmux",         // tmux 会话管理技能
-        "skill-creator" // 技能创建辅助技能
-    );
+    // 内置技能列表 - 以 SkillsLoader 为唯一数据源，避免两处维护不一致
+    private static final List<String> BUILTIN_SKILLS = SkillsLoader.getBuiltinSkillNames();
     
     @Override
     public String name() {
@@ -343,11 +338,10 @@ public class SkillsCommand extends CliCommand {
         System.out.println();
         System.out.println("可用的内置技能：");
         System.out.println(SEPARATOR);
-        System.out.println(INDENT + BULLET + " weather        - 天气查询技能");
-        System.out.println(INDENT + BULLET + " github         - GitHub 操作技能");
-        System.out.println(INDENT + BULLET + " summarize      - 文本摘要技能");
-        System.out.println(INDENT + BULLET + " tmux           - tmux 会话管理技能");
-        System.out.println(INDENT + BULLET + " skill-creator  - 技能创建辅助技能");
+        for (String skillName : BUILTIN_SKILLS) {
+            System.out.println(INDENT + BULLET + " " + String.format("%-14s", skillName)
+                    + " - " + getSkillDescription(skillName));
+        }
         System.out.println();
         System.out.println("使用 'tinyclaw skills install-builtin' 安装所有内置技能。");
         return 0;
@@ -494,7 +488,6 @@ public class SkillsCommand extends CliCommand {
         return switch (skillName) {
             case "weather" -> "Query weather information for any location";
             case "github" -> "Interact with GitHub repositories and issues";
-            case "summarize" -> "Summarize long texts and documents";
             case "tmux" -> "Manage tmux sessions and windows";
             case "skill-creator" -> "Help create new skills for tinyclaw";
             default -> "A skill for " + skillName;

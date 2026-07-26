@@ -17,11 +17,10 @@ public class ListDirTool implements Tool {
     
     private final SecurityGuard securityGuard;
     
-    public ListDirTool() {
-        this.securityGuard = null;
-    }
-    
     public ListDirTool(SecurityGuard securityGuard) {
+        if (securityGuard == null) {
+            throw new IllegalArgumentException("SecurityGuard is required for ListDirTool");
+        }
         this.securityGuard = securityGuard;
     }
     
@@ -59,16 +58,19 @@ public class ListDirTool implements Tool {
             path = ".";
         }
         
+        // 将相对路径解析为相对于 workspace 的绝对路径
+        String resolvedPath = Paths.get(path).isAbsolute()
+                ? path
+                : Paths.get(securityGuard.getWorkspace(), path).normalize().toString();
+        
         // 安全检查
-        if (securityGuard != null) {
-            String error = securityGuard.checkFilePath(path);
-            if (error != null) {
-                throw new SecurityException(error);
-            }
+        String error = securityGuard.checkFilePath(resolvedPath);
+        if (error != null) {
+            throw new SecurityException(error);
         }
         
         try {
-            Path dirPath = Paths.get(path);
+            Path dirPath = Paths.get(resolvedPath);
             if (!Files.exists(dirPath)) {
                 return "目录不存在: " + path;
             }

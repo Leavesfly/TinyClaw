@@ -18,7 +18,10 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 飞书通道实现 - 基于飞书开放平台
@@ -62,8 +65,9 @@ public class FeishuChannel extends BaseChannel {
     private volatile boolean webSocketRunning;
     private long pingInterval = 30000;
     
-    // 重连尝试计数
-    private int reconnectAttempts = 0;
+    // 重连调度器（单线程守护，避免每次重连创建新线程）与重连计数
+    private volatile ScheduledExecutorService reconnectScheduler;
+    private final AtomicInteger reconnectAttempts = new AtomicInteger();
     
     /**
      * 创建飞书通道
@@ -113,6 +117,12 @@ public class FeishuChannel extends BaseChannel {
             // 预先获取一次令牌，确保配置正确
             tokenManager.getValidToken();
             
+            reconnectScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread thread = new Thread(r, "FeishuWebSocketReconnect");
+                thread.setDaemon(true);
+                return thread;
+            });
+            
             String wsUrl = fetchWebSocketEndpoint();
             connectWebSocket(wsUrl);
             
@@ -153,9 +163,12 @@ public class FeishuChannel extends BaseChannel {
         
         webSocketRunning = false;
         
-        if (heartbeatThread != null) {
-            heartbeatThread.interrupt();
-            heartbeatThread = null;
+        stopHeartbeat();
+        
+        ScheduledExecutorService scheduler = reconnectScheduler;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+            reconnectScheduler = null;
         }
         
         tokenManager.invalidate();
@@ -337,9 +350,11 @@ public class FeishuChannel extends BaseChannel {
     }
     
     /**
-     * 启动心跳线程
+     * 启动心跳线程（先停止旧线程，避免重连后心跳线程叠加）
      */
     private void startHeartbeat() {
+        stopHeartbeat();
+        
         heartbeatThread = new Thread(() -> {
             while (webSocketRunning && isRunning()) {
                 try {
@@ -366,54 +381,65 @@ public class FeishuChannel extends BaseChannel {
     }
     
     /**
-     * 计划重连
+     * 停止心跳线程
+     */
+    private void stopHeartbeat() {
+        if (heartbeatThread != null) {
+            heartbeatThread.interrupt();
+            heartbeatThread = null;
+        }
+    }
+    
+    /**
+     * 计划重连：通过单线程调度器按指数退避延迟重试，失败后再次排队，
+     * 避免递归创建线程与计数并发问题
      */
     private void scheduleReconnect() {
+        int attempt = reconnectAttempts.incrementAndGet();
         // 检查重连次数限制
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        if (attempt > MAX_RECONNECT_ATTEMPTS) {
             logger.error("飞书 WebSocket 重连次数已达上限，停止重连", Map.of(
-                    "attempts", String.valueOf(reconnectAttempts),
+                    "attempts", String.valueOf(attempt - 1),
                     "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS)
             ));
             return;
         }
         
-        // 计算指数退避延迟
-        long delay = Math.min(INITIAL_RECONNECT_DELAY_MS * (1L << reconnectAttempts), MAX_RECONNECT_DELAY_MS);
+        ScheduledExecutorService scheduler = reconnectScheduler;
+        if (scheduler == null || scheduler.isShutdown()) {
+            return;
+        }
         
-        new Thread(() -> {
-            try {
-                Thread.sleep(delay);
-                
-                if (isRunning()) {
-                    reconnectAttempts++;
-                    logger.info("尝试重新连接飞书 WebSocket", Map.of(
-                            "attempt", String.valueOf(reconnectAttempts),
-                            "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS),
-                            "delay_ms", String.valueOf(delay)
-                    ));
-                    
-                    try {
-                        tokenManager.getValidToken();
-                        String wsUrl = fetchWebSocketEndpoint();
-                        connectWebSocket(wsUrl);
-                        startHeartbeat();
-                        
-                        // 连接成功后重置重连计数
-                        reconnectAttempts = 0;
-                        logger.info("飞书 WebSocket 重连成功");
-                    } catch (Exception e) {
-                        logger.error("重连飞书 WebSocket 失败", Map.of(
-                                "attempt", String.valueOf(reconnectAttempts),
-                                "error", e.getMessage()
-                        ));
-                        scheduleReconnect();
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        // 计算指数退避延迟
+        long delay = Math.min(INITIAL_RECONNECT_DELAY_MS * (1L << (attempt - 1)), MAX_RECONNECT_DELAY_MS);
+        
+        scheduler.schedule(() -> {
+            if (!isRunning()) {
+                return;
             }
-        }).start();
+            logger.info("尝试重新连接飞书 WebSocket", Map.of(
+                    "attempt", String.valueOf(attempt),
+                    "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS),
+                    "delay_ms", String.valueOf(delay)
+            ));
+            
+            try {
+                tokenManager.getValidToken();
+                String wsUrl = fetchWebSocketEndpoint();
+                connectWebSocket(wsUrl);
+                startHeartbeat();
+                
+                // 连接成功后重置重连计数
+                reconnectAttempts.set(0);
+                logger.info("飞书 WebSocket 重连成功");
+            } catch (Exception e) {
+                logger.error("重连飞书 WebSocket 失败", Map.of(
+                        "attempt", String.valueOf(attempt),
+                        "error", e.getMessage()
+                ));
+                scheduleReconnect();
+            }
+        }, delay, TimeUnit.MILLISECONDS);
     }
     
     /**

@@ -243,23 +243,21 @@ public abstract class CliCommand {
     protected void registerTools(AgentRuntime agentRuntime, Config config, MessageBus bus, LLMProvider provider) {
         String workspace = config.getWorkspacePath();
 
-        // 初始化 SecurityGuard
-        SecurityGuard securityGuard = null;
-        if (config.getAgent().isRestrictToWorkspace()) {
-            List<String> customBlacklist = config.getAgent().getCommandBlacklist();
-            if (customBlacklist != null && !customBlacklist.isEmpty()) {
-                securityGuard = new SecurityGuard(workspace, true, customBlacklist);
-            } else {
-                securityGuard = new SecurityGuard(workspace, true);
-            }
+        // 初始化 SecurityGuard（始终创建，restrictToWorkspace 由配置决定）
+        boolean restrictToWorkspace = config.getAgent().isRestrictToWorkspace();
+        List<String> customBlacklist = config.getAgent().getCommandBlacklist();
+        SecurityGuard securityGuard;
+        if (customBlacklist != null && !customBlacklist.isEmpty()) {
+            securityGuard = new SecurityGuard(workspace, restrictToWorkspace, customBlacklist);
+        } else {
+            securityGuard = new SecurityGuard(workspace, restrictToWorkspace);
         }
 
-        // 文件工具
-        agentRuntime.registerTool(securityGuard != null ? new ReadFileTool(securityGuard) : new ReadFileTool());
-        agentRuntime.registerTool(securityGuard != null ? new WriteFileTool(securityGuard) : new WriteFileTool());
-
-        agentRuntime.registerTool(securityGuard != null ? new ListDirTool(securityGuard) : new ListDirTool());
-        agentRuntime.registerTool(securityGuard != null ? new EditFileTool(securityGuard) : new EditFileTool(workspace));
+        // 文件工具（SecurityGuard 强制注入）
+        agentRuntime.registerTool(new ReadFileTool(securityGuard));
+        agentRuntime.registerTool(new WriteFileTool(securityGuard));
+        agentRuntime.registerTool(new ListDirTool(securityGuard));
+        agentRuntime.registerTool(new EditFileTool(securityGuard));
 
         // 执行工具
         agentRuntime.registerTool(new ExecTool(workspace, securityGuard));
@@ -295,6 +293,7 @@ public abstract class CliCommand {
         int maxIterations = config.getAgent().getMaxToolIterations();
         SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry(), model, maxIterations);
         agentRuntime.registerTool(new SpawnTool(subagentManager));
+        agentRuntime.registerShutdownHook(subagentManager::shutdown);
 
         // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
         agentRuntime.registerTool(new SkillsTool(workspace, agentRuntime.getSkillsLoader(),

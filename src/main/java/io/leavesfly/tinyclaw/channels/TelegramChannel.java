@@ -73,13 +73,13 @@ public class TelegramChannel extends BaseChannel {
     public TelegramChannel(ChannelsConfig.TelegramConfig config, MessageBus bus) {
         super("telegram", bus, config.getAllowFrom());
         this.config = config;
-        this.httpClient = new OkHttpClient.Builder()
+        this.httpClient = SharedHttpClient.get().newBuilder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .build();
-        // 长轮询需要更长的读超时
-        this.longPollClient = new OkHttpClient.Builder()
+        // 长轮询需要更长的读超时（共享基座连接池）
+        this.longPollClient = SharedHttpClient.get().newBuilder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)

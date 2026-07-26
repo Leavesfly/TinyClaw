@@ -52,7 +52,7 @@
               ▼            ▼            ▼
       ┌─────────────┐  ┌─────────┐  ┌────────────────┐
       │ Agent 引擎   │  │ 网关服务 │  │ Web 控制台      │
-      │ AgentLoop    │  │ Gateway  │  │ WebConsoleServer│
+      │ AgentRuntime    │  │ Gateway  │  │ WebConsoleServer│
       │ MessageRouter│  │ Bootstrap│  │ + 16 Handlers  │
       │ ProviderMgr  │  └────┬────┘  └────┬───────────┘
       └──────┬───────┘       │            │
@@ -119,24 +119,24 @@
 - 已注册命令：`onboard`、`agent`、`gateway`、`status`、`cron`、`skills`、`mcp`、`demo`，以及内置的 `version`。
 - `run(String[] args)` 负责：无参数时打印帮助；`version` / `--version` / `-v` 输出版本；其余命令从注册表查找并执行。
 - 典型调用链：
-  - CLI 交互模式：`TinyClaw.main` → `AgentCommand` → `GatewayBootstrap` / 直接创建 `AgentLoop`
-  - 网关模式：`TinyClaw.main` → `GatewayCommand` → 启动消息通道 + AgentLoop + WebConsoleServer
+  - CLI 交互模式：`TinyClaw.main` → `AgentCommand` → `GatewayBootstrap` / 直接创建 `AgentRuntime`
+  - 网关模式：`TinyClaw.main` → `GatewayCommand` → 启动消息通道 + AgentRuntime + WebConsoleServer
 
 ### 3.2 Agent 引擎 — `agent/`
 
-Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计，将原来集中在 AgentLoop 中的逻辑拆分为多个专职组件：
+Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计，将原来集中在 AgentRuntime 中的逻辑拆分为多个专职组件：
 
 | 组件 | 职责 |
 |------|------|
-| `AgentLoop` | 生命周期管理、消息消费主循环、直连模式入口 |
+| `AgentRuntime` | 生命周期管理、消息消费主循环、直连模式入口 |
 | `MessageRouter` | 消息路由（用户消息 / 系统消息 / 指令消息）、流式输出选择 |
 | `ProviderManager` | LLM Provider 初始化、热重载、模型路由、组件构建 |
-| `ProviderComponents` | Provider 派生组件容器（LLMExecutor / Summarizer / Evolver / Orchestrator 等） |
-| `LLMExecutor` | LLM 调用与工具迭代循环 |
+| `ProviderComponents` | Provider 派生组件容器（ReActExecutor / Summarizer / Evolver / Orchestrator 等） |
+| `ReActExecutor` | LLM 调用与工具迭代循环 |
 | `ContextBuilder` | 系统提示组装（分段式架构） |
 | `SessionSummarizer` | 会话摘要与上下文压缩 |
 
-#### AgentLoop — 生命周期与消息消费
+#### AgentRuntime — 生命周期与消息消费
 
 - 支持两类入口：
   - `run()`：网关模式，持续从 `MessageBus.consumeInbound()` 取消息
@@ -146,7 +146,7 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 
 #### MessageRouter — 消息路由
 
-从 AgentLoop 中抽取的消息路由器，负责：
+从 AgentRuntime 中抽取的消息路由器，负责：
 - **用户消息**：构建上下文 → LLM 调用 → 持久化 → 发布回复
 - **系统消息**（`channel=system`）：解析原始来源，路由回原始会话
 - **指令消息**（如 `/new`）：执行指令逻辑（创建新会话等）
@@ -156,10 +156,10 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 
 - **模型路由**：从 `ModelsConfig` 反查 model 对应的 provider，保证 api_base 与 model 始终来自同一绑定关系
 - **热重载**：`reloadModel()` 支持运行时切换模型和 Provider，无需重启
-- **组件构建**：`applyProvider()` 一次性构建所有派生组件（LLMExecutor、SessionSummarizer、MemoryEvolver、FeedbackManager、PromptOptimizer、AgentOrchestrator）
+- **组件构建**：`applyProvider()` 一次性构建所有派生组件（ReActExecutor、SessionSummarizer、MemoryEvolver、FeedbackManager、PromptOptimizer、AgentOrchestrator）
 - 使用 `volatile` + `synchronized` 保证线程安全
 
-#### LLMExecutor — LLM 迭代与工具调用
+#### ReActExecutor — LLM 迭代与工具调用
 
 - 使用 `LLMProvider.chat` / `chatStream` 调用远端模型
 - 工具调用循环：解析 tool_calls → `ToolRegistry.execute(...)` → 追加结果 → 再次调用 LLM
@@ -387,7 +387,7 @@ Prompt 变体存储结构：
   - 单次定时 `AT`
 - 存储：`CronJob` + `CronSchedule` + `CronJobState` + `CronPayload` 持久化到 `workspace/cron/jobs.json`
 - 使用 `CronStore` 接口抽象存储，`ReentrantReadWriteLock` 保证并发安全
-- 到期任务通过回调构造消息，调用 `AgentLoop.processDirectWithChannel`
+- 到期任务通过回调构造消息，调用 `AgentRuntime.processDirectWithChannel`
 
 ### 3.12 会话管理 — `session/`
 
@@ -459,7 +459,7 @@ Prompt 变体存储结构：
 用户 ──► IM 平台 ──► Channel ──► MessageBus.inbound
                                         │
                                         ▼
-                                   AgentLoop.run()
+                                   AgentRuntime.run()
                                         │
                                         ▼
                                    MessageRouter.route()
@@ -472,7 +472,7 @@ Prompt 变体存储结构：
                      ContextBuilder.buildMessages()
                               │
                               ▼
-                     LLMExecutor.execute()
+                     ReActExecutor.execute()
                          │         ▲
                          ▼         │
                     LLM Provider ──┘
@@ -495,7 +495,7 @@ Prompt 变体存储结构：
 ### 4.2 多 Agent 协同流
 
 ```text
-用户消息 ──► AgentLoop ──► LLMExecutor
+用户消息 ──► AgentRuntime ──► ReActExecutor
                                │
                           (tool_call: collaborate)
                                │
@@ -610,11 +610,11 @@ src/main/java/io/leavesfly/tinyclaw/
 ├── TinyClaw.java                    # 应用入口，命令注册与分发
 ├── TinyClawException.java           # 统一异常基类
 ├── agent/                           # Agent 核心引擎
-│   ├── AgentLoop.java               #   生命周期管理与消息消费主循环
+│   ├── AgentRuntime.java               #   生命周期管理与消息消费主循环
 │   ├── MessageRouter.java           #   消息路由（用户/系统/指令）
 │   ├── ProviderManager.java         #   LLM Provider 管理与热重载
 │   ├── ProviderComponents.java      #   Provider 派生组件容器
-│   ├── LLMExecutor.java             #   LLM 调用与工具迭代循环
+│   ├── ReActExecutor.java             #   LLM 调用与工具迭代循环
 │   ├── ContextBuilder.java          #   分段式上下文构建
 │   ├── SessionSummarizer.java       #   会话摘要与上下文压缩
 │   ├── AgentConstants.java          #   Agent 相关常量
@@ -743,7 +743,7 @@ src/main/java/io/leavesfly/tinyclaw/
 
 1. 创建 `XxxTool implements Tool`
 2. 实现 `name()` / `description()` / `parameters()` / `execute(args)`
-3. 在 `AgentLoop` 或 `ToolRegistry` 中注册
+3. 在 `AgentRuntime` 或 `ToolRegistry` 中注册
 4. 如需流式输出支持，额外实现 `StreamAwareTool`
 
 ### 7.3 添加新的协同策略

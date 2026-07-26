@@ -16,6 +16,11 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -61,6 +66,7 @@ public class CronService {
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();  // 复用实例，避免重复创建
     
     private static final long CHECK_INTERVAL_MS = 1000L;  // 任务检查间隔（毫秒）
+    private static final long JOB_TIMEOUT_MS = 10 * 60_000L;  // 单个任务执行超时（10 分钟）
     private static final int ID_BYTE_LENGTH = 8;          // ID 字节长度
     private static final String HEX_FORMAT = "%02x";      // 十六进制格式
     
@@ -75,6 +81,7 @@ public class CronService {
     private final ReentrantReadWriteLock lock;            // 读写锁
     private volatile boolean running;                     // 服务运行状态
     private Thread runnerThread;                          // 调度线程
+    private ExecutorService jobExecutor;                  // 任务执行线程池（隔离调度线程，支持超时中断）
     
     private final CronParser cronParser;                  // Cron 表达式解析器
     
@@ -136,6 +143,11 @@ public class CronService {
             saveStoreUnsafe();
             
             running = true;
+            jobExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, THREAD_NAME + "-worker");
+                thread.setDaemon(true);
+                return thread;
+            });
             runnerThread = new Thread(this::runLoop, THREAD_NAME);
             runnerThread.setDaemon(true);
             runnerThread.start();
@@ -161,6 +173,10 @@ public class CronService {
             running = false;
             if (runnerThread != null) {
                 runnerThread.interrupt();
+            }
+            if (jobExecutor != null) {
+                jobExecutor.shutdownNow();
+                jobExecutor = null;
             }
             
             logger.info("Cron service stopped");
@@ -264,17 +280,39 @@ public class CronService {
     /**
      * 调用任务处理器。
      * 
+     * 在独立工作线程池中执行并设置超时，避免卡住的任务阻塞整个调度循环。
+     * 
      * @param job 要执行的任务
      * @return 错误信息，成功返回 null
      */
     private String invokeJobHandler(CronJob job) {
-        try {
-            if (onJob != null) {
-                onJob.handle(job);
-            }
+        if (onJob == null) {
             return null;
+        }
+        ExecutorService executor = jobExecutor;
+        if (executor == null) {
+            return null;
+        }
+        
+        Future<?> future = executor.submit(() -> onJob.handle(job));
+        try {
+            future.get(JOB_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return null;
+        } catch (TimeoutException e) {
+            future.cancel(true);  // 中断卡住的任务，释放工作线程
+            String error = "job timed out after " + JOB_TIMEOUT_MS + "ms";
+            logger.error("Job execution timed out", Map.of(
+                    "job_id", job.getId(),
+                    "timeout_ms", JOB_TIMEOUT_MS
+            ));
+            return error;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            return "interrupted";
         } catch (Exception e) {
-            String error = e.getMessage();
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            String error = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
             logger.error("Job execution failed", Map.of(
                     "job_id", job.getId(),
                     "error", error
@@ -346,6 +384,16 @@ public class CronService {
             }
         } else {
             Long nextRun = computeNextRun(job.getSchedule(), System.currentTimeMillis());
+            if (nextRun == null) {
+                // 重算失败时显式禁用并记录错误，避免任务静默永久停摆
+                job.setEnabled(false);
+                job.getState().setLastStatus(STATUS_ERROR);
+                job.getState().setLastError("failed to compute next run, job disabled");
+                logger.error("Failed to compute next run, job disabled", Map.of(
+                        "job_id", job.getId(),
+                        "name", job.getName() != null ? job.getName() : ""
+                ));
+            }
             job.getState().setNextRunAtMs(nextRun);
         }
     }

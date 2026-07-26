@@ -175,6 +175,12 @@ class ProviderManager {
         SessionSummarizer summarizer = new SessionSummarizer(
                 sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);
 
+        // 热切换 Provider 时先关闭旧组件的摘要线程池，避免线程残留
+        ProviderComponents old = this.components;
+        if (old != null && old.summarizer != null) {
+            old.summarizer.shutdown();
+        }
+
         this.components = buildOptionalComponents(
                 newProvider, model, maxIterations, reActExecutor, summarizer, memoryEvolver, tokenUsageStore);
 

@@ -100,16 +100,25 @@ public class AuthHandler {
         String username = json.path("username").asText("");
         String password = json.path("password").asText("");
 
-        if (gatewayConfig.getUsername().equals(username)
-                && gatewayConfig.getPassword().equals(password)) {
-            String token = Base64.getEncoder().encodeToString(
-                    (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+        // 常量时间比较，防止时序侧信道攻击
+        boolean usernameMatch = java.security.MessageDigest.isEqual(
+                gatewayConfig.getUsername().getBytes(StandardCharsets.UTF_8),
+                username.getBytes(StandardCharsets.UTF_8));
+        boolean passwordMatch = java.security.MessageDigest.isEqual(
+                gatewayConfig.getPassword().getBytes(StandardCharsets.UTF_8),
+                password.getBytes(StandardCharsets.UTF_8));
+
+        if (usernameMatch && passwordMatch) {
+            // 签发随机不透明 Session Token（不再返回 Base64 凭据）
+            String token = security.createSessionToken();
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("success", true);
             result.put("token", token);
             WebUtils.sendJson(exchange, 200, result, corsOrigin);
         } else {
-            logger.warn("Login failed", Map.of("username", username));
+            // 不记录用户提交的凭据内容，避免日志泄露敏感信息（用户可能误输密码到用户名框）
+            logger.warn("Login failed", Map.of(
+                    "remote", String.valueOf(exchange.getRemoteAddress())));
             WebUtils.sendJson(exchange, 401, WebUtils.errorJson("Invalid username or password"), corsOrigin);
         }
     }

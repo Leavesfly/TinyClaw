@@ -55,6 +55,15 @@ public class SkillsLoader {
     );
 
     /**
+     * 获取内置技能名称列表（唯一数据源，供 CLI 等外部组件共享，避免多处维护不一致）
+     *
+     * @return 不可变的内置技能名称列表
+     */
+    public static List<String> getBuiltinSkillNames() {
+        return List.copyOf(BUILTIN_SKILL_NAMES);
+    }
+
+    /**
      * classpath 中内置技能的基础路径
      */
     private static final String BUILTIN_SKILLS_PATH = "skills/";

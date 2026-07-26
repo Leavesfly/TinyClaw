@@ -12,6 +12,8 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
 
@@ -36,7 +38,7 @@ import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
  * 5. 删除已摘要的历史，只保留摘要和最近消息
  * 
  * 并发处理：
- * - 摘要操作在后台线程异步执行
+ * - 摘要操作在单线程守护线程池中异步执行，避免每会话创建新线程
  * - 使用 ConcurrentHashMap.newKeySet() 防止同一会话重复摘要
  * - 守护线程模式，不阻塞主程序退出
  * 
@@ -74,6 +76,7 @@ public class SessionSummarizer {
     private final Set<String> summarizing;      // 正在摘要的会话集合（防重复）
     private final MemoryStore memoryStore;      // 记忆存储，用于写入结构化记忆
     private final MemoryEvolver memoryEvolver;  // 记忆进化引擎，用于从摘要中提炼记忆
+    private final ExecutorService summarizeExecutor;  // 摘要任务线程池（单线程守护）
     
     /**
      * 构造会话摘要器。
@@ -95,6 +98,11 @@ public class SessionSummarizer {
         this.memoryStore = memoryStore;
         this.memoryEvolver = memoryEvolver;
         this.summarizing = ConcurrentHashMap.newKeySet();
+        this.summarizeExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "session-summarizer");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
     
     /**
@@ -137,21 +145,29 @@ public class SessionSummarizer {
             return;  // 已经在摘要中，跳过
         }
         
-        Thread thread = new Thread(() -> {
-            try {
-                summarize(sessionKey);
-            } catch (Exception e) {
-                String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                logger.error("Async summarize failed", Map.of(
-                        "session_key", sessionKey,
-                        "error", errorMsg));
-            } finally {
-                summarizing.remove(sessionKey);
-            }
-        });
-        thread.setDaemon(true);
-        thread.setName("summarizer-" + sessionKey);
-        thread.start();
+        try {
+            summarizeExecutor.submit(() -> {
+                try {
+                    summarize(sessionKey);
+                } catch (Exception e) {
+                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    logger.error("Async summarize failed", Map.of(
+                            "session_key", sessionKey,
+                            "error", errorMsg));
+                } finally {
+                    summarizing.remove(sessionKey);
+                }
+            });
+        } catch (Exception e) {
+            summarizing.remove(sessionKey);  // 线程池已关闭等提交失败场景，回滚标记
+        }
+    }
+    
+    /**
+     * 关闭摘要线程池，停止接收新的摘要任务。
+     */
+    public void shutdown() {
+        summarizeExecutor.shutdown();
     }
     
     /**

@@ -112,12 +112,44 @@ public class StringUtils {
     }
     
     /**
-     * 估算字符串的 token 数量（简单启发式：每 4 个字符约等于 1 个 token）
+     * 估算字符串的 token 数量（CJK 感知）。
+     *
+     * <p>中文/日文/韩文字符实际约 0.7 token/字符，而 ASCII 约 4 字符/token。
+     * 此方法按字符类型分别累加，对混合文本提供更精确的估算。</p>
      */
     public static int estimateTokens(String s) {
         if (s == null || s.isEmpty()) {
             return 0;
         }
-        return s.length() / ESTIMATED_CHARS_PER_TOKEN;
+        int cjkChars = 0;
+        int otherChars = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (isCjkCharacter(c)) {
+                cjkChars++;
+            } else {
+                otherChars++;
+            }
+        }
+        // CJK: ~0.7 token/字符；其他: ~4 字符/token
+        return (int) (cjkChars * 0.7) + otherChars / ESTIMATED_CHARS_PER_TOKEN;
+    }
+
+    /**
+     * 判断字符是否为 CJK 统一表意文字、CJK 标点或全角字符。
+     */
+    private static boolean isCjkCharacter(char c) {
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(c);
+        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
+                || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
+                || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
+                || block == Character.UnicodeBlock.HIRAGANA
+                || block == Character.UnicodeBlock.KATAKANA
+                || block == Character.UnicodeBlock.HANGUL_SYLLABLES
+                || block == Character.UnicodeBlock.HANGUL_JAMO
+                || block == Character.UnicodeBlock.GENERAL_PUNCTUATION;  // 中文标点（“”‘’—…）
     }
 }

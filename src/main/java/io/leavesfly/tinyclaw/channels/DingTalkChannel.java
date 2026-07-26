@@ -64,6 +64,7 @@ public class DingTalkChannel extends BaseChannel {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     private static final String STREAM_CONNECTION_URL = "https://api.dingtalk.com/v1.0/gateway/connections/open";
     private static final long RECONNECT_DELAY_SECONDS = 5;
+    private static final int MAX_RECONNECT_ATTEMPTS = 10;
     
     private final ChannelsConfig.DingTalkConfig config;
     private final OkHttpClient httpClient;
@@ -75,6 +76,11 @@ public class DingTalkChannel extends BaseChannel {
     private WebSocket webSocket;
     private volatile boolean streamModeRunning = false;
     
+    // 重连调度器（单线程守护，避免每次重连创建新线程）与重连计数
+    private volatile java.util.concurrent.ScheduledExecutorService reconnectScheduler;
+    private final java.util.concurrent.atomic.AtomicInteger reconnectAttempts =
+            new java.util.concurrent.atomic.AtomicInteger();
+    
     /**
      * 创建钉钉通道
      * 
@@ -84,7 +90,7 @@ public class DingTalkChannel extends BaseChannel {
     public DingTalkChannel(ChannelsConfig.DingTalkConfig config, MessageBus bus) {
         super("dingtalk", bus, config.getAllowFrom());
         this.config = config;
-        this.httpClient = new OkHttpClient.Builder()
+        this.httpClient = SharedHttpClient.get().newBuilder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
@@ -122,6 +128,11 @@ public class DingTalkChannel extends BaseChannel {
      */
     private void startStreamMode() {
         streamModeRunning = true;
+        reconnectScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "DingTalkReconnectThread");
+            thread.setDaemon(true);
+            return thread;
+        });
         Thread streamThread = new Thread(() -> {
             while (isRunning() && streamModeRunning) {
                 try {
@@ -160,6 +171,7 @@ public class DingTalkChannel extends BaseChannel {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
                 logger.info("钉钉 Stream 连接已建立");
+                reconnectAttempts.set(0);
             }
             
             @Override
@@ -329,27 +341,39 @@ public class DingTalkChannel extends BaseChannel {
     }
     
     /**
-     * 调度重连
+     * 调度重连：通过单线程调度器延迟重试，失败后再次排队，
+     * 避免重连失败后静默停摆
      */
     private void scheduleReconnect() {
         if (!streamModeRunning || !isRunning()) {
             return;
         }
         
-        Thread reconnectThread = new Thread(() -> {
-            try {
-                Thread.sleep(RECONNECT_DELAY_SECONDS * 1000);
-                if (streamModeRunning && isRunning()) {
-                    connectStreamConnection();
-                }
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                logger.error("重连失败", Map.of("error", e.getMessage()));
+        int attempt = reconnectAttempts.incrementAndGet();
+        if (attempt > MAX_RECONNECT_ATTEMPTS) {
+            logger.error("钉钉 Stream 重连次数已达上限，停止重连", Map.of(
+                    "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS)));
+            return;
+        }
+        
+        java.util.concurrent.ScheduledExecutorService scheduler = reconnectScheduler;
+        if (scheduler == null || scheduler.isShutdown()) {
+            return;
+        }
+        
+        scheduler.schedule(() -> {
+            if (!streamModeRunning || !isRunning()) {
+                return;
             }
-        }, "DingTalkReconnectThread");
-        reconnectThread.setDaemon(true);
-        reconnectThread.start();
+            try {
+                connectStreamConnection();
+            } catch (Exception e) {
+                logger.error("重连失败", Map.of(
+                        "attempt", String.valueOf(attempt),
+                        "error", e.getMessage()));
+                scheduleReconnect();
+            }
+        }, RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS);
     }
     
     @Override
@@ -361,6 +385,12 @@ public class DingTalkChannel extends BaseChannel {
         if (webSocket != null) {
             webSocket.close(1000, "Channel stopped");
             webSocket = null;
+        }
+        
+        java.util.concurrent.ScheduledExecutorService scheduler = reconnectScheduler;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+            reconnectScheduler = null;
         }
         
         setRunning(false);

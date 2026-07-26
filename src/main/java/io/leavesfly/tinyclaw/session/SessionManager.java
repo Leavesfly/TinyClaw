@@ -8,10 +8,15 @@ import io.leavesfly.tinyclaw.providers.Message;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -28,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 
  * 设计特点：
  * - 线程安全：使用ConcurrentHashMap确保并发访问安全
- * - 懒加载：会话数据按需从磁盘加载到内存
+ * - 懒加载：启动时仅建立会话键索引，会话内容首次访问时才从磁盘加载
  * - 自动保存：关键操作后自动持久化会话状态
  * - 错误恢复：具备从存储故障中恢复的能力
  * 
@@ -50,16 +55,18 @@ public class SessionManager {
             .registerModule(new JavaTimeModule());
     
     private final Map<String, Session> sessions;
+    private final Set<String> knownKeys;   // 磁盘上存在的会话键索引（含未加载的）
     private final String storagePath;
     
     public SessionManager(String storagePath) {
         this.sessions = new ConcurrentHashMap<>();
+        this.knownKeys = ConcurrentHashMap.newKeySet();
         this.storagePath = storagePath;
         
         if (storagePath != null && !storagePath.isEmpty()) {
             try {
                 Files.createDirectories(Paths.get(storagePath));
-                loadSessions();
+                indexSessions();
             } catch (IOException e) {
                 logger.warn("Failed to create session storage directory: " + e.getMessage());
             }
@@ -69,7 +76,7 @@ public class SessionManager {
     /**
      * 获取或创建会话（通过键）
      * 
-     * 如果指定键的会话已存在则返回现有会话，
+     * 如果指定键的会话已在内存则直接返回；如果磁盘上存在则懒加载；
      * 否则创建新的会话实例并缓存。
      * 
      * @param key 会话键（通常是"channel:chat_id"格式）
@@ -77,10 +84,29 @@ public class SessionManager {
      */
     public Session getOrCreate(String key) {
         return sessions.computeIfAbsent(key, k -> {
+            Session loaded = loadSessionFromDisk(k);
+            if (loaded != null) {
+                return loaded;
+            }
             Session session = new Session(k);
+            knownKeys.add(k);
             logger.debug("Created new session: " + key);
             return session;
         });
+    }
+    
+    /**
+     * 获取已存在的会话（内存优先，未加载时尝试从磁盘懒加载），不存在返回 null
+     */
+    private Session getLoaded(String key) {
+        Session session = sessions.get(key);
+        if (session != null) {
+            return session;
+        }
+        if (!knownKeys.contains(key)) {
+            return null;
+        }
+        return sessions.computeIfAbsent(key, this::loadSessionFromDisk);
     }
     
     /**
@@ -112,7 +138,7 @@ public class SessionManager {
      * 获取当前 session 中 assistant 消息的数量，用于计算 afterAssistantIndex。
      */
     public int countAssistantMessages(String sessionKey) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         return session != null ? session.countAssistantMessages() : 0;
     }
 
@@ -120,7 +146,7 @@ public class SessionManager {
      * 获取会话的工具调用记录列表
      */
     public java.util.List<ToolCallRecord> getToolCallRecords(String sessionKey) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         return session != null ? session.getToolCallRecords() : java.util.List.of();
     }
     
@@ -128,7 +154,7 @@ public class SessionManager {
      * 获取会话的消息历史
      */
     public List<Message> getHistory(String sessionKey) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         return session != null ? session.getHistory() : List.of();
     }
     
@@ -136,7 +162,7 @@ public class SessionManager {
      * 获取会话的摘要
      */
     public String getSummary(String sessionKey) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         return session != null ? session.getSummary() : "";
     }
     
@@ -144,7 +170,7 @@ public class SessionManager {
      * 设置会话的摘要
      */
     public void setSummary(String sessionKey, String summary) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         if (session != null) {
             session.setSummary(summary);
             session.setUpdated(Instant.now());
@@ -155,14 +181,14 @@ public class SessionManager {
      * 截断会话的历史记录
      */
     public void truncateHistory(String sessionKey, int keepLast) {
-        Session session = sessions.get(sessionKey);
+        Session session = getLoaded(sessionKey);
         if (session != null) {
             session.truncateHistory(keepLast);
         }
     }
     
     /**
-     * 保存会话到磁盘
+     * 保存会话到磁盘（原子写：先写临时文件再 rename，防止进程崩溃截断 JSON）
      */
     public void save(Session session) {
         if (storagePath == null || storagePath.isEmpty()) {
@@ -172,9 +198,21 @@ public class SessionManager {
         try {
             // 将 session key 转换为安全的文件名（Windows 不支持冒号）
             String safeFileName = toSafeFileName(session.getKey());
-            String sessionFile = Paths.get(storagePath, safeFileName + ".json").toString();
-            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(session);
-            Files.writeString(Paths.get(sessionFile), json);
+            Path target = Paths.get(storagePath, safeFileName + ".json");
+            // 紧凑格式序列化（比 pretty-print 减少 ~40% IO，会话文件无需人工阅读）
+            String json = objectMapper.writeValueAsString(session);
+            
+            // 原子写：先写临时文件再重命名，避免进程中途退出留下半个 JSON
+            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
+            Files.writeString(temp, json);
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            // 设置文件权限为 600（仅所有者可读写，防止其他用户读取会话内容）
+            setOwnerOnlyPermissions(target);
+            knownKeys.add(session.getKey());
             logger.debug("Saved session: " + session.getKey());
         } catch (IOException e) {
             logger.error("Failed to save session: " + session.getKey(), Map.of("error", e.getMessage()));
@@ -182,9 +220,10 @@ public class SessionManager {
     }
     
     /**
-     * 从磁盘加载所有会话
+     * 启动时建立会话键索引（仅提取 key 字段，不保留消息内容），
+     * 避免全量会话常驻内存；会话内容在首次访问时懒加载
      */
-    private void loadSessions() {
+    private void indexSessions() {
         if (storagePath == null) {
             return;
         }
@@ -201,23 +240,50 @@ public class SessionManager {
         
         for (File file : files) {
             try {
-                String content = Files.readString(file.toPath());
-                Session session = objectMapper.readValue(content, Session.class);
-                sessions.put(session.getKey(), session);
-                logger.debug("Loaded session: " + session.getKey());
+                String key = objectMapper.readTree(file).path("key").asText(null);
+                if (key != null && !key.isEmpty()) {
+                    knownKeys.add(key);
+                }
             } catch (IOException e) {
-                logger.warn("Failed to load session from file: " + file.getName());
+                logger.warn("Failed to index session file: " + file.getName());
             }
         }
         
-        logger.info("Loaded " + sessions.size() + " sessions from storage");
+        logger.info("Indexed " + knownKeys.size() + " sessions from storage");
     }
     
     /**
-     * 获取所有会话键
+     * 从磁盘加载单个会话，文件不存在或解析失败返回 null
+     */
+    private Session loadSessionFromDisk(String key) {
+        if (storagePath == null || storagePath.isEmpty()) {
+            return null;
+        }
+        
+        Path path = Paths.get(storagePath, toSafeFileName(key) + ".json");
+        if (!Files.exists(path)) {
+            return null;
+        }
+        
+        try {
+            String content = Files.readString(path);
+            Session session = objectMapper.readValue(content, Session.class);
+            knownKeys.add(session.getKey());
+            logger.debug("Loaded session: " + session.getKey());
+            return session;
+        } catch (IOException e) {
+            logger.warn("Failed to load session from file: " + path.getFileName());
+            return null;
+        }
+    }
+    
+    /**
+     * 获取所有会话键（含磁盘上尚未加载的会话）
      */
     public java.util.Set<String> getSessionKeys() {
-        return sessions.keySet();
+        Set<String> keys = new java.util.LinkedHashSet<>(knownKeys);
+        keys.addAll(sessions.keySet());
+        return keys;
     }
     
     /**
@@ -225,7 +291,8 @@ public class SessionManager {
      */
     public void deleteSession(String key) {
         Session removed = sessions.remove(key);
-        if (removed != null && storagePath != null) {
+        boolean known = knownKeys.remove(key);
+        if ((removed != null || known) && storagePath != null) {
             try {
                 String safeFileName = toSafeFileName(key);
                 Files.deleteIfExists(Paths.get(storagePath, safeFileName + ".json"));
@@ -237,6 +304,20 @@ public class SessionManager {
     }
     
     /**
+     * 设置文件权限为 owner-only (600)。
+     * 在非 POSIX 文件系统（如 Windows）上静默跳过。
+     */
+    private void setOwnerOnlyPermissions(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException | IOException e) {
+            // 非 POSIX 文件系统（Windows）或权限设置失败，静默忽略
+        }
+    }
+
+    /**
      * 将 session key 转换为安全的文件名
      * 将不安全字符（如冒号、斜杠）替换为下划线
      */
@@ -246,14 +327,5 @@ public class SessionManager {
         }
         // 替换文件名中的不安全字符: : / \ * ? " < > |
         return key.replaceAll("[:/\\\\*?\"<>|]", "_");
-    }
-    
-    /**
-     * 从安全文件名还原 session key
-     * 注意：这是一个近似还原，无法完美还原所有情况
-     */
-    private String fromSafeFileName(String safeFileName) {
-        // 将单个下划线还原为冒号（第一个出现的下划线）
-        return safeFileName.replaceFirst("_", ":");
     }
 }

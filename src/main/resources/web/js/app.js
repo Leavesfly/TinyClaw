@@ -120,7 +120,7 @@ class TinyClawConsole {
     async authFetch(url, options = {}) {
         if (this.authToken) {
             options.headers = options.headers || {};
-            options.headers['Authorization'] = 'Basic ' + this.authToken;
+            options.headers['Authorization'] = 'Bearer ' + this.authToken;
         }
         const response = await fetch(url, options);
         if (response.status === 401) {

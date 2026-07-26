@@ -211,11 +211,36 @@ class StringUtilsTest {
     }
 
     @Test
-    @DisplayName("estimateTokens: 按约4字符/token估算")
-    void estimateTokens_ValidInput_EstimatesCorrectly() {
+    @DisplayName("estimateTokens: 纯 ASCII 按约4字符/token估算")
+    void estimateTokens_AsciiInput_EstimatesCorrectly() {
         // 8 字符 / 4 = 2 tokens
         assertEquals(2, StringUtils.estimateTokens("12345678"));
         // 16 字符 / 4 = 4 tokens
         assertEquals(4, StringUtils.estimateTokens("1234567890123456"));
+    }
+
+    @Test
+    @DisplayName("estimateTokens: 纯中文按约0.7token/字符估算")
+    void estimateTokens_ChineseInput_EstimatesHigher() {
+        // 10 个中文字符 * 0.7 = 7 tokens
+        String chinese = "你好世界测试中文估算";
+        assertEquals(7, StringUtils.estimateTokens(chinese));
+    }
+
+    @Test
+    @DisplayName("estimateTokens: 中英混合文本分别累加")
+    void estimateTokens_MixedInput_CombinesEstimates() {
+        // "你好" (2 CJK * 0.7 = 1) + "hello" (5 ASCII / 4 = 1) = 2
+        assertEquals(2, StringUtils.estimateTokens("你好hello"));
+    }
+
+    @Test
+    @DisplayName("estimateTokens: 中文估算结果大于纯字符数/4")
+    void estimateTokens_Chinese_GreaterThanNaiveEstimate() {
+        String chinese = "这是一段较长的中文文本用于测试估算";
+        int cjkAware = StringUtils.estimateTokens(chinese);
+        int naive = chinese.length() / 4;
+        assertTrue(cjkAware > naive,
+                "CJK 感知估算 (" + cjkAware + ") 应大于纯字符/4 (" + naive + ")");
     }
 }

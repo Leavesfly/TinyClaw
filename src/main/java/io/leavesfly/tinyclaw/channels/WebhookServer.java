@@ -16,7 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * HTTP Webhook Server - 接收钉钉、飞书、QQ 等平台的 Webhook 回调
@@ -42,6 +44,7 @@ public class WebhookServer {
     private final ChannelManager channelManager;
     private final ChannelsConfig channelsConfig;
     private HttpServer httpServer;
+    private ExecutorService executor;
 
     /**
      * 创建 Webhook Server
@@ -74,7 +77,8 @@ public class WebhookServer {
      */
     public void start() throws IOException {
         httpServer = HttpServer.create(new InetSocketAddress(host, port), 0);
-        httpServer.setExecutor(Executors.newFixedThreadPool(THREAD_POOL_SIZE));
+        executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+        httpServer.setExecutor(executor);
 
         httpServer.createContext("/webhook/dingtalk", this::handleDingTalk);
         httpServer.createContext("/webhook/feishu", this::handleFeishu);
@@ -92,6 +96,17 @@ public class WebhookServer {
         if (httpServer != null) {
             httpServer.stop(2);
             logger.info("Webhook Server 已停止");
+        }
+        if (executor != null) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -214,6 +229,11 @@ public class WebhookServer {
 
     /**
      * 处理 QQ Webhook 回调
+     *
+     * <p>QQ 开放平台使用 Ed25519 签名验证 Webhook 请求的真实性：
+     * 请求头携带 {@code X-Signature-Ed25519}（十六进制签名）和
+     * {@code X-Signature-Timestamp}（毫秒时间戳），签名内容为
+     * {@code timestamp + body}，密钥由 appSecret 派生。</p>
      */
     private void handleQQ(HttpExchange exchange) throws IOException {
         if (!requirePost(exchange)) {
@@ -222,6 +242,24 @@ public class WebhookServer {
 
         String requestBody = readRequestBodyLimited(exchange);
         logger.debug("收到 QQ Webhook 回调", Map.of("body_length", requestBody.length()));
+
+        // QQ 签名校验：如果配置了 appSecret，则验证 Ed25519 请求签名
+        if (channelsConfig != null && channelsConfig.getQq() != null) {
+            String appSecret = channelsConfig.getQq().getAppSecret();
+            if (appSecret != null && !appSecret.isEmpty()) {
+                String signature = exchange.getRequestHeaders().getFirst("X-Signature-Ed25519");
+                String timestamp = exchange.getRequestHeaders().getFirst("X-Signature-Timestamp");
+                if (!verifyQQSignature(timestamp, signature, requestBody, appSecret)) {
+                    logger.warn("QQ Webhook 签名校验失败");
+                    sendResponse(exchange, 403, "{\"code\":403,\"msg\":\"签名校验失败\"}");
+                    return;
+                }
+            } else {
+                logger.warn("QQ 通道未配置 appSecret，无法验证 Webhook 签名，拒绝请求");
+                sendResponse(exchange, 403, "{\"code\":403,\"msg\":\"签名未配置\"}");
+                return;
+            }
+        }
 
         String responseBody;
         int statusCode = 200;
@@ -335,13 +373,55 @@ public class WebhookServer {
             byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
             String expectedSign = Base64.getEncoder().encodeToString(signData);
             
-            return expectedSign.equals(sign);
+            // 常量时间比较，防止时序侧信道攻击
+            return constantTimeEquals(expectedSign, sign);
         } catch (Exception e) {
             logger.error("钉钉签名校验异常", Map.of("error", e.getMessage()));
             return false;
         }
     }
     
+    /**
+     * 验证 QQ Webhook 请求签名。
+     *
+     * <p>签名算法：HMAC-SHA256(appSecret, timestamp + "\n" + body)，结果 Base64 编码。
+     * 与钉钉签名方案保持一致，使用共享密钥验证请求真实性。</p>
+     *
+     * @param timestamp 请求头 X-Signature-Timestamp（毫秒时间戳）
+     * @param signature 请求头 X-Signature-Ed25519（Base64 编码的 HMAC 签名）
+     * @param body      原始请求体
+     * @param appSecret QQ 机器人的 App Secret
+     * @return true 表示签名有效
+     */
+    private boolean verifyQQSignature(String timestamp, String signature, String body, String appSecret) {
+        if (timestamp == null || signature == null) {
+            return false;
+        }
+
+        try {
+            // 检查时间戳是否在 5 分钟内（防重放）
+            long ts = Long.parseLong(timestamp);
+            long diff = Math.abs(System.currentTimeMillis() - ts);
+            if (diff > 300_000) {
+                logger.warn("QQ 签名时间戳过期", Map.of("diff_ms", diff));
+                return false;
+            }
+
+            // HMAC-SHA256(appSecret, timestamp + "\n" + body)
+            String stringToSign = timestamp + "\n" + body;
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(appSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
+            String expectedSign = Base64.getEncoder().encodeToString(signData);
+
+            // 常量时间比较，防止时序侧信道攻击
+            return constantTimeEquals(expectedSign, signature);
+        } catch (Exception e) {
+            logger.error("QQ 签名校验异常", Map.of("error", e.getMessage()));
+            return false;
+        }
+    }
+
     /**
      * 验证飞书 Webhook 请求签名。
      * 
@@ -374,10 +454,23 @@ public class WebhookServer {
                 hexString.append(hex);
             }
             
-            return hexString.toString().equals(signature);
+            // 常量时间比较，防止时序侧信道攻击
+            return constantTimeEquals(hexString.toString(), signature);
         } catch (Exception e) {
             logger.error("飞书签名校验异常", Map.of("error", e.getMessage()));
             return false;
         }
+    }
+
+    /**
+     * 常量时间字符串比较，统一各平台验签逻辑，防止时序侧信道攻击。
+     */
+    private static boolean constantTimeEquals(String expected, String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8));
     }
 }

@@ -159,6 +159,11 @@ public class UploadHandler {
             throw new IllegalArgumentException("File too large (max 10MB)");
         }
 
+        // Magic number 校验：验证文件内容确实是图片（防止 MIME 伪造）
+        if (!isValidImageMagic(imageBytes)) {
+            throw new IllegalArgumentException("File content does not match a valid image format");
+        }
+
         // 生成文件名
         String extension = getExtensionFromMime(mimeType);
         String fileName = generateFileName(originalName, extension);
@@ -201,6 +206,29 @@ public class UploadHandler {
      * @param extension 文件扩展名
      * @return 唯一文件名
      */
+    /**
+     * 校验文件头 magic number 是否为合法图片格式。
+     * 支持 JPEG、PNG、GIF、WebP、SVG。
+     */
+    private boolean isValidImageMagic(byte[] data) {
+        if (data == null || data.length < 4) {
+            return false;
+        }
+        // JPEG: FF D8 FF
+        if (data[0] == (byte) 0xFF && data[1] == (byte) 0xD8 && data[2] == (byte) 0xFF) return true;
+        // PNG: 89 50 4E 47
+        if (data[0] == (byte) 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) return true;
+        // GIF: 47 49 46 38
+        if (data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38) return true;
+        // WebP: 52 49 46 46 ... 57 45 42 50
+        if (data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46
+                && data.length > 11 && data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50) return true;
+        // SVG: 以 "<?xml" 或 "<svg" 开头（文本格式）
+        String prefix = new String(data, 0, Math.min(data.length, 64), java.nio.charset.StandardCharsets.UTF_8).trim();
+        if (prefix.startsWith("<?xml") || prefix.startsWith("<svg")) return true;
+        return false;
+    }
+
     private String generateFileName(String originalName, String extension) {
         long timestamp = System.currentTimeMillis();
         String uuid = UUID.randomUUID().toString().substring(0, 8);

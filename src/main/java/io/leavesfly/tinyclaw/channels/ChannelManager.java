@@ -58,133 +58,61 @@ public class ChannelManager {
         initChannels();
     }
     
+    /**
+     * 通道注册描述符：封装每个通道的“启用条件 + 构造逻辑”，
+     * 消除原来 7 个几乎相同的 initXxxChannel 方法。
+     */
+    private record ChannelDescriptor(String name, java.util.function.Supplier<Boolean> enabledCheck,
+                                     java.util.function.Supplier<Channel> factory) {}
+
     private void initChannels() {
         logger.info("Initializing channel manager");
         
-        ChannelsConfig channelsConfig = config.getChannels();
+        ChannelsConfig cc = config.getChannels();
         
-        initTelegramChannel(channelsConfig);
-        initDiscordChannel(channelsConfig);
-        initWhatsAppChannel(channelsConfig);
-        initFeishuChannel(channelsConfig);
-        initDingTalkChannel(channelsConfig);
-        initQQChannel(channelsConfig);
-        initMaixCamChannel(channelsConfig);
+        // 数据驱动的通道注册表：新增通道只需在此追加一行
+        List<ChannelDescriptor> registry = List.of(
+            new ChannelDescriptor("telegram",
+                () -> cc.getTelegram().isEnabled() && isNotBlank(cc.getTelegram().getToken()),
+                () -> new TelegramChannel(cc.getTelegram(), bus)),
+            new ChannelDescriptor("discord",
+                () -> cc.getDiscord().isEnabled() && isNotBlank(cc.getDiscord().getToken()),
+                () -> new DiscordChannel(cc.getDiscord(), bus)),
+            new ChannelDescriptor("whatsapp",
+                () -> cc.getWhatsapp().isEnabled() && isNotBlank(cc.getWhatsapp().getBridgeUrl()),
+                () -> new WhatsAppChannel(cc.getWhatsapp(), bus)),
+            new ChannelDescriptor("feishu",
+                () -> cc.getFeishu().isEnabled(),
+                () -> new FeishuChannel(cc.getFeishu(), bus)),
+            new ChannelDescriptor("dingtalk",
+                () -> cc.getDingtalk().isEnabled() && isNotBlank(cc.getDingtalk().getClientId()),
+                () -> new DingTalkChannel(cc.getDingtalk(), bus)),
+            new ChannelDescriptor("qq",
+                () -> cc.getQq().isEnabled(),
+                () -> new QQChannel(cc.getQq(), bus)),
+            new ChannelDescriptor("maixcam",
+                () -> cc.getMaixcam().isEnabled(),
+                () -> new MaixCamChannel(cc.getMaixcam(), bus))
+        );
+        
+        for (ChannelDescriptor desc : registry) {
+            if (!desc.enabledCheck().get()) {
+                continue;
+            }
+            try {
+                channels.put(desc.name(), desc.factory().get());
+                logger.info(desc.name() + " channel enabled successfully");
+            } catch (Exception e) {
+                logger.error("Failed to initialize " + desc.name() + " channel",
+                        Map.of("error", e.getMessage() != null ? e.getMessage() : "unknown"));
+            }
+        }
         
         logger.info("Channel initialization completed", Map.of("enabled_channels", channels.size()));
     }
-    
-    /**
-     * 初始化 Telegram 通道
-     */
-    private void initTelegramChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getTelegram().isEnabled() 
-                && channelsConfig.getTelegram().getToken() != null 
-                && !channelsConfig.getTelegram().getToken().isEmpty()) {
-            try {
-                Channel telegram = new TelegramChannel(channelsConfig.getTelegram(), bus);
-                channels.put("telegram", telegram);
-                logger.info("Telegram channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize Telegram channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化 Discord 通道
-     */
-    private void initDiscordChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getDiscord().isEnabled() 
-                && channelsConfig.getDiscord().getToken() != null 
-                && !channelsConfig.getDiscord().getToken().isEmpty()) {
-            try {
-                Channel discord = new DiscordChannel(channelsConfig.getDiscord(), bus);
-                channels.put("discord", discord);
-                logger.info("Discord channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize Discord channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化 WhatsApp 通道
-     */
-    private void initWhatsAppChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getWhatsapp().isEnabled() 
-                && channelsConfig.getWhatsapp().getBridgeUrl() != null 
-                && !channelsConfig.getWhatsapp().getBridgeUrl().isEmpty()) {
-            try {
-                Channel whatsapp = new WhatsAppChannel(channelsConfig.getWhatsapp(), bus);
-                channels.put("whatsapp", whatsapp);
-                logger.info("WhatsApp channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize WhatsApp channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化飞书通道
-     */
-    private void initFeishuChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getFeishu().isEnabled()) {
-            try {
-                Channel feishu = new FeishuChannel(channelsConfig.getFeishu(), bus);
-                channels.put("feishu", feishu);
-                logger.info("Feishu channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize Feishu channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化钉钉通道
-     */
-    private void initDingTalkChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getDingtalk().isEnabled() 
-                && channelsConfig.getDingtalk().getClientId() != null 
-                && !channelsConfig.getDingtalk().getClientId().isEmpty()) {
-            try {
-                Channel dingtalk = new DingTalkChannel(channelsConfig.getDingtalk(), bus);
-                channels.put("dingtalk", dingtalk);
-                logger.info("DingTalk channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize DingTalk channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化 QQ 通道
-     */
-    private void initQQChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getQq().isEnabled()) {
-            try {
-                Channel qq = new QQChannel(channelsConfig.getQq(), bus);
-                channels.put("qq", qq);
-                logger.info("QQ channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize QQ channel", Map.of("error", e.getMessage()));
-            }
-        }
-    }
-    
-    /**
-     * 初始化 MaixCam 通道
-     */
-    private void initMaixCamChannel(ChannelsConfig channelsConfig) {
-        if (channelsConfig.getMaixcam().isEnabled()) {
-            try {
-                Channel maixcam = new MaixCamChannel(channelsConfig.getMaixcam(), bus);
-                channels.put("maixcam", maixcam);
-                logger.info("MaixCam channel enabled successfully");
-            } catch (Exception e) {
-                logger.error("Failed to initialize MaixCam channel", Map.of("error", e.getMessage()));
-            }
-        }
+
+    private static boolean isNotBlank(String s) {
+        return s != null && !s.isEmpty();
     }
     
     /**

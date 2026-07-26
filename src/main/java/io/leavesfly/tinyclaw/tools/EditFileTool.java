@@ -39,34 +39,17 @@ import java.util.Map;
 public class EditFileTool implements Tool {
     
     private final SecurityGuard securityGuard;
-    // 已废弃：使用 SecurityGuard 代替
-    private final String allowedDir;
     
     /**
-     * 创建无目录限制的编辑工具
-     */
-    public EditFileTool() {
-        this.securityGuard = null;
-        this.allowedDir = null;
-    }
-    
-    /**
-     * 创建带 SecurityGuard 的编辑工具
+     * 创建带 SecurityGuard 的编辑工具。
+     *
+     * @param securityGuard 安全守卫（必填）
      */
     public EditFileTool(SecurityGuard securityGuard) {
+        if (securityGuard == null) {
+            throw new IllegalArgumentException("SecurityGuard is required for EditFileTool");
+        }
         this.securityGuard = securityGuard;
-        this.allowedDir = null;
-    }
-    
-    /**
-     * 创建带目录限制的编辑工具（已废弃：使用 SecurityGuard 代替）
-     * 
-     * @param allowedDir 允许编辑的目录路径
-     */
-    @Deprecated
-    public EditFileTool(String allowedDir) {
-        this.securityGuard = null;
-        this.allowedDir = allowedDir;
     }
     
     @Override
@@ -115,7 +98,7 @@ public class EditFileTool implements Tool {
      * 此方法确保相对路径始终基于 workspace 解析。
      */
     private String resolveAgainstWorkspace(String path) {
-        if (securityGuard == null || Paths.get(path).isAbsolute()) {
+        if (Paths.get(path).isAbsolute()) {
             return path;
         }
         return Paths.get(securityGuard.getWorkspace(), path).normalize().toString();
@@ -142,19 +125,10 @@ public class EditFileTool implements Tool {
         String resolvedPathString = resolveAgainstWorkspace(path);
         Path resolvedPath = Paths.get(resolvedPathString).normalize();
 
-        // 使用 SecurityGuard 进行安全检查（推荐）
-        if (securityGuard != null) {
-            String error = securityGuard.checkFilePath(resolvedPathString);
-            if (error != null) {
-                throw new SecurityException(error);
-            }
-        }
-        // 使用 allowedDir 进行旧式检查
-        else if (allowedDir != null && !allowedDir.isEmpty()) {
-            Path allowedPath = Paths.get(allowedDir).toAbsolutePath().normalize();
-            if (!resolvedPath.startsWith(allowedPath)) {
-                throw new SecurityException("路径 " + path + " 在允许目录 " + allowedDir + " 之外");
-            }
+        // 使用 SecurityGuard 进行安全检查
+        String error = securityGuard.checkFilePath(resolvedPathString);
+        if (error != null) {
+            throw new SecurityException(error);
         }
         
         // 检查文件是否存在

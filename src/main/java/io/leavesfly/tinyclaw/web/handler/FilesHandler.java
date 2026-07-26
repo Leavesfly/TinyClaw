@@ -48,12 +48,22 @@ public class FilesHandler {
     /**
      * 入口路由：处理文件访问请求。
      *
-     * 注意：此接口不做 Auth 认证，因为 <img src> 等浏览器直接请求不会携带 Authorization header。
-     * 安全性由路径遍历防护（禁止 ..）和 workspace 边界检查保证，只允许访问 workspace 内的文件。
+     * <p>认证策略：由于 {@code <img src>} 等浏览器直接请求不会携带 Authorization header，
+     * 此接口支持通过 {@code ?token=<sessionToken>} 查询参数进行认证。
+     * 认证未启用时维持原有行为（仅路径防护）。</p>
      */
     public void handle(HttpExchange exchange) throws IOException {
-        // 仅处理 CORS 预检，不做 Auth 认证
+        // 处理 CORS 预检
         if (security.handleCorsPreFlight(exchange)) return;
+
+        // 认证检查：认证启用时要求有效的 session token（通过查询参数或 Authorization 头）
+        if (config.getGateway().isAuthEnabled()) {
+            if (!isAuthenticated(exchange)) {
+                WebUtils.sendJson(exchange, 401, WebUtils.errorJson("Authentication required"),
+                        config.getGateway().getCorsOrigin());
+                return;
+            }
+        }
 
         String method = exchange.getRequestMethod();
         String corsOrigin = config.getGateway().getCorsOrigin();
@@ -143,6 +153,35 @@ public class FilesHandler {
         }
         
         logger.debug("File served", Map.of("path", filePath.toString(), "size", fileBytes.length));
+    }
+
+    /**
+     * 检查请求是否已认证：支持 Authorization 头（Bearer/Basic）或 ?token= 查询参数。
+     */
+    private boolean isAuthenticated(HttpExchange exchange) {
+        // 方式 1：Authorization 头（Bearer 或 Basic）
+        String authHeader = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring("Bearer ".length());
+            if (security.isValidSessionToken(token)) {
+                return true;
+            }
+        }
+
+        // 方式 2：?token= 查询参数（兼容 <img src> 等无法设置 header 的场景）
+        String query = exchange.getRequestURI().getQuery();
+        if (query != null) {
+            for (String param : query.split("&")) {
+                if (param.startsWith("token=")) {
+                    String token = param.substring("token=".length());
+                    if (security.isValidSessionToken(token)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

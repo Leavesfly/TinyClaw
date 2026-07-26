@@ -14,6 +14,7 @@ import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
 
@@ -48,17 +49,21 @@ public class ReActExecutor {
     /** Hook 调度器（可选，未注入时等价于无 hook 零开销） */
     private volatile HookDispatcher hookDispatcher = HookDispatcher.noop();
 
-    /** 当前会话标识（用于反馈记录） */
-    private String currentSessionKey;
-    
-    /** 当前流式回调（用于传递给子代理和协同工具） */
-    private volatile LLMProvider.EnhancedStreamCallback currentEnhancedCallback;
-    
-    /** 中断标志位，用于外部请求中断当前执行循环 */
-    private volatile boolean aborted = false;
-    
-    /** 运行状态标志位，标记当前是否有执行循环正在运行 */
-    private volatile boolean running = false;
+    /** 当前活跃的执行状态集合，支持多会话并发执行互不干扰 */
+    private final Set<ExecutionState> activeExecutions = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 单次执行的状态容器。每次 execute/executeStream 调用创建独立实例，
+     * 避免多会话并发时共用实例字段导致中断标志/回调互相覆盖。
+     */
+    private static final class ExecutionState {
+        final LLMProvider.EnhancedStreamCallback enhancedCallback;
+        volatile boolean aborted;
+
+        ExecutionState(LLMProvider.EnhancedStreamCallback enhancedCallback) {
+            this.enhancedCallback = enhancedCallback;
+        }
+    }
     
     /**
      * LLM 调用器函数式接口，用于抽象不同执行模式的 LLM 调用行为。
@@ -114,20 +119,13 @@ public class ReActExecutor {
     }
     
     /**
-     * 请求中断当前执行循环。
-     * 设置中断标志位后，executeLoop 会在下一次迭代开始时检测到并提前退出。
+     * 请求中断当前所有正在运行的执行循环。
+     * 仅标记调用时刻已活跃的执行，不影响之后启动的新执行。
      */
     public void abort() {
-        this.aborted = true;
-    }
-
-    /**
-     * 检查当前执行是否已被中断。
-     *
-     * @return 如果已被中断返回 true
-     */
-    public boolean isAborted() {
-        return aborted;
+        for (ExecutionState state : activeExecutions) {
+            state.aborted = true;
+        }
     }
 
     /**
@@ -136,7 +134,7 @@ public class ReActExecutor {
      * @return 如果正在运行返回 true
      */
     public boolean isRunning() {
-        return running;
+        return !activeExecutions.isEmpty();
     }
     
     /**
@@ -154,16 +152,15 @@ public class ReActExecutor {
      * @throws Exception 调用 LLM 或执行工具时的异常
      */
     public String execute(List<Message> messages, String sessionKey) throws Exception {
-        this.currentSessionKey = sessionKey;
-        this.aborted = false;
-        this.running = true;
+        ExecutionState state = new ExecutionState(null);
+        activeExecutions.add(state);
         try {
-            return executeLoop(messages, sessionKey, null, 
+            return executeLoop(messages, sessionKey, null, state,
                 msgs -> callLLM(msgs),
                 (msgs, toolCalls, sk, iter) -> executeToolCalls(msgs, toolCalls, sk, iter)
             );
         } finally {
-            this.running = false;
+            activeExecutions.remove(state);
         }
     }
     
@@ -181,19 +178,17 @@ public class ReActExecutor {
      */
     public String executeStream(List<Message> messages, String sessionKey, 
                                LLMProvider.StreamCallback callback) throws Exception {
-        this.currentSessionKey = sessionKey;
-        this.aborted = false;
-        this.running = true;
-        this.currentEnhancedCallback = LLMProvider.EnhancedStreamCallback.wrap(callback);
+        LLMProvider.EnhancedStreamCallback enhancedCallback = LLMProvider.EnhancedStreamCallback.wrap(callback);
+        ExecutionState state = new ExecutionState(enhancedCallback);
+        activeExecutions.add(state);
         
         try {
-            return executeLoop(messages, sessionKey, callback,
+            return executeLoop(messages, sessionKey, callback, state,
                 msgs -> callLLMStream(msgs, callback),
-                (msgs, toolCalls, sk, iter) -> executeToolCallsWithStream(msgs, toolCalls, sk, iter)
+                (msgs, toolCalls, sk, iter) -> executeToolCallsWithStream(msgs, toolCalls, sk, iter, enhancedCallback)
             );
         } finally {
-            this.running = false;
-            this.currentEnhancedCallback = null;
+            activeExecutions.remove(state);
         }
     }
     
@@ -205,6 +200,7 @@ public class ReActExecutor {
      * @param messages 完整的对话历史
      * @param sessionKey 会话标识符
      * @param streamCallback 流式回调（可选，仅流式模式需要）
+     * @param state 本次执行的状态容器（中断标志等）
      * @param llmCaller LLM 调用器
      * @param toolExecutor 工具执行器
      * @return LLM 的最终回答内容
@@ -212,6 +208,7 @@ public class ReActExecutor {
      */
     private String executeLoop(List<Message> messages, String sessionKey, 
                               LLMProvider.StreamCallback streamCallback,
+                              ExecutionState state,
                               LLMCaller llmCaller, ToolExecutor toolExecutor) throws Exception {
         int iteration = 0;
         String finalContent = null;
@@ -221,7 +218,7 @@ public class ReActExecutor {
         
         while (iteration < maxIterations) {
             // 检查中断标志
-            if (aborted) {
+            if (state.aborted) {
                 logger.info("LLM execution aborted by user", Map.of(
                         "iteration", iteration,
                         "sessionKey", sessionKey != null ? sessionKey : "unknown"
@@ -315,15 +312,6 @@ public class ReActExecutor {
         return finalContent;
     }
         
-    /**
-     * 获取当前的增强流式回调（用于子代理和协同工具）。
-     * 
-     * @return 当前的增强流式回调，如果不在流式模式则返回 null
-     */
-    public LLMProvider.EnhancedStreamCallback getEnhancedCallback() {
-        return currentEnhancedCallback;
-    }
-    
     /**
      * 调用 LLM 进行对话。
      * 
@@ -468,9 +456,11 @@ public class ReActExecutor {
      * @param toolCalls 工具调用列表
      * @param sessionKey 会话标识符
      * @param iteration 当前迭代次数
+     * @param enhancedCallback 本次执行的增强流式回调
      */
     private void executeToolCallsWithStream(List<Message> messages, List<ToolCall> toolCalls, 
-                                            String sessionKey, int iteration) {
+                                            String sessionKey, int iteration,
+                                            LLMProvider.EnhancedStreamCallback enhancedCallback) {
         for (ToolCall toolCall : toolCalls) {
             String toolName = toolCall.getName();
             Map<String, Object> args = toolCall.getArguments();
@@ -487,17 +477,17 @@ public class ReActExecutor {
             ));
             
             // 通过增强回调输出工具调用开始事件
-            if (currentEnhancedCallback != null) {
-                currentEnhancedCallback.onEvent(StreamEvent.toolStart(toolName, args));
+            if (enhancedCallback != null) {
+                enhancedCallback.onEvent(StreamEvent.toolStart(toolName, args));
             }
             
             // 执行工具
-            String result = executeToolCallWithStream(toolCall, sessionKey);
+            String result = runToolWithHooks(toolCall, sessionKey, enhancedCallback);
             boolean success = result != null && !result.startsWith("Error:");
             
             // 通过增强回调输出工具调用结束事件
-            if (currentEnhancedCallback != null) {
-                currentEnhancedCallback.onEvent(StreamEvent.toolEnd(toolName, result, success));
+            if (enhancedCallback != null) {
+                enhancedCallback.onEvent(StreamEvent.toolEnd(toolName, result, success));
             }
 
             // 持久化工具调用记录（摘要信息），用于历史会话回放时重建工具调用卡片
@@ -526,20 +516,6 @@ public class ReActExecutor {
      */
     private String executeToolCall(ToolCall toolCall, String sessionKey) {
         return runToolWithHooks(toolCall, sessionKey, null);
-    }
-
-    /**
-     * 执行单个工具调用（流式模式）。
-     *
-     * <p>与非流式版本的唯一差异在于会将当前的流式回调传递给支持流式输出的工具
-     * （如 SpawnTool、CollaborateTool）。</p>
-     *
-     * @param toolCall   工具调用信息
-     * @param sessionKey 会话标识符
-     * @return 工具执行结果，如果执行失败返回以 "Error:" 开头的错误信息
-     */
-    private String executeToolCallWithStream(ToolCall toolCall, String sessionKey) {
-        return runToolWithHooks(toolCall, sessionKey, currentEnhancedCallback);
     }
 
     /**
@@ -573,8 +549,8 @@ public class ReActExecutor {
         if (preDecision.isDeny()) {
             String reason = preDecision.getReason() == null ? "blocked by hook" : preDecision.getReason();
             String blocked = "Error: blocked by hook: " + reason;
-            if (feedbackManager != null && currentSessionKey != null) {
-                feedbackManager.recordToolResult(currentSessionKey, toolName, false);
+            if (feedbackManager != null && sessionKey != null) {
+                feedbackManager.recordToolResult(sessionKey, toolName, false);
             }
             return blocked;
         }
@@ -619,8 +595,8 @@ public class ReActExecutor {
         }
 
         // ---------- 反馈记录 ----------
-        if (feedbackManager != null && currentSessionKey != null) {
-            feedbackManager.recordToolResult(currentSessionKey, toolName, success);
+        if (feedbackManager != null && sessionKey != null) {
+            feedbackManager.recordToolResult(sessionKey, toolName, success);
         }
 
         return result;

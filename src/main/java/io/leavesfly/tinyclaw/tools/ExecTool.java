@@ -39,11 +39,10 @@ public class ExecTool implements Tool {
     private final String workingDir;             // 默认工作目录
     private final long timeoutSeconds;           // 命令超时时间
     
-    public ExecTool(String workingDir) {
-        this(workingDir, null);
-    }
-    
     public ExecTool(String workingDir, SecurityGuard securityGuard) {
+        if (securityGuard == null) {
+            throw new IllegalArgumentException("SecurityGuard is required for ExecTool");
+        }
         this.securityGuard = securityGuard;
         this.workingDir = workingDir;
         this.timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
@@ -314,13 +313,7 @@ public class ExecTool implements Tool {
      * @return 错误信息，无错误则返回 null
      */
     private String guardCommand(String command) {
-        if (securityGuard != null) {
-            return securityGuard.checkCommand(command);
-        }
-        
-        // 未启用 SecurityGuard 时发出警告
-        logger.warn("命令执行未启用 SecurityGuard，存在安全风险");
-        return null;
+        return securityGuard.checkCommand(command);
     }
     
     /**

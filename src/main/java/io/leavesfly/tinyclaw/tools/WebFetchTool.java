@@ -5,12 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
+import okhttp3.Dns;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,6 +54,7 @@ public class WebFetchTool implements Tool {
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .cookieJar(new InMemoryCookieJar())
+                .dns(new SafeDns())
                 .build();
     }
     
@@ -110,6 +114,11 @@ public class WebFetchTool implements Tool {
         
         if (uri.getHost() == null || uri.getHost().isEmpty()) {
             throw new IllegalArgumentException("URL 中缺少域名");
+        }
+        
+        // SSRF 防护：拒绝字面量私有/保留 IP 地址
+        if (isPrivateAddress(uri.getHost())) {
+            throw new IllegalArgumentException("禁止访问内网/保留地址: " + uri.getHost());
         }
         
         int max = maxChars;
@@ -229,6 +238,71 @@ public class WebFetchTool implements Tool {
         return result;
     }
     
+    // ==================== SSRF 防护 ====================
+
+    /**
+     * 判断 host 是否为私有/保留 IP 地址（字面量检查）。
+     * 用于 URL 入口处的快速拦截，DNS 解析后的拦截由 {@link SafeDns} 负责。
+     */
+    static boolean isPrivateAddress(String host) {
+        try {
+            InetAddress addr = InetAddress.getByName(host);
+            return isBlockedInetAddress(addr);
+        } catch (UnknownHostException e) {
+            // 无法解析的域名交由 SafeDns 在连接时处理
+            return false;
+        }
+    }
+
+    /**
+     * 判断 InetAddress 是否属于应被拦截的私有/保留网段。
+     */
+    static boolean isBlockedInetAddress(InetAddress addr) {
+        return addr.isLoopbackAddress()
+                || addr.isSiteLocalAddress()       // 10/8, 172.16/12, 192.168/16
+                || addr.isLinkLocalAddress()       // 169.254/16, fe80::/10
+                || addr.isAnyLocalAddress()        // 0.0.0.0, ::
+                || addr.isMulticastAddress()       // 224/4, ff00::/8
+                || isIpv6UniqueLocal(addr);        // fc00::/7 (Java 未内置检测)
+    }
+
+    /**
+     * 检查是否为 IPv6 Unique Local Address (fc00::/7)。
+     * Java 的 isSiteLocalAddress() 不覆盖此网段。
+     */
+    private static boolean isIpv6UniqueLocal(InetAddress addr) {
+        byte[] bytes = addr.getAddress();
+        if (bytes.length == 16) {
+            int firstByte = bytes[0] & 0xFF;
+            return firstByte == 0xFC || firstByte == 0xFD;
+        }
+        return false;
+    }
+
+    /**
+     * 安全 DNS 解析器：过滤私有/保留 IP 地址，防止 SSRF 攻击。
+     *
+     * <p>在每次连接（含重定向后的新连接）解析 DNS 时自动生效，
+     * 天然防御 DNS rebinding 和重定向绕过。</p>
+     */
+    private static final class SafeDns implements Dns {
+        @Override
+        public List<InetAddress> lookup(String hostname) throws UnknownHostException {
+            List<InetAddress> addresses = Dns.SYSTEM.lookup(hostname);
+            List<InetAddress> safe = new ArrayList<>();
+            for (InetAddress addr : addresses) {
+                if (!isBlockedInetAddress(addr)) {
+                    safe.add(addr);
+                }
+            }
+            if (safe.isEmpty()) {
+                throw new UnknownHostException(
+                        "所有解析地址均为内网/保留地址，拒绝连接: " + hostname);
+            }
+            return safe;
+        }
+    }
+
     /**
      * 简单的内存 CookieJar，按 host 保存 Cookie。
      * 主要用于在重定向链中保留服务端下发的 Cookie，避免重定向死循环。

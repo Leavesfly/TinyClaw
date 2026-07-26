@@ -63,7 +63,7 @@ public class QQChannel extends BaseChannel {
     public QQChannel(ChannelsConfig.QQConfig config, MessageBus bus) {
         super("qq", bus, config.getAllowFrom());
         this.config = config;
-        this.httpClient = new OkHttpClient.Builder()
+        this.httpClient = SharedHttpClient.get().newBuilder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
