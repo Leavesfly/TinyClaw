@@ -56,33 +56,42 @@ public class AgentOrchestrator {
         this.feedbackManager = feedbackManager;
     }
 
-    // ----- 策略实例（每种 Mode 对应一个策略） -----
-    private DiscussionStrategy discussionStrategy;
-    private TasksStrategy tasksStrategy;
-    private WorkflowStrategy workflowStrategy;
+    // ----- 策略注册表（Mode → Strategy，支持运行时注册新策略） -----
+    private final Map<CollaborationConfig.Mode, CollaborationStrategy> strategyRegistry = new java.util.EnumMap<>(CollaborationConfig.Mode.class);
 
     /**
-     * 初始化所有协同策略
+     * 初始化所有协同策略并注册到策略表
      */
     private void initStrategies() {
-        discussionStrategy = new DiscussionStrategy();
+        DiscussionStrategy discussionStrategy = new DiscussionStrategy();
         discussionStrategy.setExecutionContext(executionContext);
+        strategyRegistry.put(CollaborationConfig.Mode.DISCUSS, discussionStrategy);
 
-        tasksStrategy = new TasksStrategy(executorPool);
+        TasksStrategy tasksStrategy = new TasksStrategy(executorPool);
         tasksStrategy.setExecutionContext(executionContext);
+        strategyRegistry.put(CollaborationConfig.Mode.TASKS, tasksStrategy);
 
-        workflowStrategy = new WorkflowStrategy(executionContext, executorPool);
+        WorkflowStrategy workflowStrategy = new WorkflowStrategy(executionContext, executorPool);
+        strategyRegistry.put(CollaborationConfig.Mode.WORKFLOW, workflowStrategy);
     }
 
     /**
-     * 根据 Mode 解析具体的策略实现
+     * 根据 Mode 从注册表解析策略实现。
+     * 支持运行时通过 {@link #registerStrategy} 动态注册新模式。
      */
     private CollaborationStrategy resolveStrategy(CollaborationConfig config) {
-        return switch (config.getMode()) {
-            case DISCUSS -> discussionStrategy;
-            case TASKS -> tasksStrategy;
-            case WORKFLOW -> workflowStrategy;
-        };
+        CollaborationStrategy strategy = strategyRegistry.get(config.getMode());
+        if (strategy == null) {
+            throw new IllegalStateException("未注册的协同策略模式: " + config.getMode());
+        }
+        return strategy;
+    }
+
+    /**
+     * 动态注册新的协同策略（扩展新模式无需修改编排器代码）。
+     */
+    public void registerStrategy(CollaborationConfig.Mode mode, CollaborationStrategy strategy) {
+        strategyRegistry.put(mode, strategy);
     }
     
     /**
