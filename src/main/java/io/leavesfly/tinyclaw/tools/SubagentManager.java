@@ -8,6 +8,8 @@ import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
 import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.subagent.SubagentDefinition;
+import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
 
 import java.nio.file.Paths;
 import java.time.LocalDate;
@@ -30,6 +32,12 @@ public class SubagentManager {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("subagent");
 
+    /** 通用子代理的默认 system prompt（未指定专职定义时使用） */
+    private static final String DEFAULT_SYSTEM_PROMPT =
+            "你是一个子代理。独立完成给定的任务并报告结果。" +
+                    "你可以使用提供的工具来完成任务。" +
+                    "完成后，用简洁明了的方式汇报结果。";
+
     // 任务保留时间（默认1小时）
     private static final long TASK_RETENTION_MS = 60 * 60 * 1000;
     // 清理间隔（10分钟）
@@ -48,6 +56,9 @@ public class SubagentManager {
     private final ExecutorService executor;
     private volatile long lastCleanup = System.currentTimeMillis();
 
+    /** 动态子代理定义加载器（可选，注入后支持按 AGENT.md 定义派生专职子代理） */
+    private volatile SubagentsLoader agentsLoader;
+
     /**
      * 表示一个子代理任务
      */
@@ -55,6 +66,7 @@ public class SubagentManager {
         private String id;
         private String task;
         private String label;
+        private String agentName;
         private String originChannel;
         private String originChatId;
         private String status;
@@ -87,6 +99,14 @@ public class SubagentManager {
 
         public void setLabel(String label) {
             this.label = label;
+        }
+
+        public String getAgentName() {
+            return agentName;
+        }
+
+        public void setAgentName(String agentName) {
+            this.agentName = agentName;
         }
 
         public String getOriginChannel() {
@@ -155,12 +175,72 @@ public class SubagentManager {
     }
 
     /**
+     * 注入动态子代理定义加载器，启用 "按 AGENT.md 定义派生专职子代理" 能力。
+     */
+    public void setAgentsLoader(SubagentsLoader agentsLoader) {
+        this.agentsLoader = agentsLoader;
+    }
+
+    /**
+     * 获取动态子代理定义加载器（可能为 null）。
+     */
+    public SubagentsLoader getAgentsLoader() {
+        return agentsLoader;
+    }
+
+    /**
+     * 解析专职子代理定义。agentName 为空或未注入 loader 时返回 null（使用通用子代理）。
+     */
+    private SubagentDefinition resolveDefinition(String agentName) {
+        SubagentsLoader loader = this.agentsLoader;
+        if (loader == null || agentName == null || agentName.isEmpty()) {
+            return null;
+        }
+        SubagentDefinition def = loader.load(agentName);
+        if (def == null) {
+            logger.warn("指定的子代理定义不存在，回退到通用子代理", Map.of("agent", agentName));
+        }
+        return def;
+    }
+
+    /**
+     * 为子代理构建 ReActExecutor：按定义覆盖模型、工具白名单和最大迭代次数，
+     * 未定义的部分继承主 Agent 配置。
+     */
+    private ReActExecutor buildExecutor(SubagentDefinition def, SessionManager subagentSessions) {
+        String effectiveModel = def != null && def.getModel() != null ? def.getModel() : model;
+        int effectiveMaxIterations = def != null && def.getMaxIterations() > 0
+                ? def.getMaxIterations() : maxIterations;
+        ToolRegistry effectiveTools = tools;
+        if (def != null && def.getTools() != null && !def.getTools().isEmpty()) {
+            // 按白名单收窄工具权限，并排除 spawn 自身防止递归派生
+            List<String> allowed = new ArrayList<>(def.getTools());
+            allowed.remove("spawn");
+            effectiveTools = tools.filter(allowed);
+        }
+        return new ReActExecutor(provider, effectiveTools, subagentSessions,
+                effectiveModel, provider.getName(), effectiveMaxIterations);
+    }
+
+    /**
+     * 构建子代理的初始消息列表：专职定义的正文作为 system prompt，否则使用默认提示词。
+     */
+    private List<Message> buildMessages(SubagentDefinition def, String taskContent) {
+        String systemPrompt = def != null && def.getSystemPrompt() != null && !def.getSystemPrompt().isEmpty()
+                ? def.getSystemPrompt() : DEFAULT_SYSTEM_PROMPT;
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message("system", systemPrompt));
+        messages.add(new Message("user", taskContent));
+        return messages;
+    }
+
+    /**
      * 同步生成子代理并等待执行完成，返回子代理的实际执行结果。
      * 这是 "subagent as tool" 的核心方法：主 Agent 阻塞等待子 Agent 完成，
      * 结果作为 tool_result 直接返回给主 Agent 的推理循环。
      */
     public String spawnAndWait(String task, String label) {
-        return spawnAndWaitStream(task, label, null);
+        return spawnAndWaitStream(task, label, null, null);
     }
 
     /**
@@ -173,6 +253,20 @@ public class SubagentManager {
      * @return 子代理的执行结果
      */
     public String spawnAndWaitStream(String task, String label, LLMProvider.EnhancedStreamCallback callback) {
+        return spawnAndWaitStream(task, label, null, callback);
+    }
+
+    /**
+     * 同步生成子代理并等待执行完成（流式 + 专职子代理版本）。
+     *
+     * @param task      子代理任务描述
+     * @param label     任务标签（可选）
+     * @param agentName 专职子代理名称（可选，对应 workspace/agents/<name>/AGENT.md）
+     * @param callback  流式回调，用于输出子代理的执行过程（可为 null）
+     * @return 子代理的执行结果
+     */
+    public String spawnAndWaitStream(String task, String label, String agentName,
+                                     LLMProvider.EnhancedStreamCallback callback) {
         maybeCleanupOldTasks();
 
         String taskId = "subagent-" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + "-" + nextId.getAndIncrement();
@@ -181,6 +275,7 @@ public class SubagentManager {
         subagentTask.setId(taskId);
         subagentTask.setTask(task);
         subagentTask.setLabel(label != null ? label : "");
+        subagentTask.setAgentName(agentName);
         subagentTask.setOriginChannel("internal");
         subagentTask.setOriginChatId("sync");
         subagentTask.setStatus("running");
@@ -191,6 +286,7 @@ public class SubagentManager {
         logger.info("Spawned sync subagent", Map.of(
                 "task_id", taskId,
                 "label", label != null ? label : "",
+                "agent", agentName != null ? agentName : "generic",
                 "task_preview", task.length() > 50 ? task.substring(0, 50) + "..." : task
         ));
 
@@ -226,20 +322,15 @@ public class SubagentManager {
      * @param callback 流式回调（可为 null）
      */
     private void runTaskSyncWithStream(SubagentTask task, LLMProvider.EnhancedStreamCallback callback) {
-        List<Message> messages = new ArrayList<>();
-        messages.add(new Message("system",
-                "你是一个子代理。独立完成给定的任务并报告结果。" +
-                        "你可以使用提供的工具来完成任务。" +
-                        "完成后，用简洁明了的方式汇报结果。"));
-        messages.add(new Message("user", task.getTask()));
+        SubagentDefinition def = resolveDefinition(task.getAgentName());
+        List<Message> messages = buildMessages(def, task.getTask());
 
         String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
         SessionManager subagentSessions = new SessionManager(subagentSessionPath);
         String sessionKey = "subagent:" + task.getId();
 
         try {
-            ReActExecutor reActExecutor = new ReActExecutor(provider, tools, subagentSessions, model
-                    , provider.getName(), maxIterations);
+            ReActExecutor reActExecutor = buildExecutor(def, subagentSessions);
 
             String result;
 
@@ -272,6 +363,15 @@ public class SubagentManager {
      * 子代理在后台线程中运行，完成后通过 MessageBus 通知主 Agent。
      */
     public String spawn(String task, String label, String originChannel, String originChatId) {
+        return spawn(task, label, null, originChannel, originChatId);
+    }
+
+    /**
+     * 异步生成一个新的子代理任务（fire-and-forget + 专职子代理版本）。
+     *
+     * @param agentName 专职子代理名称（可选）
+     */
+    public String spawn(String task, String label, String agentName, String originChannel, String originChatId) {
         // 定期清理过期任务
         maybeCleanupOldTasks();
 
@@ -281,6 +381,7 @@ public class SubagentManager {
         subagentTask.setId(taskId);
         subagentTask.setTask(task);
         subagentTask.setLabel(label != null ? label : "");
+        subagentTask.setAgentName(agentName);
         subagentTask.setOriginChannel(originChannel != null ? originChannel : "cli");
         subagentTask.setOriginChatId(originChatId != null ? originChatId : "direct");
         subagentTask.setStatus("running");
@@ -294,26 +395,24 @@ public class SubagentManager {
         logger.info("Spawned subagent", Map.of(
                 "task_id", taskId,
                 "label", label,
+                "agent", agentName != null ? agentName : "generic",
                 "task_preview", task.length() > 50 ? task.substring(0, 50) + "..." : task
         ));
 
+        String agentSuffix = agentName != null && !agentName.isEmpty() ? "（专职子代理: " + agentName + "）" : "";
         if (label != null && !label.isEmpty()) {
-            return "已生成子代理 '" + label + "' 处理任务: " + task;
+            return "已生成子代理 '" + label + "'" + agentSuffix + " 处理任务: " + task;
         }
-        return "已生成子代理处理任务: " + task;
+        return "已生成子代理" + agentSuffix + "处理任务: " + task;
     }
 
     private void runTask(SubagentTask task) {
         task.setStatus("running");
         task.setCreated(System.currentTimeMillis());
 
-        // 为子代理构建消息
-        List<Message> messages = new ArrayList<>();
-        messages.add(new Message("system",
-                "你是一个子代理。独立完成给定的任务并报告结果。" +
-                        "你可以使用提供的工具来完成任务。" +
-                        "完成后，用简洁明了的方式汇报结果。"));
-        messages.add(new Message("user", task.getTask()));
+        // 为子代理构建消息（专职定义的正文作为 system prompt）
+        SubagentDefinition def = resolveDefinition(task.getAgentName());
+        List<Message> messages = buildMessages(def, task.getTask());
 
         // 为子代理创建独立的会话管理器
         String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
@@ -322,7 +421,7 @@ public class SubagentManager {
 
         try {
             // 使用 ReActExecutor 实现完整的工具调用和循环能力
-            ReActExecutor executor = new ReActExecutor(provider, tools, subagentSessions, model, provider.getName(), maxIterations);
+            ReActExecutor executor = buildExecutor(def, subagentSessions);
             String result = executor.execute(messages, sessionKey);
 
             task.setStatus("completed");

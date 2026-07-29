@@ -1,7 +1,10 @@
 package io.leavesfly.tinyclaw.tools;
 
 import io.leavesfly.tinyclaw.providers.LLMProvider;
+import io.leavesfly.tinyclaw.subagent.SubagentDefinition;
+import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +17,9 @@ import java.util.Map;
  * 
  * 异步模式（async=true）：子代理在后台运行，立即返回确认信息，
  * 完成后通过 MessageBus 通知主 Agent。
+ * 
+ * 支持通过 agent 参数指定专职子代理（workspace/agents/&lt;name&gt;/AGENT.md 动态定义），
+ * 可用子代理清单会动态注入工具描述和参数 enum，供主 Agent 的 LLM 感知与选择。
  */
 public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     
@@ -34,10 +40,23 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     
     @Override
     public String description() {
-        return "派生一个独立的子代理来执行指定任务。支持两种执行模式：\n" +
-               "- sync（默认）: 阻塞等待子代理完成并返回完整结果。当你需要基于子代理的输出继续推理、做决策或组合多个结果时使用。\n" +
-               "- async: 子代理在后台运行，立即返回确认信息，完成后通过消息通知。适合耗时较长且不需要立即使用结果的后台任务。\n" +
-               "适用场景：将复杂任务拆分为独立子任务、需要隔离上下文的专项处理、并行处理多个独立子问题。";
+        StringBuilder sb = new StringBuilder();
+        sb.append("派生一个独立的子代理来执行指定任务。支持两种执行模式：\n")
+          .append("- sync（默认）: 阻塞等待子代理完成并返回完整结果。当你需要基于子代理的输出继续推理、做决策或组合多个结果时使用。\n")
+          .append("- async: 子代理在后台运行，立即返回确认信息，完成后通过消息通知。适合耗时较长且不需要立即使用结果的后台任务。\n")
+          .append("适用场景：将复杂任务拆分为独立子任务、需要隔离上下文的专项处理、并行处理多个独立子问题。");
+
+        // 动态注入可用的专职子代理清单，供 LLM 判断该派给谁
+        SubagentsLoader loader = manager != null ? manager.getAgentsLoader() : null;
+        if (loader != null) {
+            String summary = loader.buildAgentsSummary();
+            if (!summary.isEmpty()) {
+                sb.append("\n可用的专职子代理（通过 agent 参数指定，任务与其擅长领域匹配时优先使用）：\n")
+                  .append(summary)
+                  .append("\n不指定 agent 时使用通用子代理。");
+            }
+        }
+        return sb.toString();
     }
     
     @Override
@@ -56,6 +75,23 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
         label.put("type", "string");
         label.put("description", "任务的简短标签（3-10字），用于在执行过程中标识和显示该子任务。例如：'代码审查'、'数据分析'。");
         properties.put("label", label);
+        
+        // 动态生成可用专职子代理的 enum（每次构建请求时重新读取，天然支持热更新）
+        SubagentsLoader loader = manager != null ? manager.getAgentsLoader() : null;
+        if (loader != null) {
+            List<SubagentDefinition> defs = loader.listAgents();
+            if (!defs.isEmpty()) {
+                Map<String, Object> agent = new LinkedHashMap<>();
+                agent.put("type", "string");
+                agent.put("description", "专职子代理名称（可选）。指定后使用该子代理的专属系统提示词、模型和工具集执行任务；不指定则使用通用子代理。");
+                List<String> names = new ArrayList<>();
+                for (SubagentDefinition def : defs) {
+                    names.add(def.getName());
+                }
+                agent.put("enum", names);
+                properties.put("agent", agent);
+            }
+        }
         
         Map<String, Object> async = new LinkedHashMap<>();
         async.put("type", "boolean");
@@ -100,6 +136,7 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
         }
         
         String label = (String) args.get("label");
+        String agent = (String) args.get("agent");
         
         if (manager == null) {
             return "错误: 子代理管理器未配置";
@@ -109,11 +146,11 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
         
         if (async) {
             // 异步模式：后台运行，立即返回确认信息
-            return manager.spawn(task, label, originChannel, originChatId);
+            return manager.spawn(task, label, agent, originChannel, originChatId);
         }
         
         // 同步模式（默认）：阻塞等待子代理完成，返回实际结果
         // 如果有流式回调，使用流式版本输出子代理的执行过程
-        return manager.spawnAndWaitStream(task, label, streamCallback);
+        return manager.spawnAndWaitStream(task, label, agent, streamCallback);
     }
 }

@@ -12,6 +12,7 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
+import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
 
 import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.tools.*;
@@ -292,6 +293,8 @@ public abstract class CliCommand {
         String model = config.getAgent().getModel();
         int maxIterations = config.getAgent().getMaxToolIterations();
         SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry(), model, maxIterations);
+        // 注入动态子代理定义加载器（workspace/agents/<name>/AGENT.md，支持运行时热更新）
+        subagentManager.setAgentsLoader(new SubagentsLoader(workspace));
         agentRuntime.registerTool(new SpawnTool(subagentManager));
         agentRuntime.registerShutdownHook(subagentManager::shutdown);
 
