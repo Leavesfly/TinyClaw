@@ -60,6 +60,7 @@ web/
 | `ChannelsHandler` | `/api/channels` | CRUD | 通道启停与凭据管理 |
 | `SessionsHandler` | `/api/sessions` | CRUD + 详情 | 会话列表/详情/删除/回放 |
 | `CronHandler` | `/api/cron` | CRUD | 定时任务 CRUD + 启停 |
+| `HeartbeatHandler` | `/api/heartbeat` | `GET /api/heartbeat`、`POST /api/heartbeat/now` | 心跳状态查询 + 手动触发 |
 | `WorkspaceHandler` | `/api/workspace` + `/api/workspace/files` | 文件树 / 读写 | workspace Markdown 编辑 |
 | `SkillsHandler` | `/api/skills` | CRUD + 安装 | 技能 CRUD + GitHub 安装 |
 | `ProvidersHandler` | `/api/providers` | CRUD | LLM Provider 配置 + 热重载 |

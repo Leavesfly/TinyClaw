@@ -10,6 +10,7 @@ import io.leavesfly.tinyclaw.hooks.HookContext;
 import io.leavesfly.tinyclaw.hooks.HookDecision;
 import io.leavesfly.tinyclaw.hooks.HookDispatcher;
 import io.leavesfly.tinyclaw.hooks.HookEvent;
+import io.leavesfly.tinyclaw.heartbeat.LastContact;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
@@ -32,6 +33,10 @@ class MessageRouter {
             "⚠️ LLM Provider 未配置，请通过 Web Console 的 Settings -> Models 页面配置 API Key 后再试。";
     private static final String DEFAULT_EMPTY_RESPONSE = "已完成处理但没有回复内容。";
     private static final int LOG_PREVIEW_LENGTH = 80;
+    /** 单次 hook 注入上下文的最大长度 */
+    private static final int MAX_HOOK_CONTEXT_CHARS = 4096;
+    /** summary 总长上限：summary 会拼进系统提示词，不设上限会被 hook 持续追加撑破 */
+    private static final int MAX_SUMMARY_CHARS = 8192;
 
     private final ProviderManager providerManager;
     private final MessageBus bus;
@@ -137,6 +142,11 @@ class MessageRouter {
      * </ul>
      */
     String routeUser(InboundMessage msg) throws Exception {
+        // 记录最近联系人，供心跳告警 target=last 投递使用（跳过内部通道）
+        if (!"cli".equals(msg.getChannel()) && !"system".equals(msg.getChannel())) {
+            LastContact.update(msg.getChannel(), msg.getChatId());
+        }
+
         if (!providerManager.isConfigured()) {
             publishReplyIfNeeded(msg, PROVIDER_NOT_CONFIGURED_MSG);
             return PROVIDER_NOT_CONFIGURED_MSG;
@@ -145,7 +155,7 @@ class MessageRouter {
         String sessionKey = msg.getSessionKey();
 
         // ---------- SessionStart（首次出现才触发） ----------
-        boolean sessionPreexists = sessions.getSessionKeys().contains(sessionKey);
+        boolean sessionPreexists = sessions.exists(sessionKey);
         if (!sessionPreexists) {
             fireSessionStart(sessionKey);
         }
@@ -179,7 +189,7 @@ class MessageRouter {
 
         List<Message> messages = buildContext(sessionKey, msg);
         sessions.addMessage(sessionKey, "user", effectiveContent);
-        sessions.save(sessions.getOrCreate(sessionKey));
+        sessions.save(sessionKey);
 
         ProviderComponents comps = providerManager.getComponents();
         if (comps != null && comps.feedbackManager != null) {
@@ -233,7 +243,9 @@ class MessageRouter {
     }
 
     /**
-     * 将一段 hook 注入的上下文追加到会话 summary。为避免把 summary 撑爆，单次追加内容超过 4KB 会截断。
+     * 将一段 hook 注入的上下文追加到会话 summary。
+     * 单次追加超过 {@value #MAX_HOOK_CONTEXT_CHARS} 字符会被截断；
+     * 合并后超过 {@value #MAX_SUMMARY_CHARS} 字符则从头部修剪，保留最新的上下文。
      */
     private void appendSessionContext(String sessionKey, String additionalContext) {
         if (sessionKey == null || additionalContext == null || additionalContext.isEmpty()) {
@@ -241,12 +253,15 @@ class MessageRouter {
         }
         sessions.getOrCreate(sessionKey); // 确保 session 存在
         String existing = sessions.getSummary(sessionKey);
-        String appended = additionalContext.length() > 4096
-                ? additionalContext.substring(0, 4096) + "..."
+        String appended = additionalContext.length() > MAX_HOOK_CONTEXT_CHARS
+                ? additionalContext.substring(0, MAX_HOOK_CONTEXT_CHARS) + "..."
                 : additionalContext;
         String merged = (existing == null || existing.isEmpty())
                 ? appended
                 : existing + "\n\n" + appended;
+        if (merged.length() > MAX_SUMMARY_CHARS) {
+            merged = "..." + merged.substring(merged.length() - MAX_SUMMARY_CHARS);
+        }
         sessions.setSummary(sessionKey, merged);
     }
 
@@ -322,7 +337,7 @@ class MessageRouter {
                 new InboundMessage(originChannel, msg.getSenderId(), originChatId, userMessage);
         List<Message> messages = buildContext(sessionKey, syntheticMessage);
         sessions.addMessage(sessionKey, "user", userMessage);
-        sessions.save(sessions.getOrCreate(sessionKey));
+        sessions.save(sessionKey);
 
         ProviderComponents comps = providerManager.getComponents();
         String response = ensureNonBlank(
@@ -336,13 +351,14 @@ class MessageRouter {
     // ==================== 上下文与会话辅助 ====================
 
     /**
-     * 构建上下文消息列表。
+     * 构建上下文消息列表。使用上下文消息（而非完整转录），
+     * 已被 summary 压缩的早期消息不再重复送入模型。
      */
     List<Message> buildContext(String sessionKey, InboundMessage msg) {
         return contextBuilder.buildMessages(
-                sessions.getHistory(sessionKey),
+                sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
-                msg.getContent(), msg.getChannel(), msg.getChatId());
+                msg.getContent(), msg.getChannel(), msg.getChatId(), msg.isLightContext());
     }
 
     /**
@@ -350,7 +366,7 @@ class MessageRouter {
      */
     List<Message> buildContextWithImages(String sessionKey, InboundMessage msg, List<String> images) {
         return contextBuilder.buildMessages(
-                sessions.getHistory(sessionKey),
+                sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
                 msg.getContent(), images, msg.getChannel(), msg.getChatId());
     }
@@ -359,8 +375,7 @@ class MessageRouter {
      * 保存助手回复并按需触发会话摘要。
      */
     void persistAndSummarize(String sessionKey, String response) {
-        sessions.addMessage(sessionKey, "assistant", response);
-        sessions.save(sessions.getOrCreate(sessionKey));
+        sessions.recordReply(sessionKey, response);
         ProviderComponents comps = providerManager.getComponents();
         comps.summarizer.maybeSummarize(sessionKey);
     }

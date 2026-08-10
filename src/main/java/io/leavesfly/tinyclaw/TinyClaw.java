@@ -45,6 +45,7 @@ public class TinyClaw {
         COMMAND_REGISTRY.put("gateway", GatewayCommand::new);
         COMMAND_REGISTRY.put("status", StatusCommand::new);
         COMMAND_REGISTRY.put("cron", CronCommand::new);
+        COMMAND_REGISTRY.put("heartbeat", HeartbeatCommand::new);
         COMMAND_REGISTRY.put("skills", SkillsCommand::new);
         COMMAND_REGISTRY.put("plugins", PluginsCommand::new);
         COMMAND_REGISTRY.put("mcp", McpCommand::new);

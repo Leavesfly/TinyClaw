@@ -16,7 +16,7 @@
 - **工具优先**：围绕工具调用（function calling）设计，Agent 通过工具执行文件操作、Shell 命令、网络访问、定时任务、子代理、多 Agent 协同等复杂动作。
 - **安全优先**：内置 **SecurityGuard**，对文件操作和命令执行实施工作空间沙箱与命令黑名单，适合长期运行与生产环境。
 - **自我进化**：内置反馈收集、Prompt 自动优化和记忆进化机制，Agent 能持续改进自身表现。
-- **可观测与可演示**：提供 Web 控制台（含 16 个 REST API）、结构化日志体系以及 Demo 命令，方便现场演示和日常运维。
+- **可观测与可演示**：提供 Web 控制台（含 17 个 REST API）、结构化日志体系以及 Demo 命令，方便现场演示和日常运维。
 
 ### 1.2 技术栈概览
 
@@ -381,10 +381,11 @@ Prompt 变体存储结构：
 
 ### 3.11 定时任务引擎 — `cron/`
 
-- `CronService`：守护线程，每秒检查任务列表，支持三种调度方式：
+- `CronService`：调度线程每秒检查任务列表，支持三种调度方式：
   - Cron 表达式
-  - 固定间隔 `EVERY`
+  - 固定间隔 `EVERY`（含 misfire 补跑：重启时若错过一个周期则立即补跑一次）
   - 单次定时 `AT`
+- 系统内置 job（`__heartbeat__` / `__memory_evolution__`）由复合 onJob handler 按名称分发
 - 存储：`CronJob` + `CronSchedule` + `CronJobState` + `CronPayload` 持久化到 `workspace/cron/jobs.json`
 - 使用 `CronStore` 接口抽象存储，`ReentrantReadWriteLock` 保证并发安全
 - 到期任务通过回调构造消息，调用 `AgentRuntime.processDirectWithChannel`
@@ -397,11 +398,14 @@ Prompt 变体存储结构：
 - `Session`：包含 `List<Message>` 历史、`summary`、创建/更新时间
 - `ToolCallRecord`：记录工具调用的详细信息（名称、参数、结果、耗时）
 
-### 3.13 心跳服务 — `heartbeat/`
+### 3.13 心跳 — `heartbeat/`
 
-- `HeartbeatService` 在守护线程中周期性运行
-- 读取 `memory/HEARTBEAT.md` 作为心跳上下文
-- 通过回调把心跳提示交给 Agent，让其执行自检、整理待办等
+- `HeartbeatRunner` 无独立线程，作为 CronService 内置 job `__heartbeat__` 的执行体周期性运行
+- 门控链：禁用 → 可见性开关 → activeHours → busy guard → 空清单跳过
+- 读取 `memory/HEARTBEAT.md` 清单（8 KiB 硬上限）构建 prompt，经 `processDirect` 交给 Agent 执行自检
+- 响应契约：无事回 `HEARTBEAT_OK`（静默丢弃），异常内容按 `target` 投递告警
+- 整轮超时保护（`future.get(timeout)` + `abortCurrentTask()`）；状态落盘 `memory/heartbeat-status.json`
+- 记忆进化已拆分为独立内置 job `__memory_evolution__`
 
 ### 3.14 安全沙箱 — `security/`
 
@@ -418,7 +422,7 @@ Prompt 变体存储结构：
 - `WebConsoleServer`：内置轻量 HTTP 服务器，提供 Web UI 和 REST API
 - `SecurityMiddleware`：Web 安全中间件（认证、CORS 等）
 
-**16 个 REST API Handler**：
+**17 个 REST API Handler**：
 
 | Handler | 职责 |
 |---------|------|
@@ -431,6 +435,7 @@ Prompt 变体存储结构：
 | `ChannelsHandler` | 通道状态与管理 |
 | `SkillsHandler` | 技能管理 |
 | `CronHandler` | 定时任务管理 |
+| `HeartbeatHandler` | 心跳状态查询与手动触发 |
 | `FilesHandler` | 文件浏览与操作 |
 | `UploadHandler` | 文件上传 |
 | `WorkspaceHandler` | 工作空间管理 |
@@ -687,8 +692,9 @@ src/main/java/io/leavesfly/tinyclaw/
 ├── cron/                            # 定时任务引擎
 │   ├── CronService / CronJob / CronSchedule / CronJobState /
 │   │   CronPayload / CronStore
-├── heartbeat/                       # 心跳服务
-│   └── HeartbeatService.java
+├── heartbeat/                       # 心跳运行器
+│   ├── HeartbeatRunner.java
+│   └── LastContact.java
 ├── logger/                          # 结构化日志
 │   └── TinyClawLogger.java
 ├── mcp/                             # MCP 协议集成
@@ -719,13 +725,13 @@ src/main/java/io/leavesfly/tinyclaw/
 │   ├── Transcriber.java / AliyunTranscriber.java
 └── web/                             # Web 控制台
     ├── WebConsoleServer.java / SecurityMiddleware.java / WebUtils.java
-    └── handler/                     # 16 个 REST API Handler
+    └── handler/                     # 17 个 REST API Handler
         ├── AuthHandler / ChatHandler / SessionsHandler /
         │   ConfigHandler / ModelsHandler / ProvidersHandler /
         │   ChannelsHandler / SkillsHandler / CronHandler /
-        │   FilesHandler / UploadHandler / WorkspaceHandler /
-        │   MCPHandler / FeedbackHandler / TokenStatsHandler /
-        │   StaticHandler
+        │   HeartbeatHandler / FilesHandler / UploadHandler /
+        │   WorkspaceHandler / MCPHandler / FeedbackHandler /
+        │   TokenStatsHandler / StaticHandler
 ```
 
 ---

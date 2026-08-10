@@ -23,8 +23,7 @@ import java.util.List;
  * - ChannelManager：管理所有通道的生命周期
  * - WebhookServer：处理外部 Webhook 回调
  * - WebConsoleServer：提供 Web 管理界面
- * - CronService：定时任务调度
- * - HeartbeatService：心跳检测
+ * - CronService：定时任务调度（心跳与记忆进化作为内置 job 由其调度）
  * 
  * 使用场景：
  * - 生产环境部署，提供 24/7 服务

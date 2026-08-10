@@ -2816,6 +2816,8 @@ class TinyClawConsole {
             document.getElementById('cfgTemperature').value = config.temperature;
             document.getElementById('cfgMaxToolIterations').value = config.maxToolIterations;
             document.getElementById('cfgHeartbeatEnabled').value = config.heartbeatEnabled.toString();
+            document.getElementById('cfgHeartbeatInterval').value = config.heartbeatIntervalSeconds;
+            document.getElementById('cfgHeartbeatTimeout').value = config.heartbeatTimeoutSeconds;
             document.getElementById('cfgRestrictToWorkspace').value = config.restrictToWorkspace.toString();
         } catch (error) {
             console.error('Failed to load agent config:', error);
@@ -2827,6 +2829,8 @@ class TinyClawConsole {
                 temperature: parseFloat(document.getElementById('cfgTemperature').value),
                 maxToolIterations: parseInt(document.getElementById('cfgMaxToolIterations').value),
                 heartbeatEnabled: document.getElementById('cfgHeartbeatEnabled').value === 'true',
+                heartbeatIntervalSeconds: parseInt(document.getElementById('cfgHeartbeatInterval').value) || 0,
+                heartbeatTimeoutSeconds: parseInt(document.getElementById('cfgHeartbeatTimeout').value) || 0,
                 restrictToWorkspace: document.getElementById('cfgRestrictToWorkspace').value === 'true'
             };
             

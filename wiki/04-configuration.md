@@ -38,7 +38,8 @@
 | `maxTokens` | int | 16384 | 单次请求最大 token |
 | `temperature` | double | 0.7 | 随机性参数（0.0 – 1.0） |
 | `maxToolIterations` | int | 20 | 工具迭代最大轮次，防止死循环 |
-| `heartbeatEnabled` | bool | false | 是否启用心跳（周期性自主思考） |
+| `heartbeatEnabled` | bool | false | 是否启用心跳（与 `heartbeat.enabled` 读写同一字段） |
+| `heartbeat` | object | 见下表 | 心跳详细配置（间隔、超时、投递、活跃时段等），见 [4.2.3](#423-heartbeat) |
 | `restrictToWorkspace` | bool | true | 文件操作是否限定在 workspace 内（**强烈建议保持 true**） |
 | `commandBlacklist` | string[] | `rm -rf`、`mkfs`、`sudo`、… | 禁止执行的命令；为空时用内置默认黑名单 |
 | `evolution` | EvolutionConfig | 默认关 | 自我进化配置，见 [4.2.1](#421-evolution) |
@@ -80,6 +81,33 @@
 
 - `roleTemplates` 允许按协同模式预置角色模板，用户调 `collaborate` 工具时不用每次传角色
 - 详见 [11 · 多 Agent 协同](11-multi-agent-collaboration.md)
+
+### 4.2.3 heartbeat
+
+```json
+"heartbeat": {
+  "enabled": true,
+  "intervalSeconds": 1800,
+  "timeoutSeconds": 0,
+  "prompt": null,
+  "model": null,
+  "isolatedSession": true,
+  "lightContext": false,
+  "target": "none",
+  "showOk": false,
+  "showAlerts": true,
+  "activeHours": { "start": "09:00", "end": "21:00", "timezone": null },
+  "entries": null
+}
+```
+
+- `intervalSeconds` — 心跳间隔（秒），`<=0` 视为禁用；`timeoutSeconds=0` 时整轮超时取 `min(interval, 600)`
+- `prompt` — 覆盖默认心跳指令体（`HEARTBEAT.md` 清单始终附加）
+- `model` — 心跳专用模型；仅在 `isolatedSession=true` 时生效（避免 model bleed）
+- `target` — 告警投递：`none`（仅日志）/ `last`（最近入站消息的会话）/ 显式 channel 名
+- `activeHours` — 活跃时段，窗口外跳过；`start==end` 为零宽窗口（全部跳过）
+- `entries` — per-agent 覆盖配置（key=agent 名），存在时仅为这些 agent 注册心跳 job
+- 详见 [14 · 定时任务与心跳](14-cron-heartbeat.md)
 
 ## 4.3 models — 模型映射
 
@@ -290,7 +318,7 @@
 | `USER.md` | 用户画像（偏好、背景） | `IdentitySection` |
 | `IDENTITY.md` | Agent 自我身份描述 | `IdentitySection` |
 | `memory/MEMORY.md` | 长期记忆索引 | `MemorySection` |
-| `memory/HEARTBEAT.md` | 心跳时读取的上下文 | `HeartbeatService` |
+| `memory/HEARTBEAT.md` | 心跳时读取的清单（≤8 KiB） | `HeartbeatRunner` |
 | `skills/{name}/SKILL.md` | 技能定义（YAML frontmatter + Markdown 正文） | `SkillsSection` |
 | `PROFILE.md` | 配置快照摘要（`onboard` 生成） | 仅参考 |
 

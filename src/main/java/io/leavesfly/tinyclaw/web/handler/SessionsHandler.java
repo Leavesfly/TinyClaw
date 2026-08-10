@@ -8,6 +8,7 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.session.SessionMeta;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
 import io.leavesfly.tinyclaw.collaboration.AgentMessage;
 import io.leavesfly.tinyclaw.collaboration.CollaborationRecord;
@@ -64,19 +65,15 @@ public class SessionsHandler {
 
         try {
             if (WebUtils.API_SESSIONS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+                // 只读元信息索引：列表查询不能把整个 sessions 目录的正文读进内存
                 ArrayNode sessions = WebUtils.MAPPER.createArrayNode();
-                for (String key : sessionManager.getSessionKeys()) {
-                    var history = sessionManager.getHistory(key);
+                for (SessionMeta meta : sessionManager.listMeta()) {
                     ObjectNode session = WebUtils.MAPPER.createObjectNode();
-                    session.put("key", key);
-                    session.put("messageCount", history.size());
-                    // 取第一条 user 消息作为会话预览标题
-                    String firstMessage = history.stream()
-                            .filter(m -> "user".equals(m.getRole()) && m.getContent() != null && !m.getContent().isBlank())
-                            .findFirst()
-                            .map(m -> m.getContent().length() > 15 ? m.getContent().substring(0, 15) + "…" : m.getContent())
-                            .orElse("");
-                    session.put("firstMessage", firstMessage);
+                    session.put("key", meta.getKey());
+                    session.put("messageCount", meta.getMessageCount());
+                    session.put("firstMessage", meta.getTitle() != null ? meta.getTitle() : "");
+                    session.put("updated", meta.getUpdated() != null ? meta.getUpdated().toString() : "");
+                    session.put("created", meta.getCreated() != null ? meta.getCreated().toString() : "");
                     sessions.add(session);
                 }
                 WebUtils.sendJson(exchange, 200, sessions, corsOrigin);

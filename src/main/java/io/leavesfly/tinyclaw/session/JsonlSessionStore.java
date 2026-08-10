@@ -1,0 +1,648 @@
+package io.leavesfly.tinyclaw.session;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.Message;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+
+/**
+ * 基于 append-only JSONL 的会话存储
+ *
+ * <h2>为什么是 append-only</h2>
+ * <p>旧实现每次落盘都全量重写整个会话 JSON，一轮多次工具调用就是多次全量重写，写放大是
+ * O(n²)。这里改为一行一条记录、只追加增量：单次写入代价与新增内容成正比，与历史长度无关；
+ * 进程中途崩溃最多损坏末行，前面的内容依然可读。</p>
+ *
+ * <h2>文件布局</h2>
+ * <pre>
+ * sessions/
+ *   _index.json                        会话元信息索引，列表查询只读它
+ *   telegram_123-9f8e7d6c.jsonl        会话转录（header / msg / tool / compact 四类行）
+ *   telegram_123.json.migrated         迁移后保留的旧格式备份
+ *   corrupt/xxx.jsonl.corrupt.169...   无法解析时隔离保留的原文件
+ * </pre>
+ *
+ * <h2>损坏处理</h2>
+ * <p>解析失败绝不静默丢弃：能读出多少就恢复多少并告警；整份无法识别时把原文件移入
+ * corrupt/ 保留证据，再交由上层新建会话——原始数据不会被覆盖式销毁。</p>
+ *
+ * <h2>已知限制</h2>
+ * <p>未做跨进程文件锁，同一 workspace 同时运行多个实例时以最后写入者为准；索引可由
+ * {@link #rebuildIndex()} 从转录文件重建，因此索引丢失不会造成数据损失。</p>
+ */
+public class JsonlSessionStore implements SessionStore {
+
+    private static final TinyClawLogger logger = TinyClawLogger.getLogger("session.store");
+
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            // 未知字段一律忽略：新增字段后回退版本不会导致整份会话读取失败
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .setSerializationInclusion(JsonInclude.Include.NON_NULL);
+
+    private static final String JSONL_SUFFIX = ".jsonl";
+    private static final String LEGACY_SUFFIX = ".json";
+    private static final String MIGRATED_SUFFIX = ".json.migrated";
+    private static final String CORRUPT_DIR = "corrupt";
+    private static final String INDEX_FILE = "_index.json";
+
+    /** 行类型：文件头 / 消息 / 工具调用记录 / 上下文压缩 */
+    private static final String T_HEADER = "header";
+    private static final String T_MSG = "msg";
+    private static final String T_TOOL = "tool";
+    private static final String T_COMPACT = "compact";
+
+    /** 索引刷盘节流间隔：索引可重建，无需每次写入都落盘 */
+    private static final long INDEX_FLUSH_INTERVAL_MS = 2000;
+    /** 文件名中可读前缀的最大长度，避免超出文件系统单段 255 字节限制 */
+    private static final int MAX_READABLE_NAME_LENGTH = 80;
+
+    private static final Set<PosixFilePermission> OWNER_ONLY =
+            Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+
+    private final Path root;
+    private final Map<String, SessionMeta> index = new ConcurrentHashMap<>();
+    private final Object indexWriteLock = new Object();
+
+    private volatile boolean indexDirty;
+    private volatile long lastIndexFlushAt;
+
+    public JsonlSessionStore(String storagePath) throws IOException {
+        this.root = Paths.get(storagePath);
+        Files.createDirectories(root);
+        if (!loadIndex()) {
+            rebuildIndex();
+        }
+    }
+
+    // ==================== 读取 ====================
+
+    @Override
+    public Session load(String key) {
+        Path path = sessionPath(key);
+        if (!Files.exists(path)) {
+            return migrateLegacy(key);
+        }
+        return readJsonl(key, path);
+    }
+
+    /**
+     * 逐行解析 JSONL 转录。单行解析失败不会导致整份会话丢失：
+     * 末行损坏视为崩溃留下的残行直接忽略，中间行损坏则跳过并计数告警。
+     */
+    private Session readJsonl(String key, Path path) {
+        byte[] raw;
+        try {
+            raw = Files.readAllBytes(path);
+        } catch (IOException e) {
+            logger.error("Failed to read session file", Map.of(
+                    "key", key, "error", String.valueOf(e.getMessage())));
+            return null;
+        }
+        if (raw.length == 0) {
+            return null;
+        }
+
+        List<Message> messages = new ArrayList<>();
+        List<ToolCallRecord> records = new ArrayList<>();
+        String summary = null;
+        int contextStartIndex = 0;
+        Instant created = null;
+        Instant lastActivity = null;
+        boolean recognized = false;
+        int malformed = 0;
+
+        String[] lines = new String(raw, StandardCharsets.UTF_8).split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            JsonNode node;
+            try {
+                node = MAPPER.readTree(line);
+            } catch (Exception e) {
+                if (i == lines.length - 1) {
+                    logger.warn("Ignored truncated tail line", Map.of("key", key));
+                } else {
+                    malformed++;
+                }
+                continue;
+            }
+
+            try {
+                switch (node.path("t").asText("")) {
+                    case T_HEADER -> {
+                        recognized = true;
+                        created = readInstant(node.get("created"));
+                    }
+                    case T_MSG -> {
+                        recognized = true;
+                        Message msg = MAPPER.treeToValue(node.get("data"), Message.class);
+                        if (msg != null) {
+                            messages.add(msg);
+                            if (msg.getTimestamp() != null) {
+                                lastActivity = msg.getTimestamp();
+                            }
+                        }
+                    }
+                    case T_TOOL -> {
+                        recognized = true;
+                        ToolCallRecord record = MAPPER.treeToValue(node.get("data"), ToolCallRecord.class);
+                        if (record != null) {
+                            records.add(record);
+                        }
+                    }
+                    case T_COMPACT -> {
+                        recognized = true;
+                        summary = node.path("summary").asText(null);
+                        contextStartIndex = node.path("contextStartIndex").asInt(0);
+                        Instant ts = readInstant(node.get("ts"));
+                        if (ts != null) {
+                            lastActivity = ts;
+                        }
+                    }
+                    default -> {
+                        // 未知行类型：来自更新版本的记录，忽略但不视为损坏
+                    }
+                }
+            } catch (Exception e) {
+                malformed++;
+            }
+        }
+
+        if (malformed > 0) {
+            logger.warn("Recovered session with malformed lines skipped", Map.of(
+                    "key", key, "malformed_lines", malformed, "recovered_messages", messages.size()));
+        }
+
+        if (!recognized) {
+            quarantine(path, key, "unrecognized-format");
+            return null;
+        }
+
+        Session session = new Session(key);
+        session.setCreated(created != null ? created : fileTime(path));
+        session.setMessages(messages);
+        session.setToolCallRecords(records);
+        if (summary != null && !summary.isEmpty()) {
+            session.setSummary(summary);
+        }
+        session.setContextStartIndex(contextStartIndex);
+        session.setUpdated(lastActivity != null ? lastActivity : fileTime(path));
+        session.markFullyPersisted();
+
+        touchIndex(session);
+        logger.debug("Loaded session: " + key + " (" + messages.size() + " messages)");
+        return session;
+    }
+
+    /**
+     * 把旧的单文件 JSON 会话迁移为 JSONL，原文件重命名为 .json.migrated 保留备份。
+     * 解析失败时隔离原文件，不做任何破坏性处理。
+     */
+    private Session migrateLegacy(String key) {
+        Path legacy = root.resolve(readableName(key) + LEGACY_SUFFIX);
+        if (!Files.exists(legacy)) {
+            return null;
+        }
+
+        Session session;
+        try {
+            session = MAPPER.readValue(Files.readAllBytes(legacy), Session.class);
+        } catch (Exception e) {
+            logger.error("Failed to parse legacy session, quarantined", Map.of(
+                    "key", key, "error", String.valueOf(e.getMessage())));
+            quarantine(legacy, key, "legacy-parse-failed");
+            return null;
+        }
+
+        if (session.getKey() == null || session.getKey().isEmpty()) {
+            session.setKey(key);
+        }
+
+        try {
+            writeFull(session);
+            Files.move(legacy, root.resolve(readableName(key) + MIGRATED_SUFFIX),
+                    StandardCopyOption.REPLACE_EXISTING);
+            logger.info("Migrated legacy session to jsonl", Map.of(
+                    "key", key, "messages", session.messageCount()));
+        } catch (Exception e) {
+            logger.error("Failed to migrate legacy session", Map.of(
+                    "key", key, "error", String.valueOf(e.getMessage())));
+            return null;
+        }
+        return session;
+    }
+
+    // ==================== 写入 ====================
+
+    @Override
+    public void persist(Session session) {
+        if (session == null || session.getKey() == null) {
+            return;
+        }
+        // 已删除的会话不得写回，否则异步摘要任务会把它复活成空壳
+        if (session.isDeleted()) {
+            logger.debug("Skipped persist for deleted session: " + session.getKey());
+            return;
+        }
+
+        try {
+            session.persistDelta(delta -> {
+                Path path = sessionPath(session.getKey());
+                StringBuilder buffer = new StringBuilder();
+                if (!Files.exists(path)) {
+                    buffer.append(headerLine(session));
+                }
+                int messageIndex = delta.fromIndex();
+                for (Message msg : delta.newMessages()) {
+                    buffer.append(messageLine(messageIndex++, msg));
+                }
+                for (ToolCallRecord record : delta.newRecords()) {
+                    buffer.append(recordLine(record));
+                }
+                if (delta.compactionChanged()) {
+                    buffer.append(compactLine(delta.summary(), delta.contextStartIndex()));
+                }
+                appendAndSync(path, buffer.toString());
+            });
+            touchIndex(session);
+        } catch (Exception e) {
+            logger.error("Failed to persist session", Map.of(
+                    "key", session.getKey(), "error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /**
+     * 全量重写会话文件（迁移与索引重建场景使用）
+     */
+    private void writeFull(Session session) throws IOException {
+        StringBuilder buffer = new StringBuilder(headerLine(session));
+        List<Message> messages = session.getHistory();
+        for (int i = 0; i < messages.size(); i++) {
+            buffer.append(messageLine(i, messages.get(i)));
+        }
+        for (ToolCallRecord record : session.getToolCallRecords()) {
+            buffer.append(recordLine(record));
+        }
+        String summary = session.getSummary();
+        if ((summary != null && !summary.isEmpty()) || session.getContextStartIndex() > 0) {
+            buffer.append(compactLine(summary, session.getContextStartIndex()));
+        }
+
+        writeAtomic(sessionPath(session.getKey()), buffer.toString());
+        session.markFullyPersisted();
+        touchIndex(session);
+    }
+
+    private String headerLine(Session session) throws IOException {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("t", T_HEADER);
+        node.put("v", Session.SCHEMA_VERSION);
+        node.put("key", session.getKey());
+        node.set("created", MAPPER.valueToTree(session.getCreated()));
+        return MAPPER.writeValueAsString(node) + "\n";
+    }
+
+    private String messageLine(int index, Message message) throws IOException {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("t", T_MSG);
+        node.put("i", index);
+        node.set("data", MAPPER.valueToTree(message));
+        return MAPPER.writeValueAsString(node) + "\n";
+    }
+
+    private String recordLine(ToolCallRecord record) throws IOException {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("t", T_TOOL);
+        node.set("data", MAPPER.valueToTree(record));
+        return MAPPER.writeValueAsString(node) + "\n";
+    }
+
+    private String compactLine(String summary, int contextStartIndex) throws IOException {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("t", T_COMPACT);
+        node.put("summary", summary);
+        node.put("contextStartIndex", contextStartIndex);
+        node.set("ts", MAPPER.valueToTree(Instant.now()));
+        return MAPPER.writeValueAsString(node) + "\n";
+    }
+
+    /**
+     * 追加写入并 fsync：保证已返回的写入在掉电后依然存在
+     */
+    private void appendAndSync(Path path, String content) throws IOException {
+        if (content.isEmpty()) {
+            return;
+        }
+        createWithOwnerOnlyPermissions(path);
+        try (FileChannel channel = FileChannel.open(path,
+                StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+            channel.force(true);
+        }
+    }
+
+    /**
+     * 原子全量写入：唯一临时文件名（避免并发写同一 tmp 互相踩）→ fsync → rename
+     */
+    private void writeAtomic(Path target, String content) throws IOException {
+        Path temp = target.resolveSibling(target.getFileName() + "."
+                + UUID.randomUUID().toString().substring(0, 8) + ".tmp");
+        try {
+            createWithOwnerOnlyPermissions(temp);
+            try (FileChannel channel = FileChannel.open(temp,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+                channel.force(true);
+            }
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            syncDirectory(target.getParent());
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    /**
+     * 以 600 权限创建文件（若不存在）。先建后写，避免存在 644 可读窗口。
+     */
+    private void createWithOwnerOnlyPermissions(Path path) throws IOException {
+        if (Files.exists(path)) {
+            return;
+        }
+        try {
+            Files.createFile(path, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
+        } catch (FileAlreadyExistsException e) {
+            // 并发创建，无需处理
+        } catch (UnsupportedOperationException e) {
+            // 非 POSIX 文件系统（Windows）
+            Files.createFile(path);
+        }
+    }
+
+    /**
+     * 尽力 fsync 目录项，让 rename 本身也具备持久性；不支持的平台静默跳过。
+     */
+    private void syncDirectory(Path dir) {
+        if (dir == null) {
+            return;
+        }
+        try (FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
+            channel.force(true);
+        } catch (Exception e) {
+            // Windows 等平台不允许对目录 open/force
+        }
+    }
+
+    // ==================== 删除与隔离 ====================
+
+    @Override
+    public void delete(String key) {
+        index.remove(key);
+        indexDirty = true;
+        try {
+            Files.deleteIfExists(sessionPath(key));
+            Files.deleteIfExists(root.resolve(readableName(key) + LEGACY_SUFFIX));
+            logger.debug("Deleted session: " + key);
+        } catch (IOException e) {
+            logger.warn("Failed to delete session file: " + key);
+        }
+        flush();
+    }
+
+    /**
+     * 把无法解析的文件移入 corrupt/ 保留，而不是让上层覆盖销毁
+     */
+    private void quarantine(Path path, String key, String reason) {
+        try {
+            Path corruptDir = root.resolve(CORRUPT_DIR);
+            Files.createDirectories(corruptDir);
+            Path target = corruptDir.resolve(path.getFileName() + ".corrupt." + System.currentTimeMillis());
+            Files.move(path, target, StandardCopyOption.REPLACE_EXISTING);
+            logger.error("Session file quarantined, original content preserved", Map.of(
+                    "key", key, "reason", reason, "quarantined_to", target.toString()));
+        } catch (IOException e) {
+            logger.error("Failed to quarantine corrupt session file", Map.of(
+                    "key", key, "path", path.toString(), "error", String.valueOf(e.getMessage())));
+        }
+    }
+
+    // ==================== 元信息索引 ====================
+
+    @Override
+    public List<SessionMeta> listMeta() {
+        List<SessionMeta> metas = new ArrayList<>(index.values());
+        metas.sort(Comparator.comparing(
+                SessionMeta::getUpdated, Comparator.nullsLast(Comparator.reverseOrder())));
+        return metas;
+    }
+
+    @Override
+    public boolean exists(String key) {
+        return index.containsKey(key)
+                || Files.exists(sessionPath(key))
+                || Files.exists(root.resolve(readableName(key) + LEGACY_SUFFIX));
+    }
+
+    private void touchIndex(Session session) {
+        index.put(session.getKey(), SessionMeta.from(session));
+        indexDirty = true;
+        long now = System.currentTimeMillis();
+        if (now - lastIndexFlushAt >= INDEX_FLUSH_INTERVAL_MS) {
+            flush();
+        }
+    }
+
+    @Override
+    public void flush() {
+        if (!indexDirty) {
+            return;
+        }
+        synchronized (indexWriteLock) {
+            if (!indexDirty) {
+                return;
+            }
+            try {
+                writeAtomic(root.resolve(INDEX_FILE),
+                        MAPPER.writeValueAsString(index));
+                indexDirty = false;
+                lastIndexFlushAt = System.currentTimeMillis();
+            } catch (IOException e) {
+                logger.warn("Failed to flush session index: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 载入元信息索引，成功返回 true
+     */
+    private boolean loadIndex() {
+        Path indexPath = root.resolve(INDEX_FILE);
+        if (!Files.exists(indexPath)) {
+            return false;
+        }
+        try {
+            Map<String, SessionMeta> loaded = MAPPER.readValue(Files.readAllBytes(indexPath),
+                    MAPPER.getTypeFactory().constructMapType(
+                            java.util.HashMap.class, String.class, SessionMeta.class));
+            index.putAll(loaded);
+            lastIndexFlushAt = System.currentTimeMillis();
+            logger.info("Loaded session index", Map.of("sessions", index.size()));
+            return true;
+        } catch (Exception e) {
+            logger.warn("Session index unreadable, rebuilding from transcripts: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 从转录文件重建索引。仅在索引缺失或损坏时执行一次，之后由增量维护。
+     */
+    private void rebuildIndex() {
+        try (Stream<Path> files = Files.list(root)) {
+            List<Path> candidates = files
+                    .filter(Files::isRegularFile)
+                    .filter(p -> {
+                        String name = p.getFileName().toString();
+                        // 下划线开头的是管理文件（索引、活跃会话指针），不是会话转录
+                        if (name.startsWith("_")) {
+                            return false;
+                        }
+                        return name.endsWith(JSONL_SUFFIX) || name.endsWith(LEGACY_SUFFIX);
+                    })
+                    .toList();
+
+            for (Path path : candidates) {
+                String key = peekKey(path);
+                if (key == null) {
+                    continue;
+                }
+                Session session = load(key);
+                if (session != null) {
+                    index.put(key, SessionMeta.from(session));
+                }
+            }
+            indexDirty = true;
+            flush();
+            logger.info("Rebuilt session index", Map.of("sessions", index.size()));
+        } catch (IOException e) {
+            logger.warn("Failed to rebuild session index: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从文件中嗅探会话 key：JSONL 读首行 header，旧格式读 key 字段
+     */
+    private String peekKey(Path path) {
+        try {
+            if (path.getFileName().toString().endsWith(JSONL_SUFFIX)) {
+                try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
+                    return lines.findFirst()
+                            .map(line -> {
+                                try {
+                                    return MAPPER.readTree(line).path("key").asText(null);
+                                } catch (Exception e) {
+                                    return null;
+                                }
+                            })
+                            .orElse(null);
+                }
+            }
+            return MAPPER.readTree(Files.readAllBytes(path)).path("key").asText(null);
+        } catch (Exception e) {
+            logger.warn("Failed to peek session key: " + path.getFileName());
+            return null;
+        }
+    }
+
+    // ==================== 文件名映射 ====================
+
+    /**
+     * 会话文件路径：可读前缀 + key 哈希短码。
+     * 加哈希是因为单纯替换非法字符会让不同 key（如 a:b 与 a_b）落到同一文件互相覆盖。
+     */
+    private Path sessionPath(String key) {
+        return root.resolve(readableName(key) + "-" + shortHash(key) + JSONL_SUFFIX);
+    }
+
+    /**
+     * 替换文件名中的不安全字符并限长，与旧实现保持一致以便识别旧文件
+     */
+    private String readableName(String key) {
+        if (key == null || key.isEmpty()) {
+            return "unknown";
+        }
+        String safe = key.replaceAll("[:/\\\\*?\"<>|]", "_");
+        return safe.length() > MAX_READABLE_NAME_LENGTH
+                ? safe.substring(0, MAX_READABLE_NAME_LENGTH) : safe;
+    }
+
+    private String shortHash(String key) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(key == null
+                    ? new byte[0] : key.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash).substring(0, 8);
+        } catch (Exception e) {
+            return Integer.toHexString(String.valueOf(key).hashCode());
+        }
+    }
+
+    // ==================== 小工具 ====================
+
+    private Instant readInstant(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        try {
+            return MAPPER.treeToValue(node, Instant.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Instant fileTime(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toInstant();
+        } catch (IOException e) {
+            return Instant.now();
+        }
+    }
+}

@@ -85,6 +85,7 @@ public class StatusCommand extends CliCommand {
         }
         
         printWorkspaceStatus(config);
+        printHeartbeatStatus(config);
         printModelInfo(config);
         printApiKeyStatus(config);
         
@@ -144,6 +145,39 @@ public class StatusCommand extends CliCommand {
         File workspaceDir = new File(workspace);
         String statusMark = workspaceDir.exists() ? CHECK_MARK : CROSS_MARK;
         System.out.println(WORKSPACE_PREFIX + workspace + " " + statusMark);
+    }
+
+    /**
+     * 打印心跳状态（开关与最近一次心跳结果）。
+     *
+     * @param config 配置对象
+     */
+    private void printHeartbeatStatus(Config config) {
+        boolean enabled = config.getAgent() != null && config.getAgent().isHeartbeatEnabled();
+        if (!enabled) {
+            System.out.println("心跳: 已禁用");
+            return;
+        }
+
+        StringBuilder line = new StringBuilder("心跳: 已启用");
+        try {
+            java.nio.file.Path statusFile = java.nio.file.Paths.get(
+                    config.getWorkspacePath(), "memory", "heartbeat-status.json");
+            if (java.nio.file.Files.exists(statusFile)) {
+                com.fasterxml.jackson.databind.JsonNode root =
+                        new com.fasterxml.jackson.databind.ObjectMapper()
+                                .readTree(java.nio.file.Files.readString(statusFile));
+                com.fasterxml.jackson.databind.JsonNode def = root.path("default");
+                if (!def.isMissingNode()) {
+                    line.append("（最近: ").append(def.path("status").asText("-"))
+                        .append(" / ").append(def.path("reason").asText("-"))
+                        .append("）");
+                }
+            }
+        } catch (Exception ignored) {
+            // 状态文件不可读时仅显示开关状态
+        }
+        System.out.println(line);
     }
     
     /**

@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
+import io.leavesfly.tinyclaw.heartbeat.HeartbeatRunner;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
@@ -34,11 +35,13 @@ public class WebConsoleServer {
     private final SessionManager sessionManager;
     private final CronService cronService;
     private final SkillsLoader skillsLoader;
+    private final HeartbeatRunner heartbeatRunner;
     private HttpServer httpServer;
 
     public WebConsoleServer(String host, int port, Config config, AgentRuntime agentRuntime,
                             SessionManager sessionManager,
-                            CronService cronService, SkillsLoader skillsLoader) {
+                            CronService cronService, SkillsLoader skillsLoader,
+                            HeartbeatRunner heartbeatRunner) {
         this.host = host;
         this.port = port;
         this.config = config;
@@ -46,6 +49,7 @@ public class WebConsoleServer {
         this.sessionManager = sessionManager;
         this.cronService = cronService;
         this.skillsLoader = skillsLoader;
+        this.heartbeatRunner = heartbeatRunner;
     }
 
     /**
@@ -107,6 +111,10 @@ public class WebConsoleServer {
                     agentRuntime.getRepairApplier());
         }
         httpServer.createContext(WebUtils.API_REFLECTION, reflectionHandler::handle);
+
+        // 心跳状态与手动触发（仅在 gateway 启用心跳时可用）
+        httpServer.createContext(WebUtils.API_HEARTBEAT,
+                new HeartbeatHandler(config, security, heartbeatRunner)::handle);
     }
 
     private void registerStaticHandler() {

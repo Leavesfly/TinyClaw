@@ -431,6 +431,16 @@
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label>Heartbeat Interval (seconds, 0 = disabled)</label>
+                                    <input type="number" class="form-control" id="cfgHeartbeatInterval" min="0" step="60">
+                                </div>
+                                <div class="form-group">
+                                    <label>Heartbeat Timeout (seconds, 0 = auto)</label>
+                                    <input type="number" class="form-control" id="cfgHeartbeatTimeout" min="0" step="30">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
                                     <label>Restrict to Workspace</label>
                                     <select class="form-control" id="cfgRestrictToWorkspace">
                                         <option value="true">Yes</option>

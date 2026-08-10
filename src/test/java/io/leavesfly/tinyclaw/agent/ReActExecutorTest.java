@@ -126,6 +126,60 @@ class ReActExecutorTest {
         assertTrue(result.contains("中断"), "应返回中断提示，实际: " + result);
     }
 
+    // ==================== 会话持久化职责划分 ====================
+
+    @Test
+    @DisplayName("会话写入：executor 只写工具循环中间态，不写输入与最终回复")
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void execute_PersistsOnlyToolLoopIntermediates() throws Exception {
+        tools.register(new io.leavesfly.tinyclaw.tools.Tool() {
+            public String name() { return "echo"; }
+            public String description() { return "回显输入"; }
+            public Map<String, Object> parameters() { return Map.of("type", "object"); }
+            public String execute(Map<String, Object> args) { return "echo: " + args.get("text"); }
+        });
+        executor = new ReActExecutor(new ToolCallThenTextProvider(), tools, sessions, "test-model", "test", 5);
+
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.system("系统提示词"));
+        messages.add(Message.user("请回显 hello"));
+
+        executor.execute(messages, "test:persist1");
+
+        List<Message> history = sessions.getHistory("test:persist1");
+        // 只有 assistant(tool_calls) + tool 结果；输入与最终回复由调用方负责
+        assertEquals(2, history.size());
+        assertEquals("assistant", history.get(0).getRole());
+        assertNotNull(history.get(0).getToolCalls());
+        assertEquals("tool", history.get(1).getRole());
+        assertTrue(history.stream().noneMatch(m -> "system".equals(m.getRole()) || "user".equals(m.getRole())),
+                "executor 不得写入输入消息");
+    }
+
+    @Test
+    @DisplayName("子代理/协同链路：提示词与最终回复完整入库，且不含 system")
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
+    void recordPromptAndReply_FormsCompleteTranscript() throws Exception {
+        String key = "subagent:task-1";
+        List<Message> prompt = new ArrayList<>();
+        prompt.add(Message.system("你是一个子代理"));
+        prompt.add(Message.user("完成这个任务"));
+
+        // 模拟子代理/协同角色的调用序：提示词入库 → 执行 → 最终回复入库
+        sessions.recordPromptMessages(key, prompt);
+        String reply = executor.execute(prompt, key);
+        sessions.recordReply(key, reply);
+
+        List<Message> history = sessions.getHistory(key);
+        assertEquals(2, history.size(), "应包含任务提示与最终回复");
+        assertEquals("user", history.get(0).getRole());
+        assertEquals("完成这个任务", history.get(0).getContent());
+        assertEquals("assistant", history.get(1).getRole());
+        assertEquals("这是模拟回复", history.get(1).getContent());
+        assertTrue(history.stream().noneMatch(m -> "system".equals(m.getRole())),
+                "system 消息不得入库（每轮实时重建的派生数据）");
+    }
+
     // ==================== Mock Providers ====================
 
     /** 简单 Provider：始终返回固定文本，不调用工具 */

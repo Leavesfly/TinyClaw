@@ -13,6 +13,7 @@
 | `gateway` | `GatewayCommand` | 启动网关（通道 + Web 控制台 + Cron） |
 | `status` | `StatusCommand` | 查看系统状态与配置 |
 | `cron` | `CronCommand` | 管理定时任务 |
+| `heartbeat` | `HeartbeatCommand` | 查询与手动触发心跳 |
 | `skills` | `SkillsCommand` | 管理技能插件 |
 | `mcp` | `McpCommand` | 管理 MCP 服务器连接 |
 | `plugins` | `PluginsCommand` | 管理插件（Claude Code / OpenClaw 兼容） |
@@ -96,8 +97,8 @@ tinyclaw gateway [--debug]
 3. 创建 `MessageBus` + `AgentRuntime`
 4. 注册 15 个内置工具
 5. 初始化 `MCPManager` 并连接所有已配置的 MCP 服务器
-6. 启动 `CronService`
-7. 启动 `HeartbeatService`（若启用）
+6. 启动 `CronService`（注册系统内置 job：`__heartbeat__` 心跳、`__memory_evolution__` 记忆进化，按配置启用）
+7. 创建 `HeartbeatRunner` 作为心跳 job 的执行体（无独立线程）
 8. 启动 `ChannelManager`（连接所有 `enabled=true` 的通道）
 9. 启动 `WebConsoleServer`（默认 `0.0.0.0:18791`）
 10. 进入 `AgentRuntime.run()` 主循环
@@ -121,6 +122,7 @@ tinyclaw status
 - 当前模型名
 - 每个 Provider 的 API Key 配置状态（`✓ 已设置` / `✗ 未设置`）
 - Ollama 默认端点
+- 上次心跳时间/结果/跳过原因（若存在心跳状态文件）
 
 典型输出：
 
@@ -190,7 +192,29 @@ tinyclaw cron remove  <job_id>
 
 ---
 
-## 5.7 `skills` — 技能管理
+## 5.7 `heartbeat` — 心跳查询与手动触发
+
+```bash
+tinyclaw heartbeat <now|last>
+```
+
+| 子命令 | 作用 |
+|--------|------|
+| `now` | 经 Web Console API 立即触发一轮心跳（需 gateway 运行中，仍受 busy guard） |
+| `last` | 读取 `memory/heartbeat-status.json`，显示各 agent 上次心跳时间/状态/跳过原因/耗时 |
+
+示例：
+
+```bash
+tinyclaw heartbeat last
+tinyclaw heartbeat now
+```
+
+> ℹ️ `now` 通过调用 gateway 的 Web Console（端口 = gateway 端口 + 1）实现，CLI 直连模式下不可用。
+
+---
+
+## 5.8 `skills` — 技能管理
 
 ```bash
 tinyclaw skills <subcommand> [args]
@@ -219,7 +243,7 @@ tinyclaw skills remove weather
 
 ---
 
-## 5.8 `mcp` — MCP 服务器
+## 5.9 `mcp` — MCP 服务器
 
 ```bash
 tinyclaw mcp <list|test|tools> [server-name]
@@ -243,7 +267,7 @@ tinyclaw mcp tools filesystem
 
 ---
 
-## 5.9 `demo` — 一键演示
+## 5.10 `demo` — 一键演示
 
 ```bash
 tinyclaw demo <mode>
@@ -261,7 +285,7 @@ tinyclaw demo agent-basic
 
 ---
 
-## 5.10 `plugins` — 插件管理
+## 5.11 `plugins` — 插件管理
 
 ```bash
 tinyclaw plugins <list|inspect|install|marketplace> [args]
@@ -290,7 +314,7 @@ tinyclaw plugins install quality-review@my-plugins          # 市场选装
 
 ---
 
-## 5.11 `version` / `-v` / `--version`
+## 5.12 `version` / `-v` / `--version`
 
 ```bash
 tinyclaw version
@@ -302,7 +326,7 @@ tinyclaw --version
 
 ---
 
-## 5.12 退出码约定
+## 5.13 退出码约定
 
 | 退出码 | 含义 |
 |--------|------|

@@ -1,6 +1,8 @@
 package io.leavesfly.tinyclaw.session;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.time.Instant;
 
 /**
@@ -10,6 +12,7 @@ import java.time.Instant;
  * afterAssistantIndex 表示该工具调用发生在第几条 assistant 消息之后（从 0 开始），
  * 前端据此将工具调用卡片插入到正确的位置。
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class ToolCallRecord {
 
     /** 工具名称，如 write_file、list_directory */

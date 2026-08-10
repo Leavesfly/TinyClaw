@@ -30,7 +30,7 @@
 - **🎤 语音转写** — 集成阿里云 DashScope Paraformer，支持语音消息自动转文字
 - **🔒 安全沙箱** — 工作空间限制 + 命令黑名单 + Web 安全中间件，生产级安全防护
 - **🌐 Agent 社交网络** — 支持接入 ClawdChat.ai，与其他 Agent 通信协作
-- **🖥️ Web 控制台** — 内置 Web UI，16 个 REST API，可视化管理 Agent 状态、会话、模型、技能等
+- **🖥️ Web 控制台** — 内置 Web UI，17 个 REST API，可视化管理 Agent 状态、会话、模型、技能等
 - **🎬 Demo 模式** — 一键演示核心功能
 
 ![TinyClaw Logo](src/main/resources/tinyclaw.png)
@@ -67,7 +67,7 @@ src/main/java/io/leavesfly/tinyclaw/
 ├── tools/                           # Agent 工具集（15 个内置工具 + MCP 桥接）
 ├── util/                            # 工具类
 ├── voice/                           # 语音转写（AliyunTranscriber）
-└── web/                             # Web 控制台（16 个 REST API Handler）
+└── web/                             # Web 控制台（17 个 REST API Handler）
 ```
 
 ---

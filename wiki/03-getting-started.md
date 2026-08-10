@@ -125,8 +125,8 @@ java -jar target/tinyclaw-0.1.0.jar gateway
 2. 初始化 `SecurityGuard`（工作空间沙箱 + 命令黑名单）
 3. 注册 15 个内置工具
 4. 初始化 MCP 服务器连接（如已配置）
-5. 启动定时任务服务 `CronService`
-6. 启动心跳服务 `HeartbeatService`（若 `agent.heartbeatEnabled=true`）
+5. 启动定时任务服务 `CronService`（含系统内置 job：`__heartbeat__` 心跳、`__memory_evolution__` 记忆进化，仅在对应配置启用时注册）
+6. 心跳无独立服务/线程：tick 由 CronService 的 `__heartbeat__` job 调度（需 `agent.heartbeatEnabled=true`）
 7. 连接所有 `enabled=true` 的消息通道
 8. 启动 Web 控制台（默认 `http://localhost:18791`）
 9. 运行 `AgentRuntime.run()` 主循环

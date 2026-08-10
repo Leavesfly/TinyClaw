@@ -91,6 +91,108 @@ class ConfigTest {
         assertFalse(defaults.isRestrictToWorkspace());
     }
 
+    // ==================== HeartbeatSettings 测试 ====================
+
+    @Test
+    @DisplayName("HeartbeatSettings: 默认值符合 OpenClaw 对齐约定")
+    void heartbeatSettings_Defaults_AreCorrect() {
+        AgentConfig.HeartbeatSettings settings = new AgentConfig.HeartbeatSettings();
+
+        assertFalse(settings.isEnabled());
+        assertEquals(1800, settings.getIntervalSeconds());
+        assertEquals(0, settings.getTimeoutSeconds());
+        assertNull(settings.getPrompt());
+        assertNull(settings.getModel());
+        assertTrue(settings.isIsolatedSession());
+        assertFalse(settings.isLightContext());
+        assertEquals("none", settings.getTarget());
+        assertFalse(settings.isShowOk());
+        assertTrue(settings.isShowAlerts());
+        assertNull(settings.getActiveHours());
+        assertNull(settings.getEntries());
+    }
+
+    @Test
+    @DisplayName("HeartbeatSettings.effectiveTimeoutSeconds: 0 取 min(interval, 600)")
+    void heartbeatSettings_EffectiveTimeout() {
+        AgentConfig.HeartbeatSettings settings = new AgentConfig.HeartbeatSettings();
+
+        // 默认 interval=1800 → 超时上限 600
+        assertEquals(600, settings.effectiveTimeoutSeconds());
+
+        // interval 小于 600 → 取 interval
+        settings.setIntervalSeconds(120);
+        assertEquals(120, settings.effectiveTimeoutSeconds());
+
+        // 显式设置优先
+        settings.setTimeoutSeconds(45);
+        assertEquals(45, settings.effectiveTimeoutSeconds());
+    }
+
+    @Test
+    @DisplayName("HeartbeatSettings.mergedOver: per-agent entry 叠加基础配置")
+    void heartbeatSettings_MergedOver() {
+        AgentConfig.HeartbeatSettings base = new AgentConfig.HeartbeatSettings();
+        base.setPrompt("基础指令");
+        base.setModel("small-model");
+        base.setIntervalSeconds(900);
+
+        AgentConfig.HeartbeatSettings entry = new AgentConfig.HeartbeatSettings();
+        entry.setIntervalSeconds(300);
+        // prompt/model 未设置 → 回填 base
+
+        AgentConfig.HeartbeatSettings merged = entry.mergedOver(base);
+        assertEquals(300, merged.getIntervalSeconds());
+        assertEquals("基础指令", merged.getPrompt());
+        assertEquals("small-model", merged.getModel());
+
+        // entry 显式设置时以 entry 为准
+        entry.setPrompt("角色指令");
+        assertEquals("角色指令", entry.mergedOver(base).getPrompt());
+    }
+
+    @Test
+    @DisplayName("ConfigLoader: HeartbeatSettings 序列化/反序列化往返一致")
+    void configLoader_HeartbeatSettings_RoundTrip() throws IOException {
+        Path configPath = tempDir.resolve("hb-config.json");
+        Config original = Config.defaultConfig();
+
+        AgentConfig.HeartbeatSettings hb = original.getAgent().getHeartbeat();
+        hb.setEnabled(true);
+        hb.setIntervalSeconds(600);
+        hb.setTimeoutSeconds(60);
+        hb.setPrompt("自定义心跳指令");
+        hb.setModel("cheap-model");
+        hb.setIsolatedSession(false);
+        hb.setLightContext(true);
+        hb.setTarget("last");
+        hb.setShowOk(true);
+        hb.setShowAlerts(false);
+        hb.setActiveHours(new AgentConfig.ActiveHours("09:00", "18:00", "Asia/Shanghai"));
+
+        ConfigLoader.save(configPath.toString(), original);
+        Config loaded = ConfigLoader.load(configPath.toString());
+        AgentConfig.HeartbeatSettings back = loaded.getAgent().getHeartbeat();
+
+        assertNotNull(back);
+        assertTrue(back.isEnabled());
+        assertEquals(600, back.getIntervalSeconds());
+        assertEquals(60, back.getTimeoutSeconds());
+        assertEquals("自定义心跳指令", back.getPrompt());
+        assertEquals("cheap-model", back.getModel());
+        assertFalse(back.isIsolatedSession());
+        assertTrue(back.isLightContext());
+        assertEquals("last", back.getTarget());
+        assertTrue(back.isShowOk());
+        assertFalse(back.isShowAlerts());
+        assertNotNull(back.getActiveHours());
+        assertEquals("09:00", back.getActiveHours().getStart());
+        assertEquals("18:00", back.getActiveHours().getEnd());
+        assertEquals("Asia/Shanghai", back.getActiveHours().getTimezone());
+        // enabled 与 AgentConfig.heartbeatEnabled 读写同一字段
+        assertTrue(loaded.getAgent().isHeartbeatEnabled());
+    }
+
     // ==================== ChannelsConfig 测试 ====================
 
     @Test

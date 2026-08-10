@@ -2,13 +2,14 @@ package io.leavesfly.tinyclaw.cli;
 
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.bus.MessageBus;
+import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.channels.DiscordChannel;
 import io.leavesfly.tinyclaw.channels.TelegramChannel;
 import io.leavesfly.tinyclaw.channels.WebhookServer;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
-import io.leavesfly.tinyclaw.heartbeat.HeartbeatService;
+import io.leavesfly.tinyclaw.heartbeat.HeartbeatRunner;
 import io.leavesfly.tinyclaw.tools.CronTool;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.session.SessionManager;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 网关服务启动器，负责编排和管理所有服务的生命周期。
@@ -35,18 +37,15 @@ import java.util.concurrent.TimeUnit;
  * 
  * 服务启动顺序：
  * 1. 通道管理器和语音转写器
- * 2. 定时任务服务
- * 3. 心跳服务
- * 4. Webhook 服务器
- * 5. Web Console 服务器
- * 6. Agent 主循环
+ * 2. 定时任务服务（心跳与记忆进化作为内置 cron job 由其调度）
+ * 3. Webhook 服务器
+ * 4. Web Console 服务器
+ * 5. Agent 主循环
  */
 public class GatewayBootstrap {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("gateway");
-    
-    private static final int HEARTBEAT_INTERVAL_SECONDS = 1800;  // 心跳间隔（30分钟）
-    private static final String HEARTBEAT_SESSION_KEY = "heartbeat:default";
+
     private static final String DISPLAY_HOST_REPLACEMENT = "127.0.0.1";  // 显示地址替换
 
     // 配置和核心组件
@@ -58,12 +57,15 @@ public class GatewayBootstrap {
     // 服务组件
     private ChannelManager channelManager;         // 通道管理器
     private CronService cronService;               // 定时任务服务
-    private HeartbeatService heartbeatService;     // 心跳服务
+    private HeartbeatRunner heartbeatRunner;       // 心跳运行器（由 cron job 调度）
     private WebhookServer webhookServer;           // Webhook 服务器
     private WebConsoleServer webConsoleServer;     // Web 控制台服务器
     private SessionManager sessionManager;         // 会话管理器
     private SkillsLoader skillsLoader;             // 技能加载器
     private Thread agentThread;                    // Agent 线程
+
+    /** 记忆进化在途去重：上一轮未完成则跳过新的触发 */
+    private final AtomicBoolean evolutionInFlight = new AtomicBoolean(false);
 
     // 生命周期管理
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);  // 关闭信号量
@@ -106,13 +108,36 @@ public class GatewayBootstrap {
         String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
         cronService = new CronService(cronStorePath);
 
-        // 设置任务处理器：通过 CronTool 执行定时任务
+        // 设置任务处理器：系统内置 job（心跳/记忆进化）按名称分发，
+        // 其余用户 job 通过 CronTool 执行
         CronTool cronTool = new CronTool(cronService, (content, sessionKey, channel, chatId) ->
                 agentRuntime.processDirectWithChannel(content, sessionKey, channel, chatId), bus);
-        cronService.setOnJob(job -> cronTool.executeJob(job));
 
-        // 4. 初始化心跳服务
-        initializeHeartbeat();
+        // 4. 初始化心跳运行器（tick 由 cron 调度，不再有独立心跳线程）
+        heartbeatRunner = new HeartbeatRunner(
+                config,
+                agentRuntime,
+                agentRuntime.getSessionManager(),
+                workspace,
+                agentRuntime::isTaskRunning,
+                (channel, chatId, content) -> bus.publishOutbound(new OutboundMessage(channel, chatId, content))
+        );
+
+        cronService.setOnJob(job -> {
+            String name = job.getName();
+            if (name != null && name.startsWith(HeartbeatRunner.HEARTBEAT_JOB_PREFIX)) {
+                heartbeatRunner.runOnceForJob(name);
+                return "ok";
+            }
+            if (HeartbeatRunner.MEMORY_EVOLUTION_JOB_NAME.equals(name)) {
+                triggerMemoryEvolution();
+                return "ok";
+            }
+            return cronTool.executeJob(job);
+        });
+
+        // 注册/更新系统内置 job（幂等，按 name 查重）
+        heartbeatRunner.registerSystemJobs(cronService);
 
         // 5. 初始化 Session 和 Skills
         // 复用 AgentRuntime 内部的 SessionManager，确保 Web Console 与 Agent 共享同一内存状态，
@@ -137,7 +162,8 @@ public class GatewayBootstrap {
                 agentRuntime,
                 sessionManager,
                 cronService,
-                skillsLoader
+                skillsLoader,
+                heartbeatRunner
         );
 
         logger.info("Gateway services initialized");
@@ -159,25 +185,22 @@ public class GatewayBootstrap {
 
         logger.info("Starting gateway services");
 
-        // 1. 启动定时任务服务
+        // 1. 启动定时任务服务（心跳与记忆进化作为内置 job 随之调度）
         startCronService();
 
-        // 2. 启动心跳服务
-        startHeartbeatService();
-
-        // 3. 启动所有通道
+        // 2. 启动所有通道
         startChannels();
 
-        // 4. 启动 Webhook Server
+        // 3. 启动 Webhook Server
         startWebhookServer();
 
-        // 5. 启动 Web Console Server
+        // 4. 启动 Web Console Server
         startWebConsoleServer();
 
-        // 6. 启动 Agent Loop
+        // 5. 启动 Agent Loop
         startAgentLoop();
 
-        // 7. 注册关闭钩子
+        // 6. 注册关闭钩子
         registerShutdownHook();
 
         started = true;
@@ -211,8 +234,8 @@ public class GatewayBootstrap {
         // 1. 先停止入口层，不再接收新消息
         stopService("Web Console", () -> webConsoleServer.stop(), webConsoleServer != null);
         stopService("Webhook Server", () -> webhookServer.stop(), webhookServer != null);
-        stopService("Heartbeat", () -> heartbeatService.stop(), heartbeatService != null);
         stopService("Cron", () -> cronService.stop(), cronService != null);
+        stopService("Heartbeat", () -> heartbeatRunner.stop(), heartbeatRunner != null);
 
         // 2. 停止 Agent，不再产生新的出站消息
         stopService("Agent Loop", () -> agentRuntime.stop(), agentRuntime != null);
@@ -326,36 +349,10 @@ public class GatewayBootstrap {
     }
 
     /**
-     * 初始化心跳服务。
-     * 
-     * 从配置读取心跳开关，创建心跳服务实例。
-     */
-    private void initializeHeartbeat() {
-        boolean heartbeatEnabled = config.getAgent() != null
-                && config.getAgent().isHeartbeatEnabled();
-
-        heartbeatService = new HeartbeatService(
-                workspace,
-                prompt -> {
-                    try {
-                        // 在心跳周期中触发记忆进化（提炼、整合、衰减归档）
-                        triggerMemoryEvolution();
-
-                        return agentRuntime.processDirect(prompt, HEARTBEAT_SESSION_KEY);
-                    } catch (Exception e) {
-                        logger.error("Heartbeat processing error", Map.of("error", e.getMessage()));
-                        return null;
-                    }
-                },
-                HEARTBEAT_INTERVAL_SECONDS,
-                heartbeatEnabled
-        );
-    }
-
-    /**
      * 触发进化周期。
      *
-     * 在心跳回调中异步执行，不阻塞心跳主流程。
+     * 由 __memory_evolution__ 系统 cron job 触发，异步执行不阻塞调度线程。
+     * 上一轮进化未完成时跳过（AtomicBoolean 去重）。
      * 进化过程包括：
      * 1. 基于反馈的智能记忆进化
      * 2. 常规记忆进化（提炼 → 整合 → 衰减归档）
@@ -366,6 +363,10 @@ public class GatewayBootstrap {
         if (!agentRuntime.isProviderConfigured()) {
             return;
         }
+        if (!evolutionInFlight.compareAndSet(false, true)) {
+            logger.debug("Memory evolution already in flight, skipping");
+            return;
+        }
 
         Thread evolutionThread = new Thread(() -> {
             try {
@@ -373,6 +374,8 @@ public class GatewayBootstrap {
                 agentRuntime.runEvolutionCycle();
             } catch (Exception e) {
                 logger.error("Evolution cycle failed", Map.of("error", e.getMessage()));
+            } finally {
+                evolutionInFlight.set(false);
             }
         }, "evolution-cycle");
         evolutionThread.setDaemon(true);
@@ -396,20 +399,6 @@ public class GatewayBootstrap {
     private void startCronService() {
         cronService.start();
         logger.info("Cron service started");
-    }
-
-    /**
-     * 启动心跳服务。
-     */
-    private void startHeartbeatService() {
-        if (heartbeatService != null) {
-            try {
-                heartbeatService.start();
-                logger.info("Heartbeat service started");
-            } catch (Exception e) {
-                logger.warn("Heartbeat service not started: " + e.getMessage());
-            }
-        }
     }
 
     /**

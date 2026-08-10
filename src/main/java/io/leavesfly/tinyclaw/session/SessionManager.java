@@ -1,331 +1,385 @@
 package io.leavesfly.tinyclaw.session;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.Message;
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.attribute.PosixFilePermission;
-import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 会话管理器 - 处理对话持久化
- * 
- * 负责管理用户与Agent之间的对话会话，包括：
- * 
- * 核心功能：
- * - 会话创建与获取：按需创建新会话或获取现有会话
- * - 消息历史管理：维护每一会话的完整对话历史
- * - 持久化存储：将会话数据保存到磁盘防止丢失
- * - 内存缓存：使用内存缓存提高访问性能
- * - 摘要管理：维护会话摘要以优化长对话处理
- * 
- * 设计特点：
- * - 线程安全：使用ConcurrentHashMap确保并发访问安全
- * - 懒加载：启动时仅建立会话键索引，会话内容首次访问时才从磁盘加载
- * - 自动保存：关键操作后自动持久化会话状态
- * - 错误恢复：具备从存储故障中恢复的能力
- * 
- * 数据结构：
- * - Session：单个会话的数据容器
- * - Message：单条消息记录
- * - 会话键格式：通常为"channel:chat_id"格式
- * 
- * 使用场景：
- * 1. Agent处理用户消息时获取对应的会话上下文
- * 2. 系统重启后恢复之前的对话状态
- * 3. 多用户并发访问时隔离各自的会话数据
- * 4. 长期运行的服务中管理大量活跃会话
+ * 会话管理器 - 会话的缓存与协调层
+ *
+ * <h2>职责边界</h2>
+ * <ul>
+ *   <li>{@link SessionStore}：会话存在哪、怎么落盘（append-only JSONL）；</li>
+ *   <li>本类：内存缓存、按需加载、有界淘汰、生命周期协调；</li>
+ *   <li>{@link Session}：单个会话的数据与并发一致性。</li>
+ * </ul>
+ *
+ * <h2>缓存策略</h2>
+ * <p>缓存有界：超出容量或空闲超时的会话会被淘汰，淘汰前先把未落盘增量刷盘。为避免把
+ * 正在处理中的会话淘汰掉造成同一 key 出现两个实例，只淘汰空闲超过
+ * {@link #MIN_IDLE_BEFORE_EVICT_MS} 的会话——宁可短时超出容量，也不牺牲一致性。</p>
+ *
+ * <h2>读取语义</h2>
+ * <ul>
+ *   <li>{@link #getHistory}：完整转录，用于历史回放与计算工具调用记录的绝对下标；</li>
+ *   <li>{@link #getContextMessages}：送入 LLM 的上下文，已压缩的早期消息不包含在内。</li>
+ * </ul>
  */
 public class SessionManager {
-    
+
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("session");
-    private static final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
-    
-    private final Map<String, Session> sessions;
-    private final Set<String> knownKeys;   // 磁盘上存在的会话键索引（含未加载的）
-    private final String storagePath;
-    
+
+    /** 缓存中最多保留的会话数 */
+    private static final int MAX_CACHED_SESSIONS = 64;
+    /** 空闲超过该时长的会话从缓存中移除 */
+    private static final long CACHE_TTL_MS = 30 * 60 * 1000L;
+    /** 淘汰前要求的最小空闲时长，避免淘汰正在处理中的会话 */
+    private static final long MIN_IDLE_BEFORE_EVICT_MS = 5 * 60 * 1000L;
+    /** 两次淘汰扫描的最小间隔 */
+    private static final long SWEEP_INTERVAL_MS = 30 * 1000L;
+
+    private final Map<String, Session> cache = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastAccess = new ConcurrentHashMap<>();
+    private final SessionStore store;
+    /** 存储是否可持久：纯内存模式下缓存就是唯一副本，不能淘汰 */
+    private final boolean durable;
+
+    private volatile long lastSweepAt;
+
+    /**
+     * @param storagePath 会话存储目录；为空则使用纯内存模式（不落盘）
+     */
     public SessionManager(String storagePath) {
-        this.sessions = new ConcurrentHashMap<>();
-        this.knownKeys = ConcurrentHashMap.newKeySet();
-        this.storagePath = storagePath;
-        
-        if (storagePath != null && !storagePath.isEmpty()) {
-            try {
-                Files.createDirectories(Paths.get(storagePath));
-                indexSessions();
-            } catch (IOException e) {
-                logger.warn("Failed to create session storage directory: " + e.getMessage());
-            }
+        this.store = createStore(storagePath);
+        this.durable = this.store != SessionStore.NOOP;
+    }
+
+    private SessionManager(SessionStore store) {
+        this.store = store != null ? store : SessionStore.NOOP;
+        this.durable = this.store != SessionStore.NOOP;
+    }
+
+    /**
+     * 注入自定义存储实现，便于测试与替换后端。
+     * 用工厂方法而非公开重载构造器，避免 {@code new SessionManager(null)} 产生歧义。
+     */
+    public static SessionManager withStore(SessionStore store) {
+        return new SessionManager(store);
+    }
+
+    private static SessionStore createStore(String storagePath) {
+        if (storagePath == null || storagePath.isEmpty()) {
+            return SessionStore.NOOP;
+        }
+        try {
+            return new JsonlSessionStore(storagePath);
+        } catch (IOException e) {
+            logger.error("Failed to initialize session store, falling back to memory-only",
+                    Map.of("path", storagePath, "error", String.valueOf(e.getMessage())));
+            return SessionStore.NOOP;
         }
     }
-    
+
+    // ==================== 获取 ====================
+
     /**
-     * 获取或创建会话（通过键）
-     * 
-     * 如果指定键的会话已在内存则直接返回；如果磁盘上存在则懒加载；
-     * 否则创建新的会话实例并缓存。
-     * 
-     * @param key 会话键（通常是"channel:chat_id"格式）
-     * @return 对应的会话实例
+     * 获取或创建会话：命中缓存直接返回，磁盘存在则懒加载，否则新建
      */
     public Session getOrCreate(String key) {
-        return sessions.computeIfAbsent(key, k -> {
-            Session loaded = loadSessionFromDisk(k);
+        Session session = cache.computeIfAbsent(key, k -> {
+            Session loaded = store.load(k);
             if (loaded != null) {
                 return loaded;
             }
-            Session session = new Session(k);
-            knownKeys.add(k);
-            logger.debug("Created new session: " + key);
-            return session;
+            logger.debug("Created new session: " + k);
+            return new Session(k);
         });
+        touch(key);
+        return session;
     }
-    
+
     /**
-     * 获取已存在的会话（内存优先，未加载时尝试从磁盘懒加载），不存在返回 null
+     * 获取已存在的会话（缓存优先，其次懒加载），不存在返回 null。
+     * 与 {@link #getOrCreate} 的差别是绝不创建新会话——异步任务应使用本方法，
+     * 否则会把已被删除的会话复活成空壳。
      */
-    private Session getLoaded(String key) {
-        Session session = sessions.get(key);
-        if (session != null) {
-            return session;
+    private Session getExisting(String key) {
+        Session cached = cache.get(key);
+        if (cached != null) {
+            touch(key);
+            return cached;
         }
-        if (!knownKeys.contains(key)) {
+        if (!store.exists(key)) {
             return null;
         }
-        return sessions.computeIfAbsent(key, this::loadSessionFromDisk);
+        Session loaded = cache.computeIfAbsent(key, store::load);
+        if (loaded == null) {
+            cache.remove(key);
+            return null;
+        }
+        touch(key);
+        return loaded;
     }
-    
+
+    /**
+     * 会话是否存在（含磁盘上尚未加载的）
+     */
+    public boolean exists(String key) {
+        return cache.containsKey(key) || store.exists(key);
+    }
+
+    // ==================== 写入 ====================
+
     /**
      * 添加简单消息到会话
      */
     public void addMessage(String sessionKey, String role, String content) {
-        Session session = getOrCreate(sessionKey);
-        session.addMessage(role, content);
+        getOrCreate(sessionKey).addMessage(role, content);
     }
-    
+
     /**
      * 添加完整消息（包括工具调用）到会话
      */
     public void addFullMessage(String sessionKey, Message message) {
-        Session session = getOrCreate(sessionKey);
-        session.addFullMessage(message);
+        getOrCreate(sessionKey).addFullMessage(message);
     }
 
     /**
      * 添加工具调用记录到会话。
-     * afterAssistantIndex 由调用方传入，表示该工具调用发生在第几条 assistant 消息之后。
+     * record 中的 messageIndex 是完整转录中的绝对下标，由调用方基于 {@link #getHistory} 计算。
      */
     public void addToolCallRecord(String sessionKey, ToolCallRecord record) {
-        Session session = getOrCreate(sessionKey);
-        session.addToolCallRecord(record);
+        getOrCreate(sessionKey).addToolCallRecord(record);
     }
 
     /**
-     * 获取当前 session 中 assistant 消息的数量，用于计算 afterAssistantIndex。
+     * 设置会话摘要
      */
-    public int countAssistantMessages(String sessionKey) {
-        Session session = getLoaded(sessionKey);
-        return session != null ? session.countAssistantMessages() : 0;
+    public void setSummary(String sessionKey, String summary) {
+        Session session = getExisting(sessionKey);
+        if (session != null) {
+            session.setSummary(summary);
+        }
+    }
+
+    /**
+     * 记录一次全新提示词的输入消息：把 prompt 中的非 system 消息追加到会话。
+     *
+     * <p>{@code ReActExecutor} 只持久化它自己产生的 assistant / tool 消息，输入消息由调用方
+     * 负责入库。本方法面向输入为「system + user 一次性提示词」的调用方（子代理、协同角色），
+     * 不适用于主链路：主链路的输入是完整历史，且已在调用前单独写入了用户消息。</p>
+     *
+     * <p>system 消息按设计不入库：它是由技能、记忆、工具清单每轮实时重建的派生数据，
+     * 存下来既会过期，也会与 ContextBuilder 每轮注入的那条重复。</p>
+     */
+    public void recordPromptMessages(String sessionKey, List<Message> prompt) {
+        if (prompt == null || prompt.isEmpty()) {
+            return;
+        }
+        Session session = getOrCreate(sessionKey);
+        for (Message message : prompt) {
+            if (message != null && !"system".equals(message.getRole())) {
+                session.addFullMessage(message);
+            }
+        }
+    }
+
+    /**
+     * 记录一轮对话的最终回复并落盘，与 {@link #recordPromptMessages} 成对使用。
+     *
+     * <p>最终回复由调用方而非 {@code ReActExecutor} 写入，因为只有调用方知道经 Stop hook
+     * 改写后的最终文本；若由 executor 先写一份，会造成存储的内容与用户实际看到的不一致。</p>
+     */
+    public void recordReply(String sessionKey, String reply) {
+        if (reply == null || reply.isEmpty()) {
+            return;
+        }
+        addMessage(sessionKey, "assistant", reply);
+        save(sessionKey);
+    }
+
+    /**
+     * 以非破坏方式压缩上下文：写入摘要并前移上下文起点，完整转录保持不变。
+     *
+     * @param newStartIndex 新的上下文起点，应基于生成摘要时的快照计算
+     * @return 压缩是否实际生效
+     */
+    public boolean compactContext(String sessionKey, String summary, int newStartIndex) {
+        Session session = getExisting(sessionKey);
+        return session != null && session.compactContext(summary, newStartIndex);
+    }
+
+    /**
+     * 持久化会话（只写入未落盘的增量）
+     */
+    public void save(Session session) {
+        if (session == null) {
+            return;
+        }
+        store.persist(session);
+    }
+
+    /**
+     * 持久化指定会话；会话不存在时静默跳过，不会创建空会话
+     */
+    public void save(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        if (session != null) {
+            store.persist(session);
+        }
+    }
+
+    // ==================== 读取 ====================
+
+    /**
+     * 获取完整消息转录（含已被摘要压缩的早期消息）。
+     * 用于历史回放，以及计算工具调用记录的绝对下标。
+     */
+    public List<Message> getHistory(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getHistory() : List.of();
+    }
+
+    /**
+     * 获取送入 LLM 的上下文消息（已压缩的早期消息不包含在内）
+     */
+    public List<Message> getContextMessages(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getContextMessages() : List.of();
+    }
+
+    /**
+     * 在一次加锁中取得上下文快照，供摘要任务计算压缩边界，避免读到不一致的中间态
+     */
+    public Session.ContextSnapshot snapshotContext(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.snapshotContext() : Session.ContextSnapshot.empty();
+    }
+
+    /**
+     * 获取会话的摘要
+     */
+    public String getSummary(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getSummary() : "";
     }
 
     /**
      * 获取会话的工具调用记录列表
      */
-    public java.util.List<ToolCallRecord> getToolCallRecords(String sessionKey) {
-        Session session = getLoaded(sessionKey);
-        return session != null ? session.getToolCallRecords() : java.util.List.of();
-    }
-    
-    /**
-     * 获取会话的消息历史
-     */
-    public List<Message> getHistory(String sessionKey) {
-        Session session = getLoaded(sessionKey);
-        return session != null ? session.getHistory() : List.of();
-    }
-    
-    /**
-     * 获取会话的摘要
-     */
-    public String getSummary(String sessionKey) {
-        Session session = getLoaded(sessionKey);
-        return session != null ? session.getSummary() : "";
-    }
-    
-    /**
-     * 设置会话的摘要
-     */
-    public void setSummary(String sessionKey, String summary) {
-        Session session = getLoaded(sessionKey);
-        if (session != null) {
-            session.setSummary(summary);
-            session.setUpdated(Instant.now());
-        }
-    }
-    
-    /**
-     * 截断会话的历史记录
-     */
-    public void truncateHistory(String sessionKey, int keepLast) {
-        Session session = getLoaded(sessionKey);
-        if (session != null) {
-            session.truncateHistory(keepLast);
-        }
-    }
-    
-    /**
-     * 保存会话到磁盘（原子写：先写临时文件再 rename，防止进程崩溃截断 JSON）
-     */
-    public void save(Session session) {
-        if (storagePath == null || storagePath.isEmpty()) {
-            return;
-        }
-        
-        try {
-            // 将 session key 转换为安全的文件名（Windows 不支持冒号）
-            String safeFileName = toSafeFileName(session.getKey());
-            Path target = Paths.get(storagePath, safeFileName + ".json");
-            // 紧凑格式序列化（比 pretty-print 减少 ~40% IO，会话文件无需人工阅读）
-            String json = objectMapper.writeValueAsString(session);
-            
-            // 原子写：先写临时文件再重命名，避免进程中途退出留下半个 JSON
-            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
-            Files.writeString(temp, json);
-            try {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            // 设置文件权限为 600（仅所有者可读写，防止其他用户读取会话内容）
-            setOwnerOnlyPermissions(target);
-            knownKeys.add(session.getKey());
-            logger.debug("Saved session: " + session.getKey());
-        } catch (IOException e) {
-            logger.error("Failed to save session: " + session.getKey(), Map.of("error", e.getMessage()));
-        }
-    }
-    
-    /**
-     * 启动时建立会话键索引（仅提取 key 字段，不保留消息内容），
-     * 避免全量会话常驻内存；会话内容在首次访问时懒加载
-     */
-    private void indexSessions() {
-        if (storagePath == null) {
-            return;
-        }
-        
-        File storageDir = new File(storagePath);
-        if (!storageDir.exists() || !storageDir.isDirectory()) {
-            return;
-        }
-        
-        File[] files = storageDir.listFiles((dir, name) -> name.endsWith(".json"));
-        if (files == null) {
-            return;
-        }
-        
-        for (File file : files) {
-            try {
-                String key = objectMapper.readTree(file).path("key").asText(null);
-                if (key != null && !key.isEmpty()) {
-                    knownKeys.add(key);
-                }
-            } catch (IOException e) {
-                logger.warn("Failed to index session file: " + file.getName());
-            }
-        }
-        
-        logger.info("Indexed " + knownKeys.size() + " sessions from storage");
-    }
-    
-    /**
-     * 从磁盘加载单个会话，文件不存在或解析失败返回 null
-     */
-    private Session loadSessionFromDisk(String key) {
-        if (storagePath == null || storagePath.isEmpty()) {
-            return null;
-        }
-        
-        Path path = Paths.get(storagePath, toSafeFileName(key) + ".json");
-        if (!Files.exists(path)) {
-            return null;
-        }
-        
-        try {
-            String content = Files.readString(path);
-            Session session = objectMapper.readValue(content, Session.class);
-            knownKeys.add(session.getKey());
-            logger.debug("Loaded session: " + session.getKey());
-            return session;
-        } catch (IOException e) {
-            logger.warn("Failed to load session from file: " + path.getFileName());
-            return null;
-        }
-    }
-    
-    /**
-     * 获取所有会话键（含磁盘上尚未加载的会话）
-     */
-    public java.util.Set<String> getSessionKeys() {
-        Set<String> keys = new java.util.LinkedHashSet<>(knownKeys);
-        keys.addAll(sessions.keySet());
-        return keys;
-    }
-    
-    /**
-     * 删除会话
-     */
-    public void deleteSession(String key) {
-        Session removed = sessions.remove(key);
-        boolean known = knownKeys.remove(key);
-        if ((removed != null || known) && storagePath != null) {
-            try {
-                String safeFileName = toSafeFileName(key);
-                Files.deleteIfExists(Paths.get(storagePath, safeFileName + ".json"));
-                logger.debug("Deleted session: " + key);
-            } catch (IOException e) {
-                logger.warn("Failed to delete session file: " + key);
-            }
-        }
-    }
-    
-    /**
-     * 设置文件权限为 owner-only (600)。
-     * 在非 POSIX 文件系统（如 Windows）上静默跳过。
-     */
-    private void setOwnerOnlyPermissions(Path path) {
-        try {
-            Files.setPosixFilePermissions(path, Set.of(
-                    PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE));
-        } catch (UnsupportedOperationException | IOException e) {
-            // 非 POSIX 文件系统（Windows）或权限设置失败，静默忽略
-        }
+    public List<ToolCallRecord> getToolCallRecords(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getToolCallRecords() : List.of();
     }
 
     /**
-     * 将 session key 转换为安全的文件名
-     * 将不安全字符（如冒号、斜杠）替换为下划线
+     * 列出所有会话的元信息，按最后更新时间倒序。
+     * 只读元信息索引，不会加载任何会话正文。
      */
-    private String toSafeFileName(String key) {
-        if (key == null) {
-            return "unknown";
+    public List<SessionMeta> listMeta() {
+        Map<String, SessionMeta> merged = new ConcurrentHashMap<>();
+        for (SessionMeta meta : store.listMeta()) {
+            if (meta.getKey() != null) {
+                merged.put(meta.getKey(), meta);
+            }
         }
-        // 替换文件名中的不安全字符: : / \ * ? " < > |
-        return key.replaceAll("[:/\\\\*?\"<>|]", "_");
+        // 内存中的会话更新更及时，覆盖索引里的版本
+        cache.forEach((key, session) -> merged.put(key, SessionMeta.from(session)));
+
+        List<SessionMeta> metas = new ArrayList<>(merged.values());
+        metas.sort(Comparator.comparing(
+                SessionMeta::getUpdated, Comparator.nullsLast(Comparator.reverseOrder())));
+        return metas;
+    }
+
+    // ==================== 删除与生命周期 ====================
+
+    /**
+     * 删除会话：从缓存移除、标记删除位（阻止异步任务写回复活）、删除存储文件
+     */
+    public void deleteSession(String key) {
+        Session removed = cache.remove(key);
+        lastAccess.remove(key);
+        if (removed != null) {
+            removed.markDeleted();
+        }
+        store.delete(key);
+    }
+
+    /**
+     * 刷盘并释放资源，进程退出前调用
+     */
+    public void close() {
+        cache.values().forEach(session -> {
+            if (session.hasPendingChanges()) {
+                store.persist(session);
+            }
+        });
+        store.flush();
+    }
+
+    // ==================== 缓存淘汰 ====================
+
+    private void touch(String key) {
+        lastAccess.put(key, System.currentTimeMillis());
+        sweepIfNeeded();
+    }
+
+    /**
+     * 按需淘汰缓存：先清理超时会话，容量仍超限时再淘汰空闲最久的。
+     * 淘汰前刷盘，且只淘汰空闲足够久的会话，避免与正在进行的对话产生双实例。
+     * 纯内存模式下缓存就是唯一副本，不执行任何淘汰。
+     */
+    private void sweepIfNeeded() {
+        if (!durable) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (cache.size() <= MAX_CACHED_SESSIONS && now - lastSweepAt < SWEEP_INTERVAL_MS) {
+            return;
+        }
+        lastSweepAt = now;
+
+        lastAccess.forEach((key, accessedAt) -> {
+            if (now - accessedAt > CACHE_TTL_MS) {
+                evict(key);
+            }
+        });
+
+        if (cache.size() <= MAX_CACHED_SESSIONS) {
+            return;
+        }
+
+        List<String> byIdle = new ArrayList<>(cache.keySet());
+        byIdle.sort(Comparator.comparingLong(k -> lastAccess.getOrDefault(k, 0L)));
+        for (String key : byIdle) {
+            if (cache.size() <= MAX_CACHED_SESSIONS) {
+                break;
+            }
+            if (now - lastAccess.getOrDefault(key, 0L) < MIN_IDLE_BEFORE_EVICT_MS) {
+                break; // 剩下的都是活跃会话，宁可超出容量也不冒双实例的风险
+            }
+            evict(key);
+        }
+    }
+
+    private void evict(String key) {
+        Session session = cache.get(key);
+        if (session == null) {
+            lastAccess.remove(key);
+            return;
+        }
+        if (session.hasPendingChanges()) {
+            store.persist(session);
+        }
+        cache.remove(key);
+        lastAccess.remove(key);
+        logger.debug("Evicted session from cache: " + key);
     }
 }

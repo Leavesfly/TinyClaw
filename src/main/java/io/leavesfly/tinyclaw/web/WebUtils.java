@@ -101,6 +101,7 @@ public class WebUtils {
     public static final String API_FILES           = "/api/files";
     public static final String API_TOKEN_STATS     = "/api/token-stats";
     public static final String API_REFLECTION      = "/api/reflection";
+    public static final String API_HEARTBEAT       = "/api/heartbeat";
 
     // ==================== HTTP Methods ====================
     public static final String HTTP_METHOD_GET     = "GET";

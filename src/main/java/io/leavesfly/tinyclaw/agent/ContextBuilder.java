@@ -149,6 +149,33 @@ public class ContextBuilder {
     public String buildSystemPrompt() {
         return buildSystemPrompt(null);
     }
+
+    /**
+     * 构建系统提示词（轻量上下文版本）。
+     *
+     * @param currentMessage 当前用户消息（可为 null）
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入，降低 token 成本
+     * @return 完整的系统提示词字符串
+     */
+    public String buildSystemPrompt(String currentMessage, boolean lightContext) {
+        SectionContext ctx = new SectionContext(
+            currentMessage, workspace, contextWindow,
+            tools, promptOptimizer, skillsLoader, memory
+        );
+
+        List<String> parts = new ArrayList<>();
+        for (ContextSection section : sections) {
+            if (lightContext && section instanceof BootstrapSection) {
+                continue;
+            }
+            String content = section.build(ctx);
+            if (StringUtils.isNotBlank(content)) {
+                parts.add(content);
+            }
+        }
+
+        return String.join(SECTION_SEPARATOR, parts);
+    }
     
     /**
      * 构建系统提示词，支持基于当前消息的记忆相关性检索。
@@ -164,20 +191,7 @@ public class ContextBuilder {
      * @return 完整的系统提示词字符串
      */
     public String buildSystemPrompt(String currentMessage) {
-        SectionContext ctx = new SectionContext(
-            currentMessage, workspace, contextWindow,
-            tools, promptOptimizer, skillsLoader, memory
-        );
-        
-        List<String> parts = new ArrayList<>();
-        for (ContextSection section : sections) {
-            String content = section.build(ctx);
-            if (StringUtils.isNotBlank(content)) {
-                parts.add(content);
-            }
-        }
-        
-        return String.join(SECTION_SEPARATOR, parts);
+        return buildSystemPrompt(currentMessage, false);
     }
     
     /**
@@ -203,7 +217,23 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         String channel, String chatId) {
-        return buildMessages(history, summary, currentMessage, null, channel, chatId);
+        return buildMessages(history, summary, currentMessage, null, channel, chatId, false);
+    }
+
+    /**
+     * 为 LLM 构建消息列表，支持轻量上下文模式。
+     *
+     * @param history 历史消息列表
+     * @param summary 之前对话的摘要
+     * @param currentMessage 当前用户消息
+     * @param channel 当前通道名称
+     * @param chatId 当前聊天 ID
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
+     * @return 完整的消息列表
+     */
+    public List<Message> buildMessages(List<Message> history, String summary, String currentMessage,
+                                        String channel, String chatId, boolean lightContext) {
+        return buildMessages(history, summary, currentMessage, null, channel, chatId, lightContext);
     }
     
     /**
@@ -222,10 +252,27 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         List<String> images, String channel, String chatId) {
+        return buildMessages(history, summary, currentMessage, images, channel, chatId, false);
+    }
+
+    /**
+     * 为 LLM 构建消息列表（多模态 + 轻量上下文模式）。
+     *
+     * @param history 历史消息列表
+     * @param summary 之前对话的摘要
+     * @param currentMessage 当前用户消息
+     * @param images 图片路径列表（可为 null）
+     * @param channel 当前通道名称
+     * @param chatId 当前聊天 ID
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
+     * @return 完整的消息列表
+     */
+    public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
+                                        List<String> images, String channel, String chatId, boolean lightContext) {
         List<Message> messages = new ArrayList<>();
         
         // 构建系统提示词（传入当前消息用于记忆相关性检索）
-        String systemPrompt = buildSystemPromptWithSession(currentMessage, channel, chatId, summary);
+        String systemPrompt = buildSystemPromptWithSession(currentMessage, channel, chatId, summary, lightContext);
         
         logger.debug("System prompt built", Map.of(
                 "total_chars", systemPrompt.length(),
@@ -312,11 +359,13 @@ public class ContextBuilder {
      * @param channel 通道名称
      * @param chatId 聊天 ID
      * @param summary 对话摘要
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
      * @return 完整的系统提示词
      */
-    private String buildSystemPromptWithSession(String currentMessage, String channel, String chatId, String summary) {
+    private String buildSystemPromptWithSession(String currentMessage, String channel, String chatId,
+                                                String summary, boolean lightContext) {
 
-        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt(currentMessage));
+        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt(currentMessage, lightContext));
         
         // 添加当前会话信息
         if (StringUtils.isNotBlank(channel) && StringUtils.isNotBlank(chatId)) {

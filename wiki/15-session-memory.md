@@ -11,8 +11,8 @@
 | 承载 | 当前对话的完整消息列表 | 跨会话的知识、偏好、事实 |
 | 键 | `sessionKey = "{channel}:{chatId}"` | 全局（面向当前 Agent） |
 | 生命周期 | 活跃期 + 滚动摘要 | 持久（除非显式归档） |
-| 存储 | `workspace/sessions/*.json` | `workspace/memory/` |
-| 查询 | 整段追加进上下文 | 按相关性 + Token 预算选择性注入 |
+| 存储 | `workspace/sessions/*.jsonl`（append-only） | `workspace/memory/` |
+| 查询 | 上下文窗口整段追加进上下文 | 按相关性 + Token 预算选择性注入 |
 
 两者配合完成 Agent 的"**此时此刻在说什么**"和"**过去记得什么**"。
 
@@ -25,31 +25,67 @@
 ```java
 class Session {
     String key;                           // "telegram:123456"
-    List<Message> messages;               // 完整对话历史
+    List<Message> messages;               // 完整转录，只增不删
     String summary;                       // 滚动摘要（由 SessionSummarizer 写入）
+    int contextStartIndex;                // LLM 上下文起点，之前的消息已被 summary 覆盖
     Instant created;
     Instant updated;
     List<ToolCallRecord> toolCallRecords; // 工具调用历史（UI 回放用）
 }
 ```
 
-`Message` 遵循 OpenAI 规范：`role` ∈ `system|user|assistant|tool`，`content`、`tool_calls`、`tool_call_id`。
+`Message` 遵循 OpenAI 规范：`role` ∈ `system|user|assistant|tool`，`content`、`tool_calls`、`tool_call_id`，
+另有两个**仅用于持久化**的身份字段 `id` / `timestamp`（由 Session 入库时补齐，不会进入 LLM 请求体）。
 
-### 15.2.2 SessionManager
+**不可变转录 + 可变上下文视图**：`messages` 是唯一事实源，只增不删；`contextStartIndex`
+标记哪一段才送入模型。因此压缩上下文不会销毁历史，也不会让 `ToolCallRecord` 的绝对下标失效。
 
-职责：
+### 15.2.2 分层职责
 
-- **懒加载**：`getOrCreate(key)` 命中内存 → 未命中则从 JSON 文件加载 → 都没有则新建
-- **持久化**：关键写入后异步落盘 `workspace/sessions/{key}.json`（`:` 转义为安全字符）
-- **线程安全**：`ConcurrentHashMap<String, Session>`
-- **时间戳管理**：`created` / `updated` 自动维护
-- **批量操作**：`listKeys()`, `list()`, `delete(key)`, `clearAll()`
+| 层 | 类 | 职责 |
+|----|-----|------|
+| 存储 | `SessionStore` / `JsonlSessionStore` | 会话存在哪、怎么落盘 |
+| 缓存与协调 | `SessionManager` | 按需加载、有界淘汰、生命周期 |
+| 数据与并发 | `Session` | 单个会话的数据与一致性（内部持锁） |
 
-构造时指定 `storagePath`，若为空则只内存不持久化（测试场景）。
+`SessionManager` 要点：
 
-### 15.2.3 truncateHistory — 智能截断
+- **按需加载**：`getOrCreate(key)` 命中缓存 → 未命中从磁盘加载 → 都没有则新建
+- **两种读取语义**：`getHistory()` 返回完整转录（历史回放、计算绝对下标）；`getContextMessages()` 返回送入 LLM 的上下文
+- **有界缓存**：超容量或空闲超时则淘汰，淘汰前先刷盘；只淘汰空闲足够久的会话，避免同一 key 出现两个实例
+- **元信息列表**：`listMeta()` 只读索引，不加载任何会话正文，按 `updated` 倒序
+- **删除不复活**：删除时打标记位，阻止仍持有旧引用的异步任务把会话写回
 
-当 `keepLast` 小于 `messages.size()` 时，直接按尾部截取会破坏 `assistant(tool_calls)` ↔ `tool(result)` 的**配对关系**，导致 OpenAI 兼容协议报错。
+构造时指定 `storagePath`，若为空则只内存不持久化（测试场景，此时不做任何淘汰）。
+
+### 15.2.3 存储格式：append-only JSONL
+
+一行一条记录，只追加增量——单次写入代价与新增内容成正比，与历史长度无关（旧实现每次都全量重写整个 JSON，一轮多次工具调用就是多次全量重写）：
+
+```text
+sessions/
+  _index.json                        会话元信息索引，列表查询只读它（可从转录重建）
+  _active-sessions.json              各聊天当前活跃的会话指针（/new 跨进程生效）
+  telegram_123-9f8e7d6c.jsonl        会话转录：header / msg / tool / compact 四类行
+  telegram_123.json.migrated         迁移后保留的旧格式备份
+  corrupt/xxx.jsonl.corrupt.169...   无法解析时隔离保留的原文件
+```
+
+健壮性要点：
+
+- 文件名 = 可读前缀 + key 的哈希短码，避免不同 key（如 `a:b` 与 `a_b`）撞到同一文件
+- 追加后 `fsync`；全量写走「唯一临时名 → fsync → rename」
+- 末行残缺视为崩溃残留直接忽略，中间行损坏则跳过并告警，**能读出多少恢复多少**
+- 整份无法识别时移入 `corrupt/` 保留证据，而不是让上层新建空会话覆盖销毁
+- 未知字段与未知行类型一律忽略，新增字段后回退版本不会读不出整份会话
+
+旧的单文件 `{key}.json` 首次访问时自动迁移为 JSONL，原文件重命名为 `.json.migrated` 保留。
+
+> 已知限制：未做跨进程文件锁，同一 workspace 同时跑多个实例时以最后写入者为准。
+
+### 15.2.4 上下文压缩与 tool 消息配对
+
+上下文起点若落在 `tool` 消息上，会破坏 `assistant(tool_calls)` ↔ `tool(result)` 的**配对关系**，导致 OpenAI 兼容协议报错。
 
 TinyClaw 的策略：
 
@@ -59,42 +95,51 @@ TinyClaw 的策略：
   找不到 → 向后跳过所有孤立 tool 消息
 ```
 
-保证无论如何截断，历史都是合法序列。
+保证无论如何压缩，送入模型的序列都合法。`ContextBuilder` 另有一道同质的兜底校验。
 
-### 15.2.4 ToolCallRecord
+### 15.2.5 ToolCallRecord
 
 专供 UI 回放的"事件流"记录：
 
-- 工具名、参数（脱敏后）
-- 执行时长、结果长度
-- 状态（成功 / 失败 / 超时 / 拒绝）
-- `afterAssistantIndex`：挂在第几条 assistant 消息之后
+- 工具名、参数摘要（截断后）
+- 结果摘要、成功与否、时间戳
+- `messageIndex`：触发它的 assistant 消息在**完整转录**中的绝对下标（兼容旧字段名 `afterAssistantIndex`）
 
-Web 控制台的会话时间线由此渲染。
+因为压缩不删消息，这个绝对下标永不失效。Web 控制台的会话时间线由此渲染。
 
-### 15.2.5 SessionSummarizer
+### 15.2.6 SessionSummarizer
 
-当 `messages.size()` 超过阈值（默认 30）时，由 `AgentRuntime.maybeSummarize()` 触发：
+当**上下文**消息数或估算 Token 超过阈值时，由 `MessageRouter.persistAndSummarize()` 触发：
 
 ```text
-1. 选取旧消息（保留最近 N 条）
-2. 调 LLM：生成「要点摘要 + 用户偏好 + 待办事项」
-3. summary 更新到 Session.summary
-4. truncateHistory(keepLast) 截断保留尾部
-5. ContextBuilder.SummarySection 后续会把 summary 注入上下文开头
+1. 取上下文快照 ContextSnapshot（起点、完整转录长度、上下文消息）
+2. 基于快照计算压缩边界 = totalMessages - RECENT_MESSAGES_TO_KEEP
+3. 调 LLM：对边界之前的消息生成摘要（量大时分批后合并）
+4. compactContext(summary, 边界)：写入 summary 并前移上下文起点，**不删任何消息**
+5. ContextBuilder 后续把 summary 注入系统提示词
 ```
+
+为什么边界必须取自快照：摘要在守护线程异步执行，LLM 调用的几秒里对话仍在追加消息。
+若用完成时的长度重新计算边界，那段新增、尚未被摘要的消息会被错误划入已压缩区间。
+压缩起点只增不减，迟到的摘要任务不会把上下文回退。
 
 摘要一次仅占几百 token，显著降低长会话成本。
 
-### 15.2.6 会话键格式
+### 15.2.7 会话键格式
 
 - Telegram: `telegram:123456789`
 - 飞书:   `feishu:oc_xxxxx`
 - CLI:    `cli:user`
 - Cron:   `cron:{jobId}`
 - 心跳:   `system:heartbeat`
+- `/new` 后: `{channel}:{chatId}:{timestamp}`
 
-格式由 `MessageRouter` 统一组装，确保跨通道不冲突。
+会话键默认由 `InboundMessage.getSessionKey()` 基于 `channel` + `chatId` 动态组装，确保跨通道不冲突。
+
+**通道地址 ≠ 会话身份**：一个聊天可以先后开启多个会话。`/new` 会生成带时间戳的新
+会话键，并把该聊天的活跃指针指向它。指针由 `ActiveSessionRegistry` 持久化到
+`sessions/_active-sessions.json`，因此重启后不会退回到最早那个会话（早期实现只存内存，
+重启即丢，`/new` 建出来的会话会变成孤儿）。
 
 ---
 

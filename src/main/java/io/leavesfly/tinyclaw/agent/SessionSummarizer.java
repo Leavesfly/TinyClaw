@@ -18,34 +18,25 @@ import java.util.concurrent.Executors;
 import static io.leavesfly.tinyclaw.agent.AgentConstants.*;
 
 /**
- * 会话摘要器，负责管理会话摘要和历史记录压缩。
- * 
- * 核心功能：
- * - 监控会话历史长度，自动触发摘要
- * - 生成会话摘要以压缩上下文
- * - 支持批量摘要和分批处理
- * - 保留最近消息，删除已摘要的历史
- * 
- * 触发条件：
- * - 消息数量超过阈值（SUMMARIZE_MESSAGE_THRESHOLD）
- * - Token 数量超过上下文窗口的一定比例（SUMMARIZE_TOKEN_PERCENTAGE）
- * 
- * 摘要策略：
- * 1. 保留最近的 N 条消息（RECENT_MESSAGES_TO_KEEP）
- * 2. 对较早的消息生成摘要
- * 3. 如果消息量大，采用分批摘要策略
- * 4. 合并多个批次的摘要为最终摘要
- * 5. 删除已摘要的历史，只保留摘要和最近消息
- * 
- * 并发处理：
- * - 摘要操作在单线程守护线程池中异步执行，避免每会话创建新线程
- * - 使用 ConcurrentHashMap.newKeySet() 防止同一会话重复摘要
- * - 守护线程模式，不阻塞主程序退出
- * 
- * 性能优化：
- * - 过滤无效消息（非 user/assistant 角色）
- * - 跳过超长消息（超过上下文窗口一半）
- * - 分批处理大量消息，避免单次摘要过长
+ * 会话摘要器，负责会话摘要与上下文压缩。
+ *
+ * <h2>非破坏式压缩</h2>
+ * <p>压缩只前移会话的上下文起点，不删除任何已存储的消息：早期消息不再进入 LLM
+ * 上下文，但完整保留在转录中供历史回放，工具调用记录的结构也不会失效。</p>
+ *
+ * <h2>压缩边界基于快照</h2>
+ * <p>摘要在守护线程异步执行，LLM 调用期间对话仍在追加消息。因此压缩边界必须取自
+ * 摘要开始时的 {@link Session.ContextSnapshot}，而不能用当下长度重新计算——否则会把
+ * 摘要期间新增、尚未被摘要的消息也划入已压缩区间。</p>
+ *
+ * <h2>触发条件</h2>
+ * <ul>
+ *   <li>上下文消息数超过 {@code SUMMARIZE_MESSAGE_THRESHOLD}；</li>
+ *   <li>或估算 Token 超过上下文窗口的 {@code SUMMARIZE_TOKEN_PERCENTAGE}%。</li>
+ * </ul>
+ *
+ * <h2>并发处理</h2>
+ * <p>单线程守护线程池异步执行，{@code summarizing} 集合防止同一会话重复摘要。</p>
  */
 public class SessionSummarizer {
     
@@ -108,14 +99,15 @@ public class SessionSummarizer {
     /**
      * 根据需要触发会话摘要。
      * 
-     * 检查会话历史长度和 Token 数，如果超过阈值则启动异步摘要。
+     * 检查上下文消息数与 Token 数，超过阈值则启动异步摘要。
+     * 注意只衡量实际送入模型的上下文，已压缩的历史不占上下文窗口，不应计入。
      * 
      * @param sessionKey 会话键
      */
     public void maybeSummarize(String sessionKey) {
-        List<Message> history = sessions.getHistory(sessionKey);
+        List<Message> context = sessions.getContextMessages(sessionKey);
         
-        if (!shouldSummarize(history)) {
+        if (!shouldSummarize(context)) {
             return;
         }
         
@@ -176,13 +168,17 @@ public class SessionSummarizer {
      * @param sessionKey 会话键
      */
     private void summarize(String sessionKey) {
-        List<Message> history = sessions.getHistory(sessionKey);
+        Session.ContextSnapshot snapshot = sessions.snapshotContext(sessionKey);
+        List<Message> context = snapshot.contextMessages();
         
-        if (history.size() <= RECENT_MESSAGES_TO_KEEP) {
+        if (context.size() <= RECENT_MESSAGES_TO_KEEP) {
             return;
         }
         
-        List<Message> toSummarize = extractMessagesToSummarize(history);
+        // 压缩边界：完整转录中的绝对下标，取自快照，不受摘要期间新增消息影响
+        int newStartIndex = snapshot.totalMessages() - RECENT_MESSAGES_TO_KEEP;
+        List<Message> toSummarize = new ArrayList<>(
+                context.subList(0, context.size() - RECENT_MESSAGES_TO_KEEP));
         List<Message> validMessages = filterValidMessages(toSummarize);
         
         if (validMessages.isEmpty()) {
@@ -193,20 +189,9 @@ public class SessionSummarizer {
         String finalSummary = generateSummary(validMessages, existingSummary);
         
         if (StringUtils.isNotBlank(finalSummary)) {
-            saveSummary(sessionKey, finalSummary, toSummarize.size(), validMessages.size());
+            applyCompaction(sessionKey, finalSummary, newStartIndex,
+                    toSummarize.size(), validMessages.size());
         }
-    }
-    
-    /**
-     * 提取需要摘要的消息。
-     * 
-     * @param history 完整会话历史
-     * @return 需要摘要的消息列表
-     */
-    private List<Message> extractMessagesToSummarize(List<Message> history) {
-        return new ArrayList<>(
-            history.subList(0, history.size() - RECENT_MESSAGES_TO_KEEP)
-        );
     }
     
     /**
@@ -379,20 +364,22 @@ public class SessionSummarizer {
     }
     
     /**
-     * 保存摘要并清理历史。
+     * 应用上下文压缩：写入摘要、前移上下文起点并落盘，完整转录保持不变。
      * 
      * @param sessionKey 会话键
      * @param summary 摘要内容
+     * @param newStartIndex 新的上下文起点（完整转录中的绝对下标）
      * @param originalSize 原始消息数
      * @param validSize 有效消息数
      */
-    private void saveSummary(String sessionKey, String summary, 
-                            int originalSize, int validSize) {
+    private void applyCompaction(String sessionKey, String summary, int newStartIndex,
+                                int originalSize, int validSize) {
         try {
-            sessions.setSummary(sessionKey, summary);
-            sessions.truncateHistory(sessionKey, RECENT_MESSAGES_TO_KEEP);
-            Session session = sessions.getOrCreate(sessionKey);
-            sessions.save(session);
+            if (!sessions.compactContext(sessionKey, summary, newStartIndex)) {
+                logger.debug("Compaction skipped, context start already advanced: " + sessionKey);
+                return;
+            }
+            sessions.save(sessionKey);
         } catch (Exception e) {
             logger.error("Failed to persist summary", Map.of(
                     "session_key", sessionKey,
@@ -413,8 +400,9 @@ public class SessionSummarizer {
                     "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
 
-        logger.info("Session summarized", Map.of(
+        logger.info("Session context compacted", Map.of(
                 "session_key", sessionKey,
+                "context_start_index", newStartIndex,
                 "original_messages", originalSize,
                 "valid_messages", validSize
         ));

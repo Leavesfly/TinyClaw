@@ -1,6 +1,7 @@
 # 14 · 定时任务与心跳
 
 > `cron/` + `heartbeat/`：让 Agent 能按时间表自主行动与周期性自省。
+> 心跳机制对齐 OpenClaw 模型：默认安静、按需冒泡，确定性任务归 Cron。
 
 ---
 
@@ -9,48 +10,38 @@
 ### 14.1.1 能力
 
 - **Cron 表达式**：5 字段（分 时 日 月 周），由 `cron-utils 9.2` 解析（Unix 风格）
-- **固定间隔**：每 N 秒执行
-- **单次定时**：在指定时间点执行一次
-- **持久化**：任务变更即落盘 `workspace/cron/jobs.json`
+- **固定间隔（EVERY）**：每 N 毫秒执行，支持 **misfire 补跑**（见 14.7）
+- **单次定时（AT）**：在指定时间点执行一次
+- **持久化**：任务变更即落盘 `workspace/cron/jobs.json`，含 `state.lastRunAtMs` 用于重启补跑判断
 - **并发安全**：`ReentrantReadWriteLock` 保护任务列表
+- **系统内置 job**：以 `__` 前后缀命名（`__heartbeat__`、`__memory_evolution__`），由 `GatewayBootstrap` 的复合 onJob handler 按名称分发
 
 ### 14.1.2 核心数据模型
 
 | 类 | 作用 |
 |----|------|
 | `CronJob` | 任务实体：ID、名称、payload、schedule、启用状态、创建/更新时间 |
-| `CronSchedule` | 调度策略：`type=CRON/EVERY/AT`，`cron` 表达式、`every` 秒数、`at` 时间点 |
-| `CronJobState` | 运行态：`enabled` / `lastRunAt` / `nextRunAt` / `runCount` / `lastError` |
-| `CronPayload` | 任务内容：`message`（消息文本）+ 目标 `channel` + `chatId` |
-| `CronStore` | 存储接口，当前唯一实现为 JSON 文件 |
+| `CronSchedule` | 调度策略：`kind=cron/every/at`，`cron` 表达式、`everyMs`、`at` 时间点 |
+| `CronJobState` | 运行态：`lastRunAtMs` / `nextRunAtMs` / `runCount` / `lastError` |
+| `CronPayload` | 任务内容：`kind` + `message`（消息文本）+ 目标 `channel` / `to` |
 
 ### 14.1.3 运行流程
 
 ```text
-守护线程（每秒循环）
+调度线程（每秒循环）
    │
    ▼
-遍历所有 enabled=true 的 CronJob
+遍历所有 enabled=true 且 nextRunAtMs <= now 的 CronJob
    │
    ▼
-计算 nextRunAt 是否 <= now
-   │  是
-   ▼
-组装 InboundMessage{
-    channel = job.payload.channel ?: "system",
-    chatId  = job.payload.chatId  ?: "cron",
-    content = job.payload.message,
-    metadata = {"cronJobId": job.id}
-}
+调用 onJob handler（GatewayBootstrap 注入的复合分发器）
+   ├── name 以 "__heartbeat__" 开头 → HeartbeatRunner.runOnceForJob(name)
+   ├── name == "__memory_evolution__" → triggerMemoryEvolution()（带去重）
+   └── 其余 → CronTool.executeJob(job)
+              → AgentRuntime.processDirectWithChannel(...)
    │
    ▼
-调用 AgentRuntime.processDirectWithChannel(...)
-   │
-   ▼
-回写 lastRunAt / nextRunAt / runCount
-   │
-   ▼
-CronStore.save(...)
+回写 lastRunAtMs / nextRunAtMs / runCount → CronStore.save(...)
 ```
 
 ### 14.1.4 CLI / 工具 / Web 入口
@@ -68,67 +59,110 @@ CronStore.save(...)
 
 ---
 
-## 14.2 HeartbeatService — 心跳服务
+## 14.2 心跳（HeartbeatRunner）
 
 ### 14.2.1 定位
 
-心跳服务让 Agent "活着"：周期性地被动触发思考，不依赖用户输入。用于：
+心跳是"**周期性的被动觉察**"：按固定节奏读一遍 `HEARTBEAT.md` 清单，让 Agent 自查一轮，只在发现异常时冒泡告警。**不做**确定性周期任务（那是 Cron 的职责），**不再**内嵌记忆进化（已拆为独立 job）。
 
-- 整理待办
-- 汇总当日反馈
-- 触发 `runEvolutionCycle()`（记忆进化、Prompt 优化、工具反思）
-- 自主写周报、自检任务队列
+心跳没有独立线程：tick 由 `CronService` 的内置 job `__heartbeat__` 调度，`HeartbeatRunner` 是该 job 的执行体。
 
-### 14.2.2 启用
+### 14.2.2 启用与配置
 
 ```json
 {
   "agent": {
-    "heartbeatEnabled": true
+    "heartbeatEnabled": true,
+    "heartbeat": {
+      "enabled": true,
+      "intervalSeconds": 1800,
+      "timeoutSeconds": 0,
+      "prompt": null,
+      "model": null,
+      "isolatedSession": true,
+      "lightContext": false,
+      "target": "none",
+      "showOk": false,
+      "showAlerts": true,
+      "activeHours": { "start": "09:00", "end": "21:00", "timezone": null },
+      "entries": null
+    }
   }
 }
 ```
 
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `heartbeatEnabled` / `heartbeat.enabled` | `false` | 读写同一字段，兼容别名 |
+| `intervalSeconds` | `1800` | 心跳间隔；`<=0` 视为禁用 |
+| `timeoutSeconds` | `0` | 整轮超时；`0` 表示取 `min(interval, 600)` |
+| `prompt` | `null` | 覆盖默认 prompt 指令体（清单始终附加） |
+| `model` | `null` | 心跳专用模型；要求 `isolatedSession=true`，否则启动时 WARN 并忽略 |
+| `isolatedSession` | `true` | 每轮用一次性 sessionKey，跑完即删，避免会话无限膨胀 |
+| `lightContext` | `false` | `true` 时跳过 workspace bootstrap 文件注入 |
+| `target` | `"none"` | 告警投递：`none`（仅日志）/ `last`（最近一次入站消息的 channel/chatId）/ 显式 channel 名 |
+| `showOk` | `false` | 是否展示 HEARTBEAT_OK 轮次 |
+| `showAlerts` | `true` | 是否处理告警；与 `showOk` 均关 → 整轮跳过 |
+| `activeHours` | `null` | 活跃时段（HH:mm，`start==end` 为零宽窗口全部跳过）；时区缺省用系统时区 |
+| `entries` | `null` | per-agent 配置：key=agent 名，见 14.2.7 |
+
 只在 **gateway 模式**生效（CLI 直连不启动心跳）。
 
-### 14.2.3 流程
+### 14.2.3 每轮门控与执行流程
 
 ```text
-守护线程（间隔可配，默认 1 小时）
+cron tick（__heartbeat__）
    │
    ▼
-读取 workspace/memory/HEARTBEAT.md
-   │   （没有则跳过一次）
-   ▼
-组装为 InboundMessage（channel="system", chatId="heartbeat"）
+门控检查（按序，任一命中则跳过并记录 reason）：
+   1. 心跳禁用              → SKIPPED_DISABLED
+   2. showOk/showAlerts 均关 → SKIPPED_ALERTS_DISABLED
+   3. activeHours 窗口外     → SKIPPED_HOURS
+   4. Agent 忙（有任务在跑） → SKIPPED_BUSY
+   5. HEARTBEAT.md 缺失或无实质内容 → SKIPPED_EMPTY
    │
    ▼
-AgentRuntime.processDirectWithChannel(...)
+buildPrompt（默认指令 + 清单，清单 8 KiB 硬上限）
    │
    ▼
-在回调中调用 runEvolutionCycle()
-   ├── MemoryEvolver.evolve()
-   ├── PromptOptimizer.maybeOptimize()
-   ├── ReflectionEngine.runCycle()（若启用）
-   └── 会话清理
+经单线程 ExecutorService 提交 AgentRuntime.processDirect(content, sessionKey, lightContext)
+   future.get(timeoutSeconds)；超时 → cancel(true) + abortCurrentTask()，记 TIMEOUT
+   │
+   ▼
+handleResult（HEARTBEAT_OK 契约）
 ```
+
+**HEARTBEAT_OK 响应契约**：默认 prompt 要求 Agent 无事时回复 `HEARTBEAT_OK`。回复首/尾的 `HEARTBEAT_OK` 被剥离后，剩余内容为空或 ≤300 字符 → 静默丢弃；否则视为告警，按 `target` 投递（`none` 时仅记日志）。
+
+**空清单判定**：去除空行、Markdown 标题、单行 HTML 注释、代码围栏、空 checklist stub（`- [ ]` 无内容）后无实质行 → 跳过整轮，不调 LLM。
+
+**状态与日志**：每轮结果（时间、状态、reason、耗时）落盘 `workspace/memory/heartbeat-status.json`，日志统一走 `TinyClawLogger`（不再写 `memory/heartbeat.log`）。
 
 ### 14.2.4 HEARTBEAT.md 示例
 
 ```markdown
-# 心跳上下文
+# 心跳清单
 
-你现在进入了「自省时间」。请按顺序执行：
-
-1. 查看今天未完成的 cron 任务并调整
-2. 总结最近 10 条会话的共性问题
-3. 如果发现明显可优化的行为，调用 `skills` 工具 create 一个新技能
-4. 最后简要报告你做的事
-
-当前时间会被自动注入。
+- 检查昨天的部署是否全部成功
+- 看看有没有未回复的用户反馈
+- 磁盘/配额等资源是否有告警迹象
 ```
 
-此文件**完全由用户自定义**。
+此文件**完全由用户自定义**，但请保持精简——**8 KiB 硬上限**，超限内容会被截断并 WARN。"保持精简"不是约定而是约束：清单每轮都会注入 prompt。
+
+### 14.2.5 记忆进化独立 job
+
+记忆进化（`MemoryEvolver` / `PromptOptimizer` / `ReflectionEngine`）不再挂在心跳回调里，而是独立内置 job `__memory_evolution__`（EVERY，间隔与心跳同为 30 分钟起步；内部已有 24h 冷却 + 新记忆条数门控，天然幂等，且 `AtomicBoolean` 防止上一轮未完成时重复触发）。见 [12 · 自我进化](12-self-evolution.md)。
+
+### 14.2.6 手动触发与状态查询
+
+- **CLI**：`tinyclaw heartbeat now`（经 Web Console API 立即触发一轮，仍受 busy guard）、`tinyclaw heartbeat last`（显示上次心跳时间/结果/跳过原因）
+- **Web**：`GET /api/heartbeat` 返回各 agent 的 lastRun 状态；`POST /api/heartbeat/now` 触发；Web Console 心跳面板可视化
+- **CLI**：`tinyclaw status` 附带输出上次心跳结果
+
+### 14.2.7 per-agent 心跳
+
+`heartbeat.entries` 以 agent 名为 key 提供独立配置（可覆盖 prompt/model/interval/activeHours 等，未设置项回填基础配置）。任一 entry 存在时，只注册这些 agent 的心跳 job（`__heartbeat__:<agentId>`），不再注册默认 `__heartbeat__` job。
 
 ---
 
@@ -136,23 +170,25 @@ AgentRuntime.processDirectWithChannel(...)
 
 | 维度 | Cron | Heartbeat |
 |------|------|-----------|
-| 触发源 | 时间表（Cron/固定间隔/单次） | 固定周期（通常较长，如 1h） |
-| 任务来源 | `CronJob.payload.message` | `HEARTBEAT.md` 内容 |
-| 目标 | 外部事件（提醒用户、生成日报） | 内部自省（进化、反思、整理） |
-| 持久化 | `jobs.json` | `HEARTBEAT.md` |
-| 管理界面 | CLI + Tool + Web | 仅文件 |
+| 触发源 | 时间表（cron 表达式/固定间隔/单次） | 固定周期（默认 30 分钟） |
+| 任务来源 | `CronJob.payload.message` | `HEARTBEAT.md` 清单 |
+| 目标 | 确定性任务（提醒、日报、清理） | 周期性觉察与异常冒泡 |
+| 回复处理 | 按 payload 通道投递 | HEARTBEAT_OK 契约：无事静默、有事告警 |
+| 持久化 | `jobs.json` | `HEARTBEAT.md` + `heartbeat-status.json` |
+| 管理界面 | CLI + Tool + Web | CLI `heartbeat` + Web 面板 |
 
-可以把 Heartbeat 理解为一个"**内置的、特殊的定时任务**"，但它的触发逻辑独立，且能调用 `runEvolutionCycle()`。
+心跳本质就是 CronService 中的一个**系统内置 job**，与用户 cron 任务共用调度器、共享 busy 语义。
 
 ---
 
 ## 14.4 消息路由特殊性
 
-Cron 与 Heartbeat 产生的消息 `channel="system"`：
+Cron 任务消息 `channel="system"`，由复合 onJob handler 经 `CronTool.executeJob` → `processDirectWithChannel` 执行：
 
-- `MessageRouter.routeSystem(...)` 会解析 `metadata` 中的原始通道
-- 若能找到原通道，回复路由回原会话
-- 若无原通道（如用户从未对话过），回复写入日志或由 `message` 工具主动推送
+- 指定了 `channel + to` → 回复直接推送到目标通道
+- 未指定 → 回到原调用上下文
+
+心跳告警（`target="last"`）投递到**最近一次入站消息**的 channel/chatId（由 `MessageRouter` 维护的 `LastContact`），经 `MessageBus.publishOutbound` 出站。
 
 ---
 
@@ -161,35 +197,10 @@ Cron 与 Heartbeat 产生的消息 `channel="system"`：
 ```text
 workspace/
 ├── cron/
-│   └── jobs.json        ← Cron 任务列表（数组，每项一个 CronJob）
+│   └── jobs.json              ← Cron 任务列表（含系统内置 job）
 └── memory/
-    └── HEARTBEAT.md     ← Heartbeat 上下文
-```
-
-`jobs.json` 示例结构：
-
-```json
-[
-  {
-    "id": "job-abc",
-    "name": "每日日报",
-    "schedule": {"type": "CRON", "cron": "0 18 * * *"},
-    "payload": {
-      "message": "总结今天的工作并发到飞书",
-      "channel": "feishu",
-      "chatId": "open_id:xxx"
-    },
-    "state": {
-      "enabled": true,
-      "lastRunAt": "2026-05-01T10:00:00Z",
-      "nextRunAt": "2026-05-02T10:00:00Z",
-      "runCount": 42,
-      "lastError": null
-    },
-    "createdAt": "2026-04-01T09:00:00Z",
-    "updatedAt": "2026-05-01T10:00:00Z"
-  }
-]
+    ├── HEARTBEAT.md           ← 心跳清单（用户自定义，≤8 KiB）
+    └── heartbeat-status.json  ← 各 agent 上次心跳状态
 ```
 
 ---
@@ -211,8 +222,6 @@ TinyClaw 采用 **Unix 标准 5 字段**（与 Linux `crontab` 一致）：
 | `0 18 1 * *` | 每月 1 号 18:00 |
 | `30 8 * * 1-5` | 工作日（周一到五）08:30 |
 
-如果对更复杂的 Quartz 式 7 字段有需求（含秒），可扩展 `CronSchedule` 的解析器。
-
 ---
 
 ## 14.7 故障处理
@@ -221,8 +230,9 @@ TinyClaw 采用 **Unix 标准 5 字段**（与 Linux `crontab` 一致）：
 |------|------|
 | 单次任务执行失败 | 记 `lastError`，保留任务继续按下次调度运行 |
 | JSON 文件损坏 | 启动时告警，回退为空任务列表；原文件备份为 `.bak` |
-| Agent 主进程异常 | 守护线程会尝试继续运行，但不恢复丢失的那一次触发 |
-| 系统休眠后"补跑" | 默认**不补跑**，以当前时间为起点重新计算 `nextRunAt` |
+| 心跳整轮超时 | `future.cancel(true)` + `abortCurrentTask()`，记 `TIMEOUT` |
+| Agent 忙（任务进行中） | 心跳本轮跳过（`SKIPPED_BUSY`），下轮正常 |
+| EVERY 任务 misfire | 启动重算时若 `lastRunAtMs + everyMs <= now`，下次运行时间设为 now（启动后补跑一次）；CRON/AT 任务不补跑 |
 
 ---
 
@@ -231,9 +241,12 @@ TinyClaw 采用 **Unix 标准 5 字段**（与 Linux `crontab` 一致）：
 | 建议 | 原因 |
 |------|------|
 | 心跳周期 ≥ 30 分钟 | 避免频繁 LLM 调用和上下文膨胀 |
+| HEARTBEAT.md 保持精简 | 每轮注入 prompt，且有 8 KiB 硬上限 |
+| 保持 `isolatedSession=true` | 避免心跳会话无限膨胀与 model bleed |
+| 无事让 Agent 回 `HEARTBEAT_OK` | 默认 prompt 已包含该契约，勿删除 |
+| 确定性任务写成 cron job | 心跳只做觉察，不做确定性周期任务 |
 | Cron 任务消息写清楚上下文 | LLM 收到时没有历史，需自带背景 |
-| 指定 `channel + chatId` | 确保回复正确派送 |
-| 在 `HEARTBEAT.md` 里限定职责 | 避免 Agent 在自省时"跑偏" |
+| 指定 `channel + to` | 确保回复正确派送 |
 | 监控 `lastError` | Web 控制台或日志定期巡检 |
 
 ---

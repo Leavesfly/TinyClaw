@@ -53,6 +53,42 @@ public class ReActExecutor {
     private final Set<ExecutionState> activeExecutions = ConcurrentHashMap.newKeySet();
 
     /**
+     * 按会话覆盖模型的映射（sessionKey -> model）。
+     * 供心跳等场景为隔离会话指定专用模型，避免污染构造时固定的主模型。
+     */
+    private final Map<String, String> sessionModelOverrides = new ConcurrentHashMap<>();
+
+    /**
+     * 设置指定会话的模型覆盖。
+     *
+     * @param sessionKey 会话标识符
+     * @param overrideModel 覆盖模型，null 表示移除覆盖
+     */
+    public void setSessionModelOverride(String sessionKey, String overrideModel) {
+        if (sessionKey == null) {
+            return;
+        }
+        if (overrideModel == null) {
+            sessionModelOverrides.remove(sessionKey);
+        } else {
+            sessionModelOverrides.put(sessionKey, overrideModel);
+        }
+    }
+
+    /**
+     * 计算指定会话的实际生效模型：优先会话覆盖，否则用主模型。
+     */
+    private String effectiveModel(String sessionKey) {
+        if (sessionKey != null) {
+            String override = sessionModelOverrides.get(sessionKey);
+            if (override != null && !override.isEmpty()) {
+                return override;
+            }
+        }
+        return model;
+    }
+
+    /**
      * 单次执行的状态容器。每次 execute/executeStream 调用创建独立实例，
      * 避免多会话并发时共用实例字段导致中断标志/回调互相覆盖。
      */
@@ -156,11 +192,12 @@ public class ReActExecutor {
         activeExecutions.add(state);
         try {
             return executeLoop(messages, sessionKey, null, state,
-                msgs -> callLLM(msgs),
+                msgs -> callLLM(msgs, sessionKey),
                 (msgs, toolCalls, sk, iter) -> executeToolCalls(msgs, toolCalls, sk, iter)
             );
         } finally {
             activeExecutions.remove(state);
+            persistGeneratedMessages(sessionKey);
         }
     }
     
@@ -184,11 +221,38 @@ public class ReActExecutor {
         
         try {
             return executeLoop(messages, sessionKey, callback, state,
-                msgs -> callLLMStream(msgs, callback),
+                msgs -> callLLMStream(msgs, callback, sessionKey),
                 (msgs, toolCalls, sk, iter) -> executeToolCallsWithStream(msgs, toolCalls, sk, iter, enhancedCallback)
             );
         } finally {
             activeExecutions.remove(state);
+            persistGeneratedMessages(sessionKey);
+        }
+    }
+
+    /**
+     * 收尾落盘：把本次执行产生的工具循环中间态写入存储。
+     *
+     * <h4>会话写入职责划分</h4>
+     * <ul>
+     *   <li><b>本类写</b>：带 tool_calls 的 assistant 消息与 tool 结果（工具循环中间态）；</li>
+     *   <li><b>调用方写</b>：一轮对话的输入与最终回复，见
+     *       {@code SessionManager.recordPromptMessages} / {@code recordReply}。
+     *       最终回复不由本类写，是因为只有调用方知道经 Stop hook 改写后的最终文本。</li>
+     * </ul>
+     *
+     * <p>循环内的 save 只在有工具调用时触发，且不能依赖各调用方自己记得 save——
+     * 子代理与协同角色这两条路径就从没落盘过。放在 finally 里保证异常路径下
+     * 已产生的中间消息也不丢。无增量时本调用零开销。</p>
+     */
+    private void persistGeneratedMessages(String sessionKey) {
+        if (sessionKey == null) {
+            return;
+        }
+        try {
+            sessions.save(sessionKey);
+        } catch (Exception e) {
+            logger.warn("Failed to persist session after execution: " + sessionKey);
         }
     }
     
@@ -295,7 +359,7 @@ public class ReActExecutor {
             toolExecutor.execute(messages, response.getToolCalls(), sessionKey, iteration);
 
             // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
-            sessions.save(sessions.getOrCreate(sessionKey));
+            sessions.save(sessionKey);
         }
         
         if (finalContent == null) {
@@ -319,11 +383,12 @@ public class ReActExecutor {
      * @return LLM 响应
      * @throws Exception 调用失败时抛出异常
      */
-    private LLMResponse callLLM(List<Message> messages) throws Exception {
+    private LLMResponse callLLM(List<Message> messages, String sessionKey) throws Exception {
         List<ToolDefinition> toolDefs = tools.getDefinitions();
         Map<String, Object> options = buildLLMOptions();
-        LLMResponse response = provider.chat(messages, toolDefs, model, options);
-        recordTokenUsage(response);
+        String effectiveModel = effectiveModel(sessionKey);
+        LLMResponse response = provider.chat(messages, toolDefs, effectiveModel, options);
+        recordTokenUsage(response, effectiveModel);
         return response;
     }
     
@@ -336,11 +401,12 @@ public class ReActExecutor {
      * @throws Exception 调用失败时抛出异常
      */
     private LLMResponse callLLMStream(List<Message> messages, 
-                                      LLMProvider.StreamCallback callback) throws Exception {
+                                      LLMProvider.StreamCallback callback, String sessionKey) throws Exception {
         List<ToolDefinition> toolDefs = tools.getDefinitions();
         Map<String, Object> options = buildLLMOptions();
-        LLMResponse response = provider.chatStream(messages, toolDefs, model, options, callback);
-        recordTokenUsage(response);
+        String effectiveModel = effectiveModel(sessionKey);
+        LLMResponse response = provider.chatStream(messages, toolDefs, effectiveModel, options, callback);
+        recordTokenUsage(response, effectiveModel);
         return response;
     }
 
@@ -350,12 +416,12 @@ public class ReActExecutor {
      *
      * @param response LLM 响应
      */
-    private void recordTokenUsage(LLMResponse response) {
+    private void recordTokenUsage(LLMResponse response, String usedModel) {
         if (tokenUsageStore == null || response == null || response.getUsage() == null) {
             return;
         }
         LLMResponse.UsageInfo usage = response.getUsage();
-        tokenUsageStore.record(providerName, model,
+        tokenUsageStore.record(providerName, usedModel,
                 usage.getPromptTokens(), usage.getCompletionTokens());
     }
     

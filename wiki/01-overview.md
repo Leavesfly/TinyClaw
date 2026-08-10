@@ -18,7 +18,7 @@
 | **工具优先** | 围绕 function calling 设计，Agent 所有「动手」能力通过 `Tool` 实现 |
 | **安全优先** | 内置 `SecurityGuard`，所有文件操作限定在 workspace 沙箱内，命令黑名单拦截危险操作 |
 | **自我进化** | 反馈收集 + Prompt 自动优化（3 策略）+ 记忆进化 + 工具失败反思 |
-| **可观测** | 结构化日志 + Web 控制台（16 个 REST API）+ Token 用量统计 |
+| **可观测** | 结构化日志 + Web 控制台（17 个 REST API）+ Token 用量统计 |
 
 ## 1.3 核心特性一览
 
@@ -35,7 +35,7 @@
 - **🎤 语音转写** — 阿里云 DashScope Paraformer
 - **🔒 安全沙箱** — `SecurityGuard`
 - **🌐 Agent 社交网络** — 接入 ClawdChat.ai
-- **🖥️ Web 控制台** — 内置 Web UI + 16 个 REST API
+- **🖥️ Web 控制台** — 内置 Web UI + 17 个 REST API
 - **🪝 Hooks 钩子** — 6 种生命周期切点（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / SessionEnd）
 - **🎬 Demo 模式** — 一键演示核心功能
 

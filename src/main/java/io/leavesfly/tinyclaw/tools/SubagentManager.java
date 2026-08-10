@@ -60,6 +60,31 @@ public class SubagentManager {
     private volatile SubagentsLoader agentsLoader;
 
     /**
+     * 子代理共享的会话管理器，懒加载后复用。
+     * 不能每次任务都 new：SessionManager 构造会建立整个目录的元信息索引，
+     * 每次新建等于让每次子代理调用都付一次全目录扫描的成本。
+     */
+    private volatile SessionManager subagentSessions;
+
+    /**
+     * 获取子代理共享会话管理器（首次调用时初始化）
+     */
+    private SessionManager subagentSessions() {
+        SessionManager local = subagentSessions;
+        if (local == null) {
+            synchronized (this) {
+                local = subagentSessions;
+                if (local == null) {
+                    local = new SessionManager(
+                            Paths.get(workspace, "sessions", "subagent").toString());
+                    subagentSessions = local;
+                }
+            }
+        }
+        return local;
+    }
+
+    /**
      * 表示一个子代理任务
      */
     public static class SubagentTask {
@@ -325,9 +350,11 @@ public class SubagentManager {
         SubagentDefinition def = resolveDefinition(task.getAgentName());
         List<Message> messages = buildMessages(def, task.getTask());
 
-        String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
-        SessionManager subagentSessions = new SessionManager(subagentSessionPath);
+        SessionManager subagentSessions = subagentSessions();
         String sessionKey = "subagent:" + task.getId();
+        // 任务提示词入库：ReActExecutor 只存它自己产生的消息，
+        // 不补这一句子代理转录会以 assistant 消息开头，没有任务描述，无法回放
+        subagentSessions.recordPromptMessages(sessionKey, messages);
 
         try {
             ReActExecutor reActExecutor = buildExecutor(def, subagentSessions);
@@ -346,6 +373,7 @@ public class SubagentManager {
 
             task.setStatus("completed");
             task.setResult(result != null ? result : "任务已完成但无返回内容");
+            subagentSessions.recordReply(sessionKey, task.getResult());
 
             logger.info("Sync subagent task completed", Map.of(
                     "task_id", task.getId(),
@@ -414,10 +442,10 @@ public class SubagentManager {
         SubagentDefinition def = resolveDefinition(task.getAgentName());
         List<Message> messages = buildMessages(def, task.getTask());
 
-        // 为子代理创建独立的会话管理器
-        String subagentSessionPath = Paths.get(workspace, "sessions", "subagent").toString();
-        SessionManager subagentSessions = new SessionManager(subagentSessionPath);
+        // 子代理共享同一个会话管理器，各任务以 sessionKey 隔离
+        SessionManager subagentSessions = subagentSessions();
         String sessionKey = "subagent:" + task.getId();
+        subagentSessions.recordPromptMessages(sessionKey, messages);
 
         try {
             // 使用 ReActExecutor 实现完整的工具调用和循环能力
@@ -426,6 +454,7 @@ public class SubagentManager {
 
             task.setStatus("completed");
             task.setResult(result != null ? result : "任务已完成但无返回内容");
+            subagentSessions.recordReply(sessionKey, task.getResult());
 
             logger.info("Subagent task completed", Map.of(
                     "task_id", task.getId(),

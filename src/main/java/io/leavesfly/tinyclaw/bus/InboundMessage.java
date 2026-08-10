@@ -21,6 +21,12 @@ public class InboundMessage {
     private Map<String, String> metadata;
 
     /**
+     * 轻量上下文标志：为 true 时构建上下文跳过 workspace bootstrap 文件注入，
+     * 用于心跳等低成本周期任务。
+     */
+    private boolean lightContext;
+
+    /**
      * 消息到达总线的时间戳，用于链路追踪和超时判断
      */
     private final Instant receivedAt = Instant.now();
@@ -118,6 +124,14 @@ public class InboundMessage {
 
     public void setMetadata(Map<String, String> metadata) {
         this.metadata = metadata;
+    }
+
+    public boolean isLightContext() {
+        return lightContext;
+    }
+
+    public void setLightContext(boolean lightContext) {
+        this.lightContext = lightContext;
     }
 
     public Instant getReceivedAt() {

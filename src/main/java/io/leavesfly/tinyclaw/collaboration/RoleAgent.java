@@ -79,12 +79,7 @@ public class RoleAgent {
      * @return Agent的回复内容
      */
     public String speak(SharedContext context) {
-        List<Message> messages = buildMessages(context);
-        try {
-            return reActExecutor.execute(messages, sessionKey);
-        } catch (Exception e) {
-            return "执行失败: " + e.getMessage();
-        }
+        return run(buildMessages(context), null);
     }
     
     /**
@@ -95,12 +90,7 @@ public class RoleAgent {
      * @return Agent的回复内容
      */
     public String speak(SharedContext context, String customPrompt) {
-        List<Message> messages = buildMessages(context, customPrompt);
-        try {
-            return reActExecutor.execute(messages, sessionKey);
-        } catch (Exception e) {
-            return "执行失败: " + e.getMessage();
-        }
+        return run(buildMessages(context, customPrompt), null);
     }
 
     /**
@@ -127,15 +117,10 @@ public class RoleAgent {
      */
     public String speakStream(SharedContext context, String customPrompt,
                               LLMProvider.EnhancedStreamCallback callback) {
-        List<Message> messages = buildMessages(context, customPrompt);
-        try {
-            // 将 LLM 的流式 CONTENT chunk 转换为 COLLABORATE_AGENT_CHUNK 事件
-            LLMProvider.StreamCallback chunkRelay = chunk ->
-                    callback.onEvent(StreamEvent.collaborateAgentChunk(role.getRoleName(), chunk));
-            return reActExecutor.executeStream(messages, sessionKey, chunkRelay);
-        } catch (Exception e) {
-            return "执行失败: " + e.getMessage();
-        }
+        // 将 LLM 的流式 CONTENT chunk 转换为 COLLABORATE_AGENT_CHUNK 事件
+        LLMProvider.StreamCallback chunkRelay = chunk ->
+                callback.onEvent(StreamEvent.collaborateAgentChunk(role.getRoleName(), chunk));
+        return run(buildMessages(context, customPrompt), chunkRelay);
     }
 
     /**
@@ -148,8 +133,28 @@ public class RoleAgent {
         List<Message> messages = new ArrayList<>();
         messages.add(new Message("system", buildSystemPrompt(null)));
         messages.add(new Message("user", userMessage));
+        return run(messages, null);
+    }
+
+    /**
+     * 统一的执行入口：提示词入库 → 执行 → 最终回复入库。
+     *
+     * <p>两头入库都不能省：{@code ReActExecutor} 只写工具循环的中间态（带 tool_calls 的
+     * assistant 与 tool 结果），一轮对话的输入与最终回复由调用方负责。四个发言入口
+     * 在此汇总，避免日后新增入口时又漏掉入库。</p>
+     *
+     * @param messages   本次发言的提示词（system + user）
+     * @param chunkRelay 流式回调，为 null 时走非流式执行
+     * @return Agent 的回复内容，执行异常时返回错误描述
+     */
+    private String run(List<Message> messages, LLMProvider.StreamCallback chunkRelay) {
+        sessionManager.recordPromptMessages(sessionKey, messages);
         try {
-            return reActExecutor.execute(messages, sessionKey);
+            String reply = chunkRelay != null
+                    ? reActExecutor.executeStream(messages, sessionKey, chunkRelay)
+                    : reActExecutor.execute(messages, sessionKey);
+            sessionManager.recordReply(sessionKey, reply);
+            return reply;
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }

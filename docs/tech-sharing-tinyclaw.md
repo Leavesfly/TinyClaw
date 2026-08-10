@@ -711,7 +711,7 @@ WebConsoleServer（轻量 HTTP 服务器）
     │
     ├── SecurityMiddleware（认证 + CORS）
     │
-    └── 16 个 REST API Handler
+    └── 17 个 REST API Handler
             │
             ├── 对话相关
             │   ├── ChatHandler      → 对话交互（支持 SSE 流式）

@@ -94,6 +94,8 @@ public class ConfigHandler {
                 result.put("temperature",         agentConfig.getTemperature());
                 result.put("maxToolIterations",   agentConfig.getMaxToolIterations());
                 result.put("heartbeatEnabled",    agentConfig.isHeartbeatEnabled());
+                result.put("heartbeatIntervalSeconds", agentConfig.getHeartbeat().getIntervalSeconds());
+                result.put("heartbeatTimeoutSeconds",  agentConfig.getHeartbeat().getTimeoutSeconds());
                 result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
                 WebUtils.sendJson(exchange, 200, result, corsOrigin);
 
@@ -106,6 +108,10 @@ public class ConfigHandler {
                 if (json.has("temperature"))         agentConfig.setTemperature(json.get("temperature").asDouble());
                 if (json.has("maxToolIterations"))   agentConfig.setMaxToolIterations(json.get("maxToolIterations").asInt());
                 if (json.has("heartbeatEnabled"))    agentConfig.setHeartbeatEnabled(json.get("heartbeatEnabled").asBoolean());
+                if (json.has("heartbeatIntervalSeconds"))
+                    agentConfig.getHeartbeat().setIntervalSeconds(json.get("heartbeatIntervalSeconds").asInt());
+                if (json.has("heartbeatTimeoutSeconds"))
+                    agentConfig.getHeartbeat().setTimeoutSeconds(json.get("heartbeatTimeoutSeconds").asInt());
                 if (json.has("restrictToWorkspace")) agentConfig.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
                 WebUtils.saveConfig(config, logger);
                 WebUtils.sendJson(exchange, 200, WebUtils.successJson("Agent config updated"), corsOrigin);

@@ -13,7 +13,6 @@ import okhttp3.Response;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 带有通用功能的基础通道实现
@@ -35,13 +34,6 @@ public abstract class BaseChannel implements Channel {
     protected final String name;
     protected final List<String> allowList;
     protected volatile boolean running = false;
-    
-    /**
-     * 维护每个 chatId 到当前活跃 sessionKey 的映射。
-     * 当用户发送 /new 指令时，会为该 chatId 生成新的 sessionKey，
-     * 旧的 session 保留不动，后续消息使用新的 sessionKey。
-     */
-    private final Map<String, String> activeSessionKeys = new ConcurrentHashMap<>();
     
     public BaseChannel(String name, MessageBus bus, List<String> allowList) {
         this.name = name;
@@ -95,7 +87,7 @@ public abstract class BaseChannel implements Channel {
         String trimmedContent = content != null ? content.trim() : "";
         if (COMMAND_NEW.equalsIgnoreCase(trimmedContent)) {
             String newSessionKey = generateNewSessionKey(chatId);
-            activeSessionKeys.put(chatId, newSessionKey);
+            ActiveSessionRegistry.update(name, chatId, newSessionKey);
             
             logger.info("Received /new command, new session created", Map.of(
                     "sender_id", senderId, "chat_id", chatId, "new_session_key", newSessionKey));
@@ -110,8 +102,8 @@ public abstract class BaseChannel implements Channel {
             return msg;
         }
         
-        // 使用当前活跃的 sessionKey，如果没有则使用默认的 channel:chatId
-        String sessionKey = activeSessionKeys.getOrDefault(chatId, name + ":" + chatId);
+        // 使用当前活跃的 sessionKey（跨进程持久），如果没有则使用默认的 channel:chatId
+        String sessionKey = ActiveSessionRegistry.current(name, chatId, name + ":" + chatId);
         
         InboundMessage msg = new InboundMessage(name, senderId, chatId, content);
         msg.setMedia(media);

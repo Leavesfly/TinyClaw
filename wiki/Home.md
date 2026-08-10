@@ -40,10 +40,10 @@
 
 | # | 文档 | 内容 |
 |---|------|------|
-| 14 | [定时任务与心跳](14-cron-heartbeat.md) | `CronService` + `HeartbeatService` |
+| 14 | [定时任务与心跳](14-cron-heartbeat.md) | `CronService` + `HeartbeatRunner` |
 | 15 | [会话与记忆](15-session-memory.md) | `SessionManager` / `MemoryStore` / `SessionSummarizer` |
 | 16 | [安全沙箱](16-security-sandbox.md) | `SecurityGuard`：工作空间沙箱 + 命令黑名单 |
-| 17 | [Web 控制台](17-web-console.md) | `WebConsoleServer` + 16 个 REST API Handler |
+| 17 | [Web 控制台](17-web-console.md) | `WebConsoleServer` + 17 个 REST API Handler |
 | 18 | [语音转写](18-voice.md) | `Transcriber` 接口 / 阿里云 DashScope Paraformer |
 | 19 | [Hooks 钩子系统](19-hooks.md) | 6 种生命周期事件 + 命令式 handler |
 

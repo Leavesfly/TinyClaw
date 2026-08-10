@@ -475,14 +475,43 @@ public class CronService {
     
     /**
      * 重新计算所有启用任务的下次执行时间。
+     *
+     * <p>misfire 补跑：EVERY 类型任务若上次执行后停机时间超过一个周期
+     * （lastRunAtMs + everyMs <= now），则下次执行时间设为 now，
+     * 在启动后立即补跑一次；其余任务按常规重算。</p>
      */
     private void recomputeNextRuns() {
         long now = System.currentTimeMillis();
         for (CronJob job : store.getJobs()) {
             if (job.isEnabled()) {
-                job.getState().setNextRunAtMs(computeNextRun(job.getSchedule(), now));
+                if (isEveryJobMisfired(job, now)) {
+                    job.getState().setNextRunAtMs(now);
+                    logger.info("Misfired job will run immediately on startup", Map.of(
+                            "job_id", job.getId(),
+                            "name", job.getName() != null ? job.getName() : ""
+                    ));
+                } else {
+                    job.getState().setNextRunAtMs(computeNextRun(job.getSchedule(), now));
+                }
             }
         }
+    }
+
+    /**
+     * 判断 EVERY 任务是否错过了应执行的时间点（misfire）。
+     *
+     * @param job 任务对象
+     * @param now 当前时间戳
+     * @return 错过返回 true
+     */
+    private boolean isEveryJobMisfired(CronJob job, long now) {
+        CronSchedule schedule = job.getSchedule();
+        if (schedule == null || CronSchedule.ScheduleKind.EVERY != schedule.getKind()) {
+            return false;
+        }
+        Long lastRun = job.getState().getLastRunAtMs();
+        Long everyMs = schedule.getEveryMs();
+        return lastRun != null && everyMs != null && everyMs > 0 && lastRun + everyMs <= now;
     }
     
     /**
@@ -584,6 +613,56 @@ public class CronService {
         return job;
     }
     
+    /**
+     * 按名称查找任务。
+     *
+     * <p>用于系统内置 job（如 __heartbeat__）的幂等注册查重。</p>
+     *
+     * @param name 任务名称
+     * @return 匹配的任务对象，未找到返回 null
+     */
+    public CronJob findJobByName(String name) {
+        lock.readLock().lock();
+        try {
+            for (CronJob job : store.getJobs()) {
+                if (name != null && name.equals(job.getName())) {
+                    return job;
+                }
+            }
+            return null;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * 更新任务的调度配置并重算下次执行时间。
+     *
+     * @param jobId 任务 ID
+     * @param schedule 新的调度配置
+     * @return 更新后的任务对象，任务不存在返回 null
+     */
+    public CronJob updateJobSchedule(String jobId, CronSchedule schedule) {
+        lock.writeLock().lock();
+        try {
+            CronJob job = findJobById(jobId);
+            if (job == null) {
+                return null;
+            }
+
+            job.setSchedule(schedule);
+            job.setUpdatedAtMs(System.currentTimeMillis());
+            if (job.isEnabled()) {
+                job.getState().setNextRunAtMs(computeNextRun(schedule, System.currentTimeMillis()));
+            }
+
+            saveStoreUnsafe();
+            return job;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
     /**
      * 删除任务。
      * 

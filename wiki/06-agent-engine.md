@@ -306,7 +306,7 @@ Hook 默认 `noop`，未配置时零开销。详见 [19 · Hooks](19-hooks.md)�
 - 主循环（`run()`）单线程从 bus 取消息，**同步**处理
 - 工具执行在主线程，但 `SubagentManager` / `AgentOrchestrator` 会启动独立子线程
 - `SessionSummarizer` 使用后台守护线程
-- `HeartbeatService` / `CronService` 各自守护线程
+- `CronService` 调度线程每秒轮询任务列表；心跳无独立线程，是其中的内置 job `__heartbeat__`
 - `ChannelManager` 为每个通道起独立线程消费出站队列
 - LLM 的流式 HTTP 由 OkHttp 的线程池处理
 

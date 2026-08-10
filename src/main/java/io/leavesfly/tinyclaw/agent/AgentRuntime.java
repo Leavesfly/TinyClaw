@@ -5,6 +5,7 @@ import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 
+import io.leavesfly.tinyclaw.channels.ActiveSessionRegistry;
 import io.leavesfly.tinyclaw.channels.ChannelManager;
 import io.leavesfly.tinyclaw.config.Config;
 
@@ -24,6 +25,7 @@ import io.leavesfly.tinyclaw.plugins.PluginManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.session.SessionMeta;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.tools.Tool;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
@@ -100,7 +102,10 @@ public class AgentRuntime {
         ensureDirectoryExists(workspace);
 
         this.tools = new ToolRegistry();
-        this.sessions = new SessionManager(Paths.get(workspace, "sessions").toString());
+        String sessionDir = Paths.get(workspace, "sessions").toString();
+        this.sessions = new SessionManager(sessionDir);
+        // 绑定活跃会话指针的持久位置，使 /new 开启的会话能跨进程存活
+        ActiveSessionRegistry.configure(sessionDir);
         this.contextBuilder = new ContextBuilder(workspace);
         this.contextBuilder.setTools(this.tools);
 
@@ -263,6 +268,14 @@ public class AgentRuntime {
                     HookContext.builder(HookEvent.SESSION_END).build());
         } catch (RuntimeException e) {
             logger.error("SessionEnd hook threw exception, ignored", Map.of("error", e.getMessage()));
+        }
+
+        // 最后刷盘会话：把尚未落盘的增量与元信息索引写完，避免退出时丢失
+        try {
+            sessions.close();
+        } catch (Exception e) {
+            logger.error("Failed to flush sessions on shutdown", Map.of(
+                    "error", String.valueOf(e.getMessage())));
         }
     }
 
@@ -476,24 +489,19 @@ public class AgentRuntime {
     /**
      * 收集最近的会话交互记录，供 Self-Refine 策略进行自我反思。
      *
-     * <p>从 SessionManager 中获取最近的 N 个会话，将每个会话的消息历史
-     * 格式化为 "role: content" 文本，作为 Self-Refine 的反思素材。</p>
+     * <p>按最后更新时间倒序取前 N 个会话（依赖元信息索引的时间排序，
+     * 而不是哈希集合的遍历顺序），将每个会话的消息历史格式化为
+     * "role: content" 文本，作为 Self-Refine 的反思素材。</p>
      *
      * @param maxSessionCount 最多收集的会话数量
      * @return 格式化的会话记录列表，每个元素对应一个会话
      */
     private List<String> collectRecentSessionLogs(int maxSessionCount) {
         List<String> sessionLogs = new ArrayList<>();
-        Set<String> sessionKeys = sessions.getSessionKeys();
-
-        if (sessionKeys.isEmpty()) {
-            return sessionLogs;
-        }
-
-        // 取最近的 N 个会话（SessionManager 的 key 集合按插入顺序排列）
-        List<String> keyList = new ArrayList<>(sessionKeys);
-        int startIndex = Math.max(0, keyList.size() - maxSessionCount);
-        List<String> recentKeys = keyList.subList(startIndex, keyList.size());
+        List<String> recentKeys = sessions.listMeta().stream()
+                .limit(maxSessionCount)
+                .map(SessionMeta::getKey)
+                .toList();
 
         for (String sessionKey : recentKeys) {
             List<Message> history = sessions.getHistory(sessionKey);
@@ -524,8 +532,20 @@ public class AgentRuntime {
 
     /** 同步处理单条消息，适用于 CLI 交互模式。 */
     public String processDirect(String content, String sessionKey) throws Exception {
+        return processDirect(content, sessionKey, false);
+    }
+
+    /**
+     * 同步处理单条消息，支持轻量上下文模式。
+     *
+     * @param content 消息内容
+     * @param sessionKey 会话标识符
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入（心跳等低成本场景）
+     */
+    public String processDirect(String content, String sessionKey, boolean lightContext) throws Exception {
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
         message.setSessionKey(sessionKey);
+        message.setLightContext(lightContext);
         return messageRouter.route(message);
     }
 
@@ -554,7 +574,7 @@ public class AgentRuntime {
         
         // 保存用户消息（含图片，存储相对路径供前端显示）
         sessions.addFullMessage(sessionKey, Message.user(content, images));
-        sessions.save(sessions.getOrCreate(sessionKey)); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
+        sessions.save(sessionKey); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         ProviderComponents comps = providerManager.getComponents();
         String response = ensureNonBlank(
@@ -596,6 +616,22 @@ public class AgentRuntime {
     public boolean isTaskRunning() {
         ProviderComponents comps = providerManager.getComponents();
         return comps != null && comps.reActExecutor != null && comps.reActExecutor.isRunning();
+    }
+
+    /**
+     * 设置指定会话的模型覆盖（心跳专用模型等场景）。
+     *
+     * <p>仅影响该会话的 LLM 调用，不改变主模型；传 null 移除覆盖。
+     * 组件未就绪时静默忽略。</p>
+     *
+     * @param sessionKey 会话标识符
+     * @param model 覆盖模型，null 表示移除
+     */
+    public void setSessionModelOverride(String sessionKey, String model) {
+        ProviderComponents comps = providerManager.getComponents();
+        if (comps != null && comps.reActExecutor != null) {
+            comps.reActExecutor.setSessionModelOverride(sessionKey, model);
+        }
     }
 
     // ==================== 消息分发 ====================
