@@ -174,7 +174,12 @@ public class PluginInstaller {
         pb.redirectErrorStream(true);
         Process process = pb.start();
         String output = new String(process.getInputStream().readAllBytes());
-        int exit = process.waitFor();
+        // 远端仓库不可信，无超时的 waitFor 可能被恶意/故障远端永久挂起
+        if (!process.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new IOException("git clone 超时（超过 300 秒）: " + repoUrl);
+        }
+        int exit = process.exitValue();
         if (exit != 0) {
             throw new IOException("git clone 失败 (exit=" + exit + "): " + output.trim());
         }

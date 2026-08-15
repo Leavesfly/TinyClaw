@@ -504,6 +504,7 @@ public class SkillsLoader {
      */
     public boolean deleteWorkspaceSkill(String name) {
         if (workspaceSkills == null) return false;
+        if (!isValidSkillName(name)) return false;
         Path skillDir = Paths.get(workspaceSkills, name);
         if (!Files.exists(skillDir) || !Files.isDirectory(skillDir)) return false;
         try {
@@ -537,6 +538,7 @@ public class SkillsLoader {
      */
     public boolean saveWorkspaceSkill(String name, String content) {
         if (workspaceSkills == null) return false;
+        if (!isValidSkillName(name)) return false;
         Path skillDir = Paths.get(workspaceSkills, name);
         Path skillFile = skillDir.resolve("SKILL.md");
         try {
@@ -546,6 +548,14 @@ public class SkillsLoader {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * 校验技能名称，拒绝空名、路径分隔符与 ".."，防止路径穿越。
+     */
+    private boolean isValidSkillName(String name) {
+        return name != null && !name.trim().isEmpty()
+                && !name.contains("..") && !name.contains("/") && !name.contains("\\");
     }
 
     /**

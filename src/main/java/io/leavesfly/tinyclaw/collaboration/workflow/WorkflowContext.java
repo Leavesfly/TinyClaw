@@ -2,8 +2,9 @@ package io.leavesfly.tinyclaw.collaboration.workflow;
 
 import io.leavesfly.tinyclaw.collaboration.SharedContext;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -28,25 +29,25 @@ public class WorkflowContext {
     /** 工作流开始时间 */
     private final long startTime;
     
-    /** 已执行节点数 */
-    private int executedNodeCount;
+    /** 已执行节点数（同层节点并行执行，需原子计数） */
+    private final AtomicInteger executedNodeCount = new AtomicInteger();
     
     public WorkflowContext(SharedContext sharedContext, Map<String, Object> initialVariables) {
         this.sharedContext = sharedContext;
-        this.variables = new HashMap<>();
+        // 同层节点会被 WorkflowEngine 并行执行，变量与节点结果必须使用并发安全容器
+        this.variables = new ConcurrentHashMap<>();
         if (initialVariables != null) {
-            this.variables.putAll(initialVariables);
+            initialVariables.forEach((k, v) -> variables.put(k, v != null ? v : ""));
         }
-        this.nodeResults = new HashMap<>();
+        this.nodeResults = new ConcurrentHashMap<>();
         this.startTime = System.currentTimeMillis();
-        this.executedNodeCount = 0;
     }
     
     /**
-     * 设置变量
+     * 设置变量（ConcurrentHashMap 不支持 null 值，null 以空字符串替代）
      */
     public void setVariable(String key, Object value) {
-        variables.put(key, value);
+        variables.put(key, value != null ? value : "");
     }
     
     /**
@@ -62,7 +63,7 @@ public class WorkflowContext {
     public void setNodeResult(String nodeId, NodeResult result) {
         nodeResults.put(nodeId, result);
         if (result.isFinished()) {
-            executedNodeCount++;
+            executedNodeCount.incrementAndGet();
         }
     }
     
@@ -298,6 +299,6 @@ public class WorkflowContext {
     }
     
     public int getExecutedNodeCount() {
-        return executedNodeCount;
+        return executedNodeCount.get();
     }
 }

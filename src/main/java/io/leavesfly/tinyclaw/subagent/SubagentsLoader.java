@@ -185,7 +185,7 @@ public class SubagentsLoader {
      * @return true 表示成功
      */
     public boolean saveWorkspaceAgent(String name, String content) {
-        if (name == null || name.isEmpty()) {
+        if (!isValidAgentName(name)) {
             return false;
         }
         Path agentDir = Paths.get(workspaceAgents, name);
@@ -206,6 +206,9 @@ public class SubagentsLoader {
      * @return true 表示成功，false 表示定义不存在
      */
     public boolean deleteWorkspaceAgent(String name) {
+        if (!isValidAgentName(name)) {
+            return false;
+        }
         Path agentDir = Paths.get(workspaceAgents, name);
         if (!Files.exists(agentDir) || !Files.isDirectory(agentDir)) {
             return false;
@@ -216,6 +219,14 @@ public class SubagentsLoader {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * 校验子代理名称，拒绝空名、路径分隔符与 ".."，防止路径穿越。
+     */
+    private boolean isValidAgentName(String name) {
+        return name != null && !name.trim().isEmpty()
+                && !name.contains("..") && !name.contains("/") && !name.contains("\\");
     }
 
     /**

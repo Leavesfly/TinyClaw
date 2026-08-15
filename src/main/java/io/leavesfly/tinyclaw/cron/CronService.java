@@ -545,7 +545,20 @@ public class CronService {
             Path path = Paths.get(storePath);
             Files.createDirectories(path.getParent());
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(store);
-            Files.writeString(path, json);
+            // 原子写：先写临时文件再 rename，避免写中途崩溃留下半截 JSON 导致任务全部丢失
+            Path temp = path.resolveSibling(path.getFileName() + "."
+                    + java.util.UUID.randomUUID().toString().substring(0, 8) + ".tmp");
+            try {
+                Files.writeString(temp, json);
+                try {
+                    Files.move(temp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(temp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temp);
+            }
         } catch (Exception e) {
             logger.error("Failed to save cron store", Map.of("error", e.getMessage()));
         }

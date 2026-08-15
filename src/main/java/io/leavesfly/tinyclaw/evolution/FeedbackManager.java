@@ -150,7 +150,8 @@ public class FeedbackManager {
 
         List<EvaluationFeedback> aggregated = new ArrayList<>();
         for (Map.Entry<String, List<EvaluationFeedback>> entry : bySession.entrySet()) {
-            EvaluationFeedback merged = entry.getValue().get(0);
+            // 在副本上合并，避免原地修改 feedbacks 列表中的持久化对象导致数据逐轮失真
+            EvaluationFeedback merged = entry.getValue().get(0).copy();
             for (int i = 1; i < entry.getValue().size(); i++) {
                 merged.merge(entry.getValue().get(i));
             }

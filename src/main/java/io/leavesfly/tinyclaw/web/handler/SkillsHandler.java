@@ -65,6 +65,10 @@ public class SkillsHandler {
                     && WebUtils.HTTP_METHOD_GET.equals(method)) {
                 String name = URLDecoder.decode(
                         path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+                if (!isValidSkillName(name)) {
+                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Invalid skill name"), corsOrigin);
+                    return;
+                }
                 String content = skillsLoader.loadSkill(name);
                 if (content != null) {
                     ObjectNode result = WebUtils.MAPPER.createObjectNode();
@@ -80,6 +84,10 @@ public class SkillsHandler {
 
                 String name = URLDecoder.decode(
                         path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+                if (!isValidSkillName(name)) {
+                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Invalid skill name"), corsOrigin);
+                    return;
+                }
                 String body = WebUtils.readRequestBody(exchange);
                 JsonNode bodyJson = WebUtils.MAPPER.readTree(body);
                 String content = bodyJson.has("content") ? bodyJson.get("content").asText() : null;
@@ -99,6 +107,10 @@ public class SkillsHandler {
 
                 String name = URLDecoder.decode(
                         path.substring(WebUtils.API_SKILLS.length() + 1), StandardCharsets.UTF_8);
+                if (!isValidSkillName(name)) {
+                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Invalid skill name"), corsOrigin);
+                    return;
+                }
 
                 if (skillsLoader.deleteWorkspaceSkill(name)) {
                     ObjectNode result = WebUtils.MAPPER.createObjectNode();
@@ -115,5 +127,13 @@ public class SkillsHandler {
             logger.error("Skills API error", Map.of("error", e.getMessage()));
             WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
         }
+    }
+
+    /**
+     * 校验技能名称，拒绝空名、路径分隔符与 ".." 等路径穿越字符。
+     */
+    private boolean isValidSkillName(String name) {
+        return name != null && !name.trim().isEmpty()
+                && !name.contains("..") && !name.contains("/") && !name.contains("\\");
     }
 }

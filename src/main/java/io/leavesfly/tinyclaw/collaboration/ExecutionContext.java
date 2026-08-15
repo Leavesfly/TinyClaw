@@ -6,6 +6,7 @@ import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.nio.file.Paths;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Agent 执行上下文
@@ -31,8 +32,8 @@ public class ExecutionContext {
     /** 基础系统提示词（可选，用于传递主 Agent 的核心身份信息） */
     private String baseSystemPrompt;
 
-    /** RoleAgent 序号计数器（用于生成唯一的协同会话内序号） */
-    private int agentSequence = 0;
+    /** RoleAgent 序号计数器（并行创建 Agent 时需原子自增，避免 sessionKey 碰撞） */
+    private final AtomicInteger agentSequence = new AtomicInteger(0);
 
     public ExecutionContext(LLMProvider provider, ToolRegistry tools,
                             String workspace, String model, int maxIterations) {
@@ -68,7 +69,7 @@ public class ExecutionContext {
                 model,
                 maxIterations,
                 sessionId,
-                ++agentSequence,
+                agentSequence.incrementAndGet(),
                 baseSystemPrompt);
     }
 

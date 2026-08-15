@@ -161,7 +161,7 @@ public class DingTalkChannel extends BaseChannel {
         StreamConnectionInfo connectionInfo = registerStreamConnection();
         
         String websocketUrl = connectionInfo.endpoint + "?ticket=" + connectionInfo.ticket;
-        logger.info("正在连接钉钉 Stream 服务", Map.of("url", websocketUrl));
+        logger.info("正在连接钉钉 Stream 服务", Map.of("endpoint", connectionInfo.endpoint));
         
         Request request = new Request.Builder()
             .url(websocketUrl)
@@ -225,7 +225,8 @@ public class DingTalkChannel extends BaseChannel {
         
         try {
             String jsonBody = objectMapper.writeValueAsString(requestBody);
-            logger.info("Stream 注册请求体", Map.of("body", jsonBody));
+            // 请求体含 clientSecret，禁止写入日志
+            logger.info("Stream 注册中", Map.of("clientId", config.getClientId()));
             
             Request request = new Request.Builder()
                 .url(STREAM_CONNECTION_URL)
@@ -240,7 +241,6 @@ public class DingTalkChannel extends BaseChannel {
                 }
                 
                 String responseBody = response.body() != null ? response.body().string() : "";
-                logger.info("Stream 注册响应", Map.of("body", responseBody));
                 JsonNode responseJson = objectMapper.readTree(responseBody);
                 
                 String endpoint = responseJson.path("endpoint").asText(null);

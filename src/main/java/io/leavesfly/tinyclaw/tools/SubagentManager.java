@@ -19,9 +19,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -44,6 +46,12 @@ public class SubagentManager {
     private static final long CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 
     private static final int DEFAULT_MAX_ITERATIONS = 10;
+
+    /** 子代理任务最大并发数（子代理任务为分钟级 LLM 循环，需限制并发避免线程/资源耗尽） */
+    private static final int MAX_CONCURRENT_SUBAGENTS = 8;
+
+    /** 等待队列容量，超出后拒绝新任务 */
+    private static final int SUBAGENT_QUEUE_CAPACITY = 16;
 
     private final Map<String, SubagentTask> tasks = new ConcurrentHashMap<>();
     private final LLMProvider provider;
@@ -183,13 +191,17 @@ public class SubagentManager {
         this.tools = tools;
         this.model = model;
         this.maxIterations = maxIterations > 0 ? maxIterations : DEFAULT_MAX_ITERATIONS;
-        // 使用线程池管理子代理任务
-        this.executor = Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r);
-            t.setDaemon(true);
-            t.setName("subagent-pool-" + t.getId());
-            return t;
-        });
+        // 使用有界线程池管理子代理任务，空闲线程 60 秒后回收
+        this.executor = new ThreadPoolExecutor(
+                2, MAX_CONCURRENT_SUBAGENTS,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(SUBAGENT_QUEUE_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r);
+                    t.setDaemon(true);
+                    t.setName("subagent-pool-" + t.getId());
+                    return t;
+                });
     }
 
     /**
@@ -417,8 +429,15 @@ public class SubagentManager {
 
         tasks.put(taskId, subagentTask);
 
-        // 在线程池中运行任务
-        executor.submit(() -> runTask(subagentTask));
+        // 在线程池中运行任务；并发与队列均满时拒绝并反馈调用方
+        try {
+            executor.submit(() -> runTask(subagentTask));
+        } catch (RejectedExecutionException e) {
+            subagentTask.setStatus("failed");
+            subagentTask.setResult("子代理并发已达上限，请稍后重试");
+            logger.warn("Subagent spawn rejected", Map.of("task_id", taskId));
+            return "子代理并发已达上限（" + MAX_CONCURRENT_SUBAGENTS + "），请稍后重试。";
+        }
 
         logger.info("Spawned subagent", Map.of(
                 "task_id", taskId,

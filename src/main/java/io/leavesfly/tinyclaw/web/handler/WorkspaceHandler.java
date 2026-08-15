@@ -110,14 +110,34 @@ public class WorkspaceHandler {
     }
 
     /**
+     * 校验并解析工作空间内的相对文件路径，拒绝路径穿越（如 "../../etc/passwd"）。
+     * 校验失败时返回 null。
+     */
+    private Path resolveWorkspaceFile(String workspace, String fileName) {
+        if (fileName == null || fileName.isEmpty() || fileName.contains("..")) {
+            return null;
+        }
+        Path root = Paths.get(workspace).normalize();
+        Path filePath = root.resolve(fileName).normalize();
+        if (!filePath.startsWith(root)) {
+            return null;
+        }
+        return filePath;
+    }
+
+    /**
      * 读取工作空间中指定文件的内容，文件名使用 URL 解码处理。
-     * 文件不存在时返回 404。
+     * 文件不存在时返回 404；路径越界时返回 403。
      */
     private void handleGetWorkspaceFile(HttpExchange exchange, String path, String workspace,
                                         String corsOrigin) throws IOException {
         String fileName = URLDecoder.decode(
                 path.substring(WebUtils.API_WORKSPACE_FILES.length() + 1), StandardCharsets.UTF_8);
-        Path filePath = Paths.get(workspace, fileName);
+        Path filePath = resolveWorkspaceFile(workspace, fileName);
+        if (filePath == null) {
+            WebUtils.sendJson(exchange, 403, WebUtils.errorJson("Invalid file path"), corsOrigin);
+            return;
+        }
         if (Files.exists(filePath)) {
             String content = Files.readString(filePath);
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
@@ -131,16 +151,20 @@ public class WorkspaceHandler {
 
     /**
      * 将请求体中的 content 写入工作空间中的指定文件，必要时自动创建父目录。
-     * 文件名使用 URL 解码处理。
+     * 文件名使用 URL 解码处理；路径越界时返回 403。
      */
     private void handleSaveWorkspaceFile(HttpExchange exchange, String path, String workspace,
                                          String corsOrigin) throws IOException {
         String fileName = URLDecoder.decode(
                 path.substring(WebUtils.API_WORKSPACE_FILES.length() + 1), StandardCharsets.UTF_8);
+        Path filePath = resolveWorkspaceFile(workspace, fileName);
+        if (filePath == null) {
+            WebUtils.sendJson(exchange, 403, WebUtils.errorJson("Invalid file path"), corsOrigin);
+            return;
+        }
         String body = WebUtils.readRequestBodyLimited(exchange);
         JsonNode json = WebUtils.MAPPER.readTree(body);
         String content = json.path("content").asText();
-        Path filePath = Paths.get(workspace, fileName);
         Files.createDirectories(filePath.getParent());
         Files.writeString(filePath, content);
         WebUtils.sendJson(exchange, 200, WebUtils.successJson("File saved"), corsOrigin);

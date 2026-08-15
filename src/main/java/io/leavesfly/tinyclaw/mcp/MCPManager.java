@@ -28,6 +28,8 @@ public class MCPManager {
     private final Map<String, MCPClient> clients;
     private final Map<String, MCPServerInfo> serverInfos;
     private final Map<String, MCPServersConfig.MCPServerConfig> serverConfigs;
+    /** 按 server 名称互斥的重连锁，避免并发重连泄漏客户端 */
+    private final Map<String, Object> reconnectLocks = new ConcurrentHashMap<>();
     
     public MCPManager(MCPServersConfig config, ToolRegistry toolRegistry) {
         this.config = config;
@@ -185,11 +187,22 @@ public class MCPManager {
     }
     
     /**
-     * 重新连接指定名称的 MCP 服务器（由 MCPTool 在检测到断连时调用）
+     * 重新连接指定名称的 MCP 服务器（由 MCPTool 在检测到断连时调用）。
+     *
+     * 同一 server 同一时刻只允许一个重连流程，避免并发重连创建多个客户端导致泄漏。
      *
      * @return 重连后的新 MCPClient 实例
      */
     public MCPClient reconnect(String name) throws Exception {
+        synchronized (reconnectLocks.computeIfAbsent(name, k -> new Object())) {
+            return doReconnect(name);
+        }
+    }
+
+    /**
+     * 实际执行重连：关闭旧客户端 → 创建新客户端 → 握手 → 更新注册表。
+     */
+    private MCPClient doReconnect(String name) throws Exception {
         MCPServersConfig.MCPServerConfig serverConfig = serverConfigs.get(name);
         if (serverConfig == null) {
             throw new IOException("No configuration found for MCP server: " + name);
@@ -208,45 +221,54 @@ public class MCPManager {
         
         // 创建新客户端并重新握手
         MCPClient newClient = createClient(serverConfig);
-        newClient.connect();
-        
-        // 重新执行初始化握手
-        Map<String, Object> initParams = new HashMap<>();
-        initParams.put("protocolVersion", "2024-11-05");
-        initParams.put("capabilities", Collections.emptyMap());
-        initParams.put("clientInfo", Map.of(
-                "name", "TinyClaw",
-                "version", "0.1.0"
-        ));
-        
-        MCPMessage initResponse = newClient.sendRequest("initialize", initParams);
-        MCPServerInfo serverInfo = parseServerInfo(name, initResponse.getResult());
-        
-        newClient.sendNotification("notifications/initialized", Collections.emptyMap());
-        
-        MCPMessage toolsResponse = newClient.sendRequest("tools/list", Collections.emptyMap());
-        List<MCPServerInfo.ToolInfo> tools = parseTools(toolsResponse.getResult());
-        serverInfo.setTools(tools);
-        
-        clients.put(name, newClient);
-        serverInfos.put(name, serverInfo);
-        
-        // 更新所有已注册的 MCPTool 的 client 引用
-        for (MCPServerInfo.ToolInfo toolInfo : tools) {
-            String registeredName = "mcp_" + name + "_" + toolInfo.getName();
-            toolRegistry.get(registeredName).ifPresent(tool -> {
-                if (tool instanceof MCPTool directTool) {
-                    directTool.updateClient(newClient);
-                }
-            });
+        try {
+            newClient.connect();
+            
+            // 重新执行初始化握手
+            Map<String, Object> initParams = new HashMap<>();
+            initParams.put("protocolVersion", "2024-11-05");
+            initParams.put("capabilities", Collections.emptyMap());
+            initParams.put("clientInfo", Map.of(
+                    "name", "TinyClaw",
+                    "version", "0.1.0"
+            ));
+            
+            MCPMessage initResponse = newClient.sendRequest("initialize", initParams);
+            MCPServerInfo serverInfo = parseServerInfo(name, initResponse.getResult());
+            
+            newClient.sendNotification("notifications/initialized", Collections.emptyMap());
+            
+            MCPMessage toolsResponse = newClient.sendRequest("tools/list", Collections.emptyMap());
+            List<MCPServerInfo.ToolInfo> tools = parseTools(toolsResponse.getResult());
+            serverInfo.setTools(tools);
+            
+            clients.put(name, newClient);
+            serverInfos.put(name, serverInfo);
+            
+            // 更新所有已注册的 MCPTool 的 client 引用
+            for (MCPServerInfo.ToolInfo toolInfo : tools) {
+                String registeredName = "mcp_" + name + "_" + toolInfo.getName();
+                toolRegistry.get(registeredName).ifPresent(tool -> {
+                    if (tool instanceof MCPTool directTool) {
+                        directTool.updateClient(newClient);
+                    }
+                });
+            }
+            
+            logger.info("MCP server reconnected successfully", Map.of(
+                    "name", name,
+                    "tools_count", tools.size()
+            ));
+            
+            return newClient;
+        } catch (Exception e) {
+            // 握手失败时关闭新客户端，避免子进程/连接泄漏
+            try {
+                newClient.close();
+            } catch (Exception ignored) {
+            }
+            throw e;
         }
-        
-        logger.info("MCP server reconnected successfully", Map.of(
-                "name", name,
-                "tools_count", tools.size()
-        ));
-        
-        return newClient;
     }
     
     /**

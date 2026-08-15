@@ -14,7 +14,6 @@ import okhttp3.Response;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -51,8 +50,15 @@ public class QQChannel extends BaseChannel {
     // 令牌管理器
     private final TokenManager tokenManager;
     
-    // 已处理消息 ID（去重）
-    private final Set<String> processedIds = ConcurrentHashMap.newKeySet();
+    // 已处理消息 ID（去重）：访问序 LRU，超限只淘汰最旧条目，避免整体清空产生重复处理窗口
+    private static final int MAX_PROCESSED_IDS = 10000;
+    private final Set<String> processedIds = java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(new java.util.LinkedHashMap<String, Boolean>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                    return size() > MAX_PROCESSED_IDS;
+                }
+            }));
     
     /**
      * 创建 QQ 通道
@@ -181,15 +187,9 @@ public class QQChannel extends BaseChannel {
                 return;
             }
             
-            // 去重检查
-            if (processedIds.contains(messageId)) {
+            // 去重检查：add 返回 false 表示已处理过
+            if (!processedIds.add(messageId)) {
                 return;
-            }
-            processedIds.add(messageId);
-            
-            // 清理过期的消息 ID
-            if (processedIds.size() > 10000) {
-                processedIds.clear();
             }
             
             // 提取发送者信息

@@ -24,9 +24,18 @@ public class SecurityMiddleware {
     /** Session Token 有效期：24 小时 */
     private static final long SESSION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000L;
 
+    /** 认证失败锁定阈值：窗口内失败超过该次数后临时锁定 */
+    private static final int MAX_AUTH_FAILURES = 10;
+
+    /** 认证失败锁定窗口：15 分钟 */
+    private static final long AUTH_BLOCK_WINDOW_MS = 15 * 60 * 1000L;
+
     private final Config config;
     /** 按 IP 分桶的速率限制：IP → [windowStart, count] */
     private final ConcurrentHashMap<String, long[]> rateLimitByIp = new ConcurrentHashMap<>();
+
+    /** 按 IP 分桶的认证失败计数：IP → [windowStart, failCount]，用于防暴力破解 */
+    private final ConcurrentHashMap<String, long[]> authFailuresByIp = new ConcurrentHashMap<>();
 
     /** 服务端 Session Token 存储：token → 过期时间戳 */
     private final ConcurrentHashMap<String, Long> sessionTokens = new ConcurrentHashMap<>();
@@ -114,14 +123,24 @@ public class SecurityMiddleware {
             return true;
         }
 
+        // 防暴力破解：失败次数超限的 IP 在锁定窗口内直接拒绝
+        if (isAuthBlocked(exchange)) {
+            logger.warn("Authentication blocked due to too many failures",
+                    Map.of("ip", clientIpOf(exchange)));
+            sendAuthChallenge(exchange);
+            return false;
+        }
+
         String authHeader = exchange.getRequestHeaders().getFirst(WebUtils.HEADER_AUTHORIZATION);
 
         // Bearer Session Token 方式（推荐）
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring("Bearer ".length());
             if (isValidSessionToken(token)) {
+                clearAuthFailures(exchange);
                 return true;
             }
+            recordAuthFailure(exchange);
             sendAuthChallenge(exchange);
             return false;
         }
@@ -155,16 +174,62 @@ public class SecurityMiddleware {
                     inputPassword.getBytes(StandardCharsets.UTF_8));
 
             if (usernameMatch && passwordMatch) {
+                clearAuthFailures(exchange);
                 return true;
             }
 
+            recordAuthFailure(exchange);
             logger.warn("Authentication failed", Map.of("username", inputUsername));
             sendAuthChallenge(exchange);
             return false;
         }
 
+        recordAuthFailure(exchange);
         sendAuthChallenge(exchange);
         return false;
+    }
+
+    /**
+     * 获取客户端 IP 地址。
+     */
+    private String clientIpOf(HttpExchange exchange) {
+        return exchange.getRemoteAddress().getAddress().getHostAddress();
+    }
+
+    /**
+     * 判断该 IP 是否因认证失败过多而处于锁定窗口内。
+     */
+    private boolean isAuthBlocked(HttpExchange exchange) {
+        long[] counter = authFailuresByIp.get(clientIpOf(exchange));
+        if (counter == null) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        synchronized (counter) {
+            return counter[1] > MAX_AUTH_FAILURES && now - counter[0] < AUTH_BLOCK_WINDOW_MS;
+        }
+    }
+
+    /**
+     * 记录一次认证失败；窗口过期时重置计数。
+     */
+    private void recordAuthFailure(HttpExchange exchange) {
+        String ip = clientIpOf(exchange);
+        long now = System.currentTimeMillis();
+        authFailuresByIp.compute(ip, (key, existing) -> {
+            if (existing == null || now - existing[0] >= AUTH_BLOCK_WINDOW_MS) {
+                return new long[]{now, 1};
+            }
+            existing[1]++;
+            return existing;
+        });
+    }
+
+    /**
+     * 认证成功后清除该 IP 的失败计数。
+     */
+    private void clearAuthFailures(HttpExchange exchange) {
+        authFailuresByIp.remove(clientIpOf(exchange));
     }
 
     /**
@@ -196,6 +261,12 @@ public class SecurityMiddleware {
             existing[1]++;
             return existing;
         });
+
+        // 窗口重置时顺带清理长期不活动的 IP 条目，防止 map 无限增长
+        if (window[1] == 1) {
+            rateLimitByIp.entrySet().removeIf(e -> now - e.getValue()[0] >= 3600_000);
+            authFailuresByIp.entrySet().removeIf(e -> now - e.getValue()[0] >= AUTH_BLOCK_WINDOW_MS);
+        }
 
         if (window[1] > gatewayConfig.getRateLimitPerMinute()) {
             logger.warn("Rate limit exceeded", Map.of(

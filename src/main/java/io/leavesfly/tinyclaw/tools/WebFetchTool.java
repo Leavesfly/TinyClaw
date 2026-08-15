@@ -145,7 +145,9 @@ public class WebFetchTool implements Tool {
                 }
             
             String contentType = response.header("Content-Type", "");
-            String body = response.body() != null ? response.body().string() : "";
+            // 流式限长读取，避免超大响应体打爆堆内存（截断必须发生在读取过程中而非读取后）
+            long readCharLimit = Math.max((long) max * 10, 1_000_000L);
+            String body = response.body() != null ? readBodyLimited(response.body(), readCharLimit) : "";
             
             String text;
             String extractor;
@@ -277,6 +279,25 @@ public class WebFetchTool implements Tool {
             return firstByte == 0xFC || firstByte == 0xFD;
         }
         return false;
+    }
+
+    /**
+     * 流式读取响应体并在达到字符上限时中止，防止超大响应耗尽堆内存。
+     *
+     * @param body      响应体
+     * @param charLimit 最大读取字符数
+     * @return 读取到的内容（可能在中止处截断）
+     */
+    private String readBodyLimited(okhttp3.ResponseBody body, long charLimit) throws java.io.IOException {
+        try (java.io.Reader reader = body.charStream()) {
+            StringBuilder sb = new StringBuilder();
+            char[] buffer = new char[8192];
+            int read;
+            while (sb.length() < charLimit && (read = reader.read(buffer)) != -1) {
+                sb.append(buffer, 0, read);
+            }
+            return sb.toString();
+        }
     }
 
     /**

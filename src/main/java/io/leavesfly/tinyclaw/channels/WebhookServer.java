@@ -35,6 +35,8 @@ import java.util.concurrent.TimeUnit;
 public class WebhookServer {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("webhook");
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
     private static final String CONTENT_TYPE_JSON = "application/json; charset=utf-8";
     private static final int THREAD_POOL_SIZE = 4;
     private static final int MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 请求体最大 1MB
@@ -186,9 +188,11 @@ public class WebhookServer {
         int statusCode = 200;
 
         try {
-            // 飞书 URL 验证（challenge 机制）
-            if (requestBody.contains("\"challenge\"")) {
-                responseBody = handleFeishuChallenge(requestBody);
+            // 飞书 URL 验证（challenge 机制）：必须按结构化字段判断，
+            // 不能用子串匹配，否则正文含 "challenge" 的正常事件会被误吞
+            com.fasterxml.jackson.databind.JsonNode json = MAPPER.readTree(requestBody);
+            if (isFeishuUrlVerification(json)) {
+                responseBody = handleFeishuChallenge(json);
                 sendResponse(exchange, statusCode, responseBody);
                 return;
             }
@@ -212,17 +216,28 @@ public class WebhookServer {
     }
 
     /**
-     * 处理飞书 URL 验证的 challenge 请求
+     * 判断是否为飞书 URL 验证请求：
+     * 1.0 schema 为顶层 type=url_verification，2.0 schema 为 header.event_type=url_verification。
      */
-    private String handleFeishuChallenge(String requestBody) {
+    private boolean isFeishuUrlVerification(com.fasterxml.jackson.databind.JsonNode json) {
+        if ("url_verification".equals(json.path("type").asText(""))) {
+            return true;
+        }
+        return "url_verification".equals(json.path("header").path("event_type").asText(""));
+    }
+
+    /**
+     * 处理飞书 URL 验证的 challenge 请求，响应体由 Jackson 序列化以避免特殊字符破坏 JSON。
+     */
+    private String handleFeishuChallenge(com.fasterxml.jackson.databind.JsonNode json) {
         try {
-            com.fasterxml.jackson.databind.JsonNode json =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(requestBody);
             String challenge = json.path("challenge").asText("");
             logger.info("飞书 URL 验证", Map.of("challenge", challenge));
-            return "{\"challenge\":\"" + challenge + "\"}";
+            com.fasterxml.jackson.databind.node.ObjectNode response = MAPPER.createObjectNode();
+            response.put("challenge", challenge);
+            return MAPPER.writeValueAsString(response);
         } catch (Exception e) {
-            logger.error("解析飞书 challenge 失败", Map.of("error", e.getMessage()));
+            logger.error("处理飞书 challenge 失败", Map.of("error", e.getMessage()));
             return "{\"challenge\":\"\"}";
         }
     }

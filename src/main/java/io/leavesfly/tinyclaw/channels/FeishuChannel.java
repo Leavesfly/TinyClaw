@@ -317,6 +317,8 @@ public class FeishuChannel extends BaseChannel {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
                 logger.info("飞书 WebSocket 连接已建立");
+                // 连接真正建立后才重置重连计数，避免异步连接失败时计数被错误清零导致无限重连
+                reconnectAttempts.set(0);
             }
             
             @Override
@@ -426,12 +428,11 @@ public class FeishuChannel extends BaseChannel {
             try {
                 tokenManager.getValidToken();
                 String wsUrl = fetchWebSocketEndpoint();
+                // newWebSocket 是异步的，连接是否成功由 onOpen/onFailure 回调决定，
+                // 重连计数在 onOpen 中重置
                 connectWebSocket(wsUrl);
                 startHeartbeat();
-                
-                // 连接成功后重置重连计数
-                reconnectAttempts.set(0);
-                logger.info("飞书 WebSocket 重连成功");
+                logger.info("飞书 WebSocket 重连请求已发起");
             } catch (Exception e) {
                 logger.error("重连飞书 WebSocket 失败", Map.of(
                         "attempt", String.valueOf(attempt),

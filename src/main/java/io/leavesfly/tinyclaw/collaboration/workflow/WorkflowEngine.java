@@ -258,8 +258,12 @@ public class WorkflowEngine {
                     Thread.currentThread().interrupt();
                     break;
                 }
-                // 重置状态准备重试
+                // 重置状态准备重试，但保留已累计的重试计数
+                int retries = result.getRetryCount();
                 result = new NodeResult(node.getId());
+                for (int i = 0; i < retries; i++) {
+                    result.incrementRetry();
+                }
             }
 
             result.markStarted();

@@ -7,6 +7,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,6 +19,7 @@ import java.time.Duration;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -72,6 +74,12 @@ public class SkillsInstaller {
             .connectTimeout(Duration.ofSeconds(30))
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
+
+    // 下载压缩包的大小上限（100MB），防止磁盘/内存耗尽
+    private static final long MAX_DOWNLOAD_BYTES = 100L * 1024 * 1024;
+
+    // 外部进程（git/tar）等待超时（秒）
+    private static final long PROCESS_TIMEOUT_SECONDS = 300;
     
     /**
      * 创建技能安装器
@@ -238,12 +246,17 @@ public class SkillsInstaller {
      */
     private String runInstall(String skillName, SkillSourcePreparer prepareSourceDir, String successSuffix)
             throws Exception {
+        validateSkillName(skillName);
         if (installing.putIfAbsent(skillName, true) != null) {
             throw new Exception("技能 '" + skillName + "' 正在安装中，请稍候...");
         }
 
         try {
-            Path targetPath = Paths.get(skillsDir, skillName);
+            Path skillsRoot = Paths.get(skillsDir).normalize();
+            Path targetPath = skillsRoot.resolve(skillName).normalize();
+            if (!targetPath.startsWith(skillsRoot)) {
+                throw new Exception("非法技能名称: " + skillName);
+            }
             if (Files.exists(targetPath)) {
                 throw new Exception("技能 '" + skillName + "' 已存在。请先使用 'skills remove " + skillName + "' 移除后再安装。");
             }
@@ -273,15 +286,44 @@ public class SkillsInstaller {
     }
 
     /**
+     * 校验技能名称，拒绝含路径分隔符或 ".." 的名称，防止安装目标路径穿越。
+     */
+    private void validateSkillName(String skillName) throws Exception {
+        if (skillName == null || skillName.trim().isEmpty()
+                || skillName.contains("..") || skillName.contains("/") || skillName.contains("\\")) {
+            throw new Exception("非法技能名称: " + skillName);
+        }
+    }
+
+    /**
      * 从 URL 下载文件到指定路径。
+     *
+     * 下载前校验 URL 协议与目标地址，拒绝非 http/https 协议及私有/回环地址（防 SSRF）；
+     * 下载字节数超过上限时中止。
      *
      * @param url        下载地址
      * @param targetFile 保存路径
      * @throws Exception 下载失败时抛出
      */
     private void downloadFile(String url, Path targetFile) throws Exception {
+        URI uri = URI.create(url);
+        String scheme = uri.getScheme();
+        if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+            throw new Exception("仅支持 http/https 下载地址: " + url);
+        }
+        String host = uri.getHost();
+        if (host == null || host.isEmpty()) {
+            throw new Exception("下载地址缺少主机名: " + url);
+        }
+        for (InetAddress address : InetAddress.getAllByName(host)) {
+            if (address.isLoopbackAddress() || address.isSiteLocalAddress()
+                    || address.isLinkLocalAddress() || address.isAnyLocalAddress()) {
+                throw new Exception("拒绝下载指向私有/回环地址的 URL: " + url);
+            }
+        }
+
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(uri)
                 .timeout(Duration.ofSeconds(120))
                 .GET()
                 .build();
@@ -292,8 +334,18 @@ public class SkillsInstaller {
             throw new Exception("下载失败，HTTP 状态码: " + response.statusCode() + "，URL: " + url);
         }
 
-        try (InputStream inputStream = response.body()) {
-            Files.copy(inputStream, targetFile);
+        try (InputStream inputStream = response.body();
+             var outputStream = Files.newOutputStream(targetFile)) {
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_DOWNLOAD_BYTES) {
+                    throw new Exception("下载超过大小上限 " + (MAX_DOWNLOAD_BYTES / 1024 / 1024) + "MB: " + url);
+                }
+                outputStream.write(buffer, 0, read);
+            }
         }
     }
 
@@ -366,7 +418,11 @@ public class SkillsInstaller {
         Process process = pb.start();
 
         String output = new String(process.getInputStream().readAllBytes());
-        int exitCode = process.waitFor();
+        if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new Exception("解压 tar.gz 超时（超过 " + PROCESS_TIMEOUT_SECONDS + " 秒）");
+        }
+        int exitCode = process.exitValue();
         if (exitCode != 0) {
             throw new Exception("解压 tar.gz 失败: " + output);
         }
@@ -459,8 +515,11 @@ public class SkillsInstaller {
                 .redirectErrorStream(true)
                 .start();
             
-            int exitCode = process.waitFor();
-            return exitCode == 0;
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
         } catch (Exception e) {
             return false;
         }
@@ -550,8 +609,11 @@ public class SkillsInstaller {
                 }
             }
 
-            int exitCode = process.waitFor();
-            return exitCode == 0 ? null : output.toString();
+            if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return "git clone 超时（超过 " + PROCESS_TIMEOUT_SECONDS + " 秒）";
+            }
+            return process.exitValue() == 0 ? null : output.toString();
         } catch (Exception e) {
             return e.getMessage();
         }

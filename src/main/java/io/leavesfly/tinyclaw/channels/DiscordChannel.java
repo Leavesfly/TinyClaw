@@ -445,17 +445,40 @@ public class DiscordChannel extends BaseChannel {
     }
 
     /**
-     * 下载附件到本地临时目录
+     * 下载附件到本地临时目录。
+     * 附件文件名来自 Discord 元数据，需清洗防止路径穿越；下载字节数设上限。
      */
     private String downloadAttachment(String url, String filename) {
         try {
             Path mediaDir = Paths.get(System.getProperty("java.io.tmpdir"), "tinyclaw_media");
             Files.createDirectories(mediaDir);
-            Path localPath = mediaDir.resolve(filename);
 
+            // 只取文件名的最后一段并过滤特殊字符，拒绝越界路径
+            String safeName = filename != null ? filename : "attachment";
+            Path namePath = Paths.get(safeName);
+            safeName = namePath.getFileName() != null ? namePath.getFileName().toString() : "attachment";
+            safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+            if (safeName.isEmpty() || safeName.equals(".") || safeName.equals("..")) {
+                safeName = "attachment";
+            }
+            Path localPath = mediaDir.resolve(safeName);
+            if (!localPath.normalize().startsWith(mediaDir)) {
+                throw new IllegalArgumentException("非法附件文件名: " + filename);
+            }
+
+            long maxBytes = 50L * 1024 * 1024;
             try (InputStream in = new URL(url).openStream();
                  FileOutputStream out = new FileOutputStream(localPath.toFile())) {
-                in.transferTo(out);
+                byte[] buffer = new byte[8192];
+                long total = 0;
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    total += read;
+                    if (total > maxBytes) {
+                        throw new IOException("附件下载超过大小上限 50MB");
+                    }
+                    out.write(buffer, 0, read);
+                }
             }
 
             logger.debug("附件下载成功", Map.of("path", localPath.toString()));

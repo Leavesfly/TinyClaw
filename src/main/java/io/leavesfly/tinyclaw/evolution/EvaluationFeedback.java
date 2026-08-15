@@ -201,6 +201,25 @@ public class EvaluationFeedback {
         return this;
     }
 
+    /**
+     * 创建当前反馈的副本，供聚合场景使用，避免 merge 原地修改持久化对象。
+     *
+     * @return 字段相同的新实例（metrics 为独立副本）
+     */
+    public EvaluationFeedback copy() {
+        EvaluationFeedback copy = new EvaluationFeedback();
+        copy.id = this.id;
+        copy.primaryScore = this.primaryScore;
+        copy.evalMode = this.evalMode;
+        copy.sampleCount = this.sampleCount;
+        copy.textualGradient = this.textualGradient;
+        copy.metrics = new HashMap<>(this.metrics);
+        copy.timestamp = this.timestamp;
+        copy.sessionKey = this.sessionKey;
+        copy.feedbackType = this.feedbackType;
+        return copy;
+    }
+
     // ==================== 工具方法 ====================
 
     private String generateId() {

@@ -4,6 +4,7 @@ import io.leavesfly.tinyclaw.collaboration.*;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,6 +54,12 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
     private Map<String, List<String>> latestVotes;
 
     /**
+     * 执行互斥锁：策略实例在编排器中为单例，而内部持有可变执行状态，
+     * 串行化 execute 避免并发协同任务互相清空/污染对方的投票与共识状态。
+     */
+    private final ReentrantLock executeLock = new ReentrantLock();
+
+    /**
      * 注入执行上下文（动态路由风格需要）
      */
     public void setExecutionContext(ExecutionContext executionContext) {
@@ -72,6 +79,15 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
 
     @Override
     public String execute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
+        executeLock.lock();
+        try {
+            return doExecute(context, agents, config);
+        } finally {
+            executeLock.unlock();
+        }
+    }
+
+    private String doExecute(SharedContext context, List<RoleAgent> agents, CollaborationConfig config) {
         if (agents.isEmpty()) {
             return "讨论至少需要 1 个参与者";
         }

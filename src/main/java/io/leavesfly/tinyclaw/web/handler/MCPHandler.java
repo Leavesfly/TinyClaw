@@ -111,7 +111,8 @@ public class MCPHandler {
             }
             if (server.getEnv() != null) {
                 ObjectNode envNode = WebUtils.MAPPER.createObjectNode();
-                server.getEnv().forEach(envNode::put);
+                // env 中常含 API Key/Token，敏感键名的值需掩码后返回
+                server.getEnv().forEach((k, v) -> envNode.put(k, isSensitiveEnvKey(k) ? WebUtils.maskSecret(v) : v));
                 serverNode.set("env", envNode);
             }
             serverNode.put("enabled", server.isEnabled());
@@ -436,5 +437,17 @@ public class MCPHandler {
 
     private String getFieldOrDefault(JsonNode json, String field, String defaultValue) {
         return json.has(field) ? json.get(field).asText() : defaultValue;
+    }
+
+    /**
+     * 判断环境变量键名是否可能承载凭证（KEY/TOKEN/SECRET 等），决定是否掩码展示。
+     */
+    private boolean isSensitiveEnvKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        String upper = key.toUpperCase();
+        return upper.contains("KEY") || upper.contains("TOKEN") || upper.contains("SECRET")
+                || upper.contains("PASSWORD") || upper.contains("PASSWD") || upper.contains("CREDENTIAL");
     }
 }

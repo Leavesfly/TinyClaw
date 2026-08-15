@@ -528,8 +528,11 @@ public class SkillsSearcher {
                         result.setHasSkillFile(true);
                         String filePath = item.path("path").asText("");
                         if (!filePath.isEmpty() && !filePath.equals("SKILL.md")) {
-                            String parentDir = filePath.substring(0, filePath.lastIndexOf('/'));
-                            result.setSkillSubdir(parentDir);
+                            // 无目录前缀的文件路径 lastIndexOf 返回 -1，需先判断避免越界截取
+                            int slashIndex = filePath.lastIndexOf('/');
+                            if (slashIndex > 0) {
+                                result.setSkillSubdir(filePath.substring(0, slashIndex));
+                            }
                         }
                         results.add(result);
                     }

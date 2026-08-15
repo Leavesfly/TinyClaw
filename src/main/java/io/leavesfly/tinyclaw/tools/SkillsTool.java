@@ -392,7 +392,7 @@ public class SkillsTool implements Tool {
      * @throws Exception 创建失败时抛出异常
      */
     private String executeCreate(Map<String, Object> args) throws Exception {
-        String skillName = requireParam(args, "name", "create");
+        String skillName = validateSkillName(requireParam(args, "name", "create"));
 
         String content = (String) args.get("content");
         String skillDescription = (String) args.get("skill_description");
@@ -407,7 +407,7 @@ public class SkillsTool implements Tool {
         // 确保内容包含 frontmatter
         content = ensureFrontmatter(content, skillName, skillDescription);
 
-        Path skillDir = Paths.get(workspace, "skills", skillName);
+        Path skillDir = resolveSkillDir(skillName);
         Path skillFile = skillDir.resolve("SKILL.md");
 
         if (Files.exists(skillFile)) {
@@ -435,11 +435,11 @@ public class SkillsTool implements Tool {
      * @throws Exception 编辑失败时抛出异常
      */
     private String executeEdit(Map<String, Object> args) throws Exception {
-        String skillName = requireParam(args, "name", "edit");
+        String skillName = validateSkillName(requireParam(args, "name", "edit"));
         String content = requireParam(args, "content", "edit");
 
         // 查找技能文件
-        Path workspaceSkillFile = Paths.get(workspace, "skills", skillName, "SKILL.md");
+        Path workspaceSkillFile = resolveSkillDir(skillName).resolve("SKILL.md");
 
         if (!Files.exists(workspaceSkillFile)) {
             // 检查技能是否存在于其他位置（global/builtin）
@@ -482,9 +482,9 @@ public class SkillsTool implements Tool {
      * @throws Exception 删除失败时抛出异常
      */
     private String executeRemove(Map<String, Object> args) throws Exception {
-        String skillName = requireParam(args, "name", "remove");
+        String skillName = validateSkillName(requireParam(args, "name", "remove"));
 
-        Path skillDir = Paths.get(workspace, "skills", skillName);
+        Path skillDir = resolveSkillDir(skillName);
         if (!Files.exists(skillDir)) {
             return "技能 '" + skillName + "' 在工作空间技能目录中未找到。";
         }
@@ -494,6 +494,37 @@ public class SkillsTool implements Tool {
         logger.info("AI removed skill", Map.of("skill", skillName));
 
         return "✓ 技能 '" + skillName + "' 已成功删除。";
+    }
+
+    /**
+     * 校验技能名称，防止路径穿越（如 "../../etc"）。
+     *
+     * @param skillName 待校验的技能名称
+     * @return 校验通过的技能名称
+     * @throws IllegalArgumentException 名称含路径分隔符或非法字符时抛出
+     */
+    private String validateSkillName(String skillName) {
+        if (skillName == null || skillName.isEmpty()
+                || skillName.contains("..") || skillName.contains("/") || skillName.contains("\\")
+                || skillName.equals(".") || skillName.trim().isEmpty()) {
+            throw new IllegalArgumentException("非法技能名称: " + skillName);
+        }
+        return skillName;
+    }
+
+    /**
+     * 将技能名称解析为 workspace/skills 下的目录，并确认未越界。
+     *
+     * @param skillName 已校验的技能名称
+     * @return 技能目录路径
+     */
+    private Path resolveSkillDir(String skillName) {
+        Path skillsRoot = Paths.get(workspace, "skills").normalize();
+        Path skillDir = skillsRoot.resolve(skillName).normalize();
+        if (!skillDir.startsWith(skillsRoot)) {
+            throw new IllegalArgumentException("非法技能名称: " + skillName);
+        }
+        return skillDir;
     }
 
     /**

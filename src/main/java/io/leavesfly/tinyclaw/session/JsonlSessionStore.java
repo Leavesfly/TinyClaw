@@ -370,7 +370,7 @@ public class JsonlSessionStore implements SessionStore {
         createWithOwnerOnlyPermissions(path);
         try (FileChannel channel = FileChannel.open(path,
                 StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
-            channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+            writeFully(channel, ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
             channel.force(true);
         }
     }
@@ -385,7 +385,7 @@ public class JsonlSessionStore implements SessionStore {
             createWithOwnerOnlyPermissions(temp);
             try (FileChannel channel = FileChannel.open(temp,
                     StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                channel.write(ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
+                writeFully(channel, ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
                 channel.force(true);
             }
             try {
@@ -397,6 +397,16 @@ public class JsonlSessionStore implements SessionStore {
             syncDirectory(target.getParent());
         } finally {
             Files.deleteIfExists(temp);
+        }
+    }
+
+    /**
+     * 将 buffer 完整写入 channel：FileChannel.write 可能发生短写，需循环写至耗尽，
+     * 否则记录行被截断会导致会话数据丢失。
+     */
+    private void writeFully(FileChannel channel, ByteBuffer buffer) throws IOException {
+        while (buffer.hasRemaining()) {
+            channel.write(buffer);
         }
     }
 

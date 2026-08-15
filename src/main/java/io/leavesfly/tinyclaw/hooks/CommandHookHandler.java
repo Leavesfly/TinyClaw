@@ -13,7 +13,10 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 基于外部 shell 命令的 Hook handler，对齐 Claude Code 的 command 类型协议。
@@ -90,6 +93,14 @@ public final class CommandHookHandler implements HookHandler {
         try {
             process = startProcess();
             writeStdin(process, payload);
+            // 并行消费输出流：子进程输出超过管道缓冲区时会阻塞在写 stdout 上，
+            // 若不边等边读，waitFor 会一直挂到超时
+            final Process proc = process;
+            CompletableFuture<String> stdoutFuture =
+                    CompletableFuture.supplyAsync(() -> readQuietly(proc.getInputStream()));
+            CompletableFuture<String> stderrFuture =
+                    CompletableFuture.supplyAsync(() -> readQuietly(proc.getErrorStream()));
+
             boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroyForcibly();
@@ -100,10 +111,10 @@ public final class CommandHookHandler implements HookHandler {
             }
 
             int exitCode = process.exitValue();
-            String stdout = readAll(process.getInputStream());
-            String stderr = readAll(process.getErrorStream());
+            String stdout = stdoutFuture.get(5, TimeUnit.SECONDS);
+            String stderr = stderrFuture.get(5, TimeUnit.SECONDS);
             return interpret(exitCode, stdout, stderr, ctx);
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException | InterruptedException | ExecutionException | TimeoutException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
@@ -149,6 +160,17 @@ public final class CommandHookHandler implements HookHandler {
         }
         byte[] bytes = in.readAllBytes();
         return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    /** 供异步线程使用的读取方法，异常时返回空串（fail-open 语义）。 */
+    private String readQuietly(InputStream in) {
+        try {
+            return readAll(in);
+        } catch (IOException e) {
+            logger.warn("Failed to read hook process output", Map.of(
+                    "command", command, "error", e.getMessage()));
+            return "";
+        }
     }
 
     /**

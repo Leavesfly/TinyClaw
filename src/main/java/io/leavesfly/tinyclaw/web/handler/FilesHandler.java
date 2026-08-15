@@ -34,6 +34,9 @@ public class FilesHandler {
     /** 缓存控制：图片缓存 1 小时 */
     private static final String CACHE_CONTROL_VALUE = "public, max-age=3600";
 
+    /** 文件服务大小上限（20MB），超过则拒绝整块读入内存 */
+    private static final long MAX_SERVE_FILE_BYTES = 20L * 1024 * 1024;
+
     private final Config config;
     private final SecurityMiddleware security;
 
@@ -140,12 +143,23 @@ public class FilesHandler {
      * 发送文件内容到客户端。
      */
     private void sendFile(HttpExchange exchange, Path filePath, String corsOrigin) throws IOException {
+        // 大文件拒绝整块读入内存，防止堆耗尽
+        long fileSize = Files.size(filePath);
+        if (fileSize > MAX_SERVE_FILE_BYTES) {
+            WebUtils.sendJson(exchange, 413, WebUtils.errorJson("File too large"), corsOrigin);
+            return;
+        }
         byte[] fileBytes = Files.readAllBytes(filePath);
         String contentType = getContentType(filePath.toString());
         
         exchange.getResponseHeaders().set(WebUtils.HEADER_CONTENT_TYPE, contentType);
         exchange.getResponseHeaders().set(WebUtils.HEADER_CORS, corsOrigin);
         exchange.getResponseHeaders().set(WebUtils.HEADER_CACHE_CONTROL, CACHE_CONTROL_VALUE);
+        // 禁止 MIME 嗅探；SVG 可内嵌脚本，额外用 CSP 禁用脚本执行，防存储型 XSS
+        exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        if (contentType.contains("svg")) {
+            exchange.getResponseHeaders().set("Content-Security-Policy", "script-src 'none'");
+        }
         exchange.sendResponseHeaders(200, fileBytes.length);
         
         try (OutputStream os = exchange.getResponseBody()) {
