@@ -89,7 +89,7 @@ public class DemoCommand extends CliCommand {
             
             // 确定模型名称
             if ("ollama".equals(providerName)) {
-                modelName = "qwen3:4b-instruct-2507-q8_0";
+                modelName = "qwen3.5:4b";
                 config.getAgent().setModel(modelName);
 
             } else {

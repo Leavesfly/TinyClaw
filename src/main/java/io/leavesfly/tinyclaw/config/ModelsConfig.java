@@ -26,7 +26,7 @@ public class ModelsConfig {
 
         // 通义千问系列
 //        definitions.put("qwen-latest-series-invite-beta-v84", new ModelDefinition("dashscope", "qwen-latest-series-invite-beta-v84", 200000));
-        definitions.put("qwen-latest-series-invite-beta-v84", new ModelDefinition("dashscope", "qwen-latest-series-invite-beta-v84", 200000));
+//        definitions.put("qwen-latest-series-invite-beta-v84", new ModelDefinition("dashscope", "qwen-latest-series-invite-beta-v84", 200000));
         definitions.put("qwen3.6-plus", new ModelDefinition("dashscope", "qwen3.6-plus", 128000));
         definitions.put("qwen3.7-plus", new ModelDefinition("dashscope", "qwen3.7-plus", 128000));
 
@@ -46,8 +46,8 @@ public class ModelsConfig {
         definitions.put("gemini-2.0-flash-exp", new ModelDefinition("gemini", "gemini-2.0-flash-exp", 1000000));
 
         // 本地模型示例
-        definitions.put("llama3.1", new ModelDefinition("ollama", "llama3.1", 128000));
-        definitions.put("qwen3:4b-instruct-2507-q8_0", new ModelDefinition("ollama", "qwen3:4b-instruct-2507-q8_0", 128000));
+        definitions.put("qwen3.8:27b-mlx", new ModelDefinition("ollama", "qwen3.8:27b-mlx", 128000));
+        definitions.put("qwen3.5:4b", new ModelDefinition("ollama", "qwen3.5:4b", 128000));
 
     }
 
