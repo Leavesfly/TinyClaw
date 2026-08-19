@@ -197,10 +197,26 @@ public class SessionManager {
      * 改写后的最终文本；若由 executor 先写一份，会造成存储的内容与用户实际看到的不一致。</p>
      */
     public void recordReply(String sessionKey, String reply) {
+        recordReply(sessionKey, reply, null);
+    }
+
+    /**
+     * 记录最终回复并附带思考过程（可选）。
+     *
+     * <p>思考内容仅用于前端历史回放展示，不会进入后续 LLM 上下文
+     * （请求体由 LLMRequestBuilder 逐字段构造，不读取 thinking 字段）。</p>
+     *
+     * @param thinking 思考过程全文，null 或空串表示无思考内容
+     */
+    public void recordReply(String sessionKey, String reply, String thinking) {
         if (reply == null || reply.isEmpty()) {
             return;
         }
-        addMessage(sessionKey, "assistant", reply);
+        Message message = Message.assistant(reply);
+        if (thinking != null && !thinking.isEmpty()) {
+            message.setThinking(thinking);
+        }
+        addFullMessage(sessionKey, message);
         save(sessionKey);
     }
 

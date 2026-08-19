@@ -65,6 +65,27 @@ class SessionStoreTest {
     }
 
     @Test
+    @DisplayName("思考过程持久化: recordReply 带 thinking 后重新加载完整还原")
+    void recordReplyWithThinking_SurvivesReload(@TempDir Path dir) throws IOException {
+        String key = "web:thinking";
+
+        SessionManager first = new SessionManager(dir.toString());
+        first.addMessage(key, "user", "9.8 和 9.11 哪个大？");
+        first.save(key);
+        first.recordReply(key, "9.8 更大", "先比较整数部分，都是 9，再比较小数部分 8 > 1");
+        first.close();
+
+        SessionManager reloaded = new SessionManager(dir.toString());
+        List<Message> history = reloaded.getHistory(key);
+
+        assertEquals(2, history.size());
+        assertNull(history.get(0).getThinking(), "user 消息无思考内容");
+        assertEquals("9.8 更大", history.get(1).getContent());
+        assertEquals("先比较整数部分，都是 9，再比较小数部分 8 > 1", history.get(1).getThinking());
+        reloaded.close();
+    }
+
+    @Test
     @DisplayName("增量落盘: 只追加新增内容，不重写已有行")
     void appendOnly_DoesNotRewriteExistingLines(@TempDir Path dir) throws IOException {
         String key = "cli:direct";

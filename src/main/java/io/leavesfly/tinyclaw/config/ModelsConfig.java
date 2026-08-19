@@ -46,7 +46,8 @@ public class ModelsConfig {
         definitions.put("gemini-2.0-flash-exp", new ModelDefinition("gemini", "gemini-2.0-flash-exp", 1000000));
 
         // 本地模型示例
-        definitions.put("qwen3.8:27b-mlx", new ModelDefinition("ollama", "qwen3.8:27b-mlx", 128000));
+//        definitions.put("huihui_ai/Qwen3.8-abliterated:27b-q2_K", new ModelDefinition("ollama", "huihui_ai/Qwen3.8-abliterated:27b-q2_K", 128000));
+        definitions.put("orcarouter/Qwen3.8-27B-Uncensored:q4_K_S", new ModelDefinition("ollama", "orcarouter/Qwen3.8-27B-Uncensored:q4_K_S", 128000));
         definitions.put("qwen3.5:4b", new ModelDefinition("ollama", "qwen3.5:4b", 128000));
 
     }

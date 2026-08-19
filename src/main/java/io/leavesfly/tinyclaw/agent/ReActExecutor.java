@@ -202,6 +202,14 @@ public class ReActExecutor {
     }
     
     /**
+     * 流式执行结果：最终回复内容 + 本次执行累积的思考过程。
+     *
+     * @param content  最终回答内容
+     * @param thinking 思考过程全文（无思考时为空串）
+     */
+    public record StreamResult(String content, String thinking) {}
+    
+    /**
      * 执行 LLM 流式迭代循环。
      * 
      * 与普通迭代循环相同，但支持流式输出响应内容。
@@ -215,15 +223,42 @@ public class ReActExecutor {
      */
     public String executeStream(List<Message> messages, String sessionKey, 
                                LLMProvider.StreamCallback callback) throws Exception {
-        LLMProvider.EnhancedStreamCallback enhancedCallback = LLMProvider.EnhancedStreamCallback.wrap(callback);
+        return executeStreamWithThinking(messages, sessionKey, callback).content();
+    }
+
+    /**
+     * 执行 LLM 流式迭代循环，并额外返回累积的思考过程。
+     *
+     * <p>思考内容仅透传给调用方用于持久化展示，不会进入后续 LLM 上下文。</p>
+     *
+     * @param messages 完整的对话历史
+     * @param sessionKey 会话标识符
+     * @param callback 流式内容回调函数
+     * @return 包含最终回复与思考过程的结构化结果
+     * @throws Exception 调用 LLM 或执行工具时的异常
+     */
+    public StreamResult executeStreamWithThinking(List<Message> messages, String sessionKey,
+                                                  LLMProvider.StreamCallback callback) throws Exception {
+        // 包装回调：拦截 THINKING 事件累积思考内容，其余事件原样透传
+        LLMProvider.EnhancedStreamCallback wrapped = LLMProvider.EnhancedStreamCallback.wrap(callback);
+        StringBuilder thinkingBuffer = new StringBuilder();
+        LLMProvider.EnhancedStreamCallback enhancedCallback = event -> {
+            if (event.getType() == StreamEvent.EventType.THINKING && event.getContent() != null) {
+                thinkingBuffer.append(event.getContent());
+            }
+            wrapped.onEvent(event);
+        };
         ExecutionState state = new ExecutionState(enhancedCallback);
         activeExecutions.add(state);
         
         try {
-            return executeLoop(messages, sessionKey, callback, state,
-                msgs -> callLLMStream(msgs, callback, sessionKey),
+            // 传 enhancedCallback 而非原始 callback：LLM 流中的 THINKING 等结构化事件
+            // 需要 EnhancedStreamCallback 才能透出（普通回调只能接收文本 chunk）
+            String content = executeLoop(messages, sessionKey, wrapped, state,
+                msgs -> callLLMStream(msgs, enhancedCallback, sessionKey),
                 (msgs, toolCalls, sk, iter) -> executeToolCallsWithStream(msgs, toolCalls, sk, iter, enhancedCallback)
             );
+            return new StreamResult(content, thinkingBuffer.toString());
         } finally {
             activeExecutions.remove(state);
             persistGeneratedMessages(sessionKey);

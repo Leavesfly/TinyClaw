@@ -2202,14 +2202,64 @@ body {
 }
 
 /* Thinking 块 */
-.thinking-block {
-    margin: 6px 0;
-    padding: 8px 12px;
-    border-left: 3px solid var(--border);
-    color: var(--text-secondary);
+/* 思维链折叠卡片（THINKING 事件）：结构复用 tool-call-card 风格，配色更柔和 */
+.thinking-card {
+    margin: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--card);
     font-size: 13px;
+}
+
+.thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    user-select: none;
+    background: var(--bg);
+    transition: background 0.15s;
+}
+
+.thinking-header:hover {
+    background: var(--border);
+}
+
+.thinking-name {
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.thinking-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.thinking-card.expanded .tool-call-toggle {
+    transform: rotate(180deg);
+}
+
+.thinking-body {
+    display: none;
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+    color: var(--text-secondary);
     font-style: italic;
     line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.thinking-card.expanded .thinking-body {
+    display: block;
 }
 
 /* Markdown 渲染样式 */

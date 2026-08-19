@@ -577,10 +577,11 @@ public class AgentRuntime {
         sessions.save(sessionKey); // 在 LLM 调用前先持久化用户消息，防止异常时丢失
 
         ProviderComponents comps = providerManager.getComponents();
-        String response = ensureNonBlank(
-                comps.reActExecutor.executeStream(messages, sessionKey, callback), DEFAULT_EMPTY_RESPONSE);
+        ReActExecutor.StreamResult streamResult = comps.reActExecutor
+                .executeStreamWithThinking(messages, sessionKey, callback);
+        String response = ensureNonBlank(streamResult.content(), DEFAULT_EMPTY_RESPONSE);
 
-        messageRouter.persistAndSummarize(sessionKey, response);
+        messageRouter.persistAndSummarize(sessionKey, response, streamResult.thinking());
         return response;
     }
 

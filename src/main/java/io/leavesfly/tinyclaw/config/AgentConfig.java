@@ -81,6 +81,14 @@ public class AgentConfig {
     private boolean restrictToWorkspace;
 
     /**
+     * 思考模式开关
+     * <p>默认开启：不注入任何关闭参数，由模型自行决定是否思考。
+     * 关闭后请求中会按 provider 差异注入关闭参数
+     * （ollama 用 reasoning_effort=none，其他用 enable_thinking=false）。</p>
+     */
+    private boolean thinkingEnabled = true;
+
+    /**
      * 命令黑名单
      * <p>禁止执行的命令列表，为空时使用默认黑名单</p>
      */
@@ -300,6 +308,24 @@ public class AgentConfig {
      */
     public void setRestrictToWorkspace(boolean restrictToWorkspace) {
         this.restrictToWorkspace = restrictToWorkspace;
+    }
+
+    /**
+     * 检查思考模式是否启用
+     *
+     * @return 启用时返回 true（默认）
+     */
+    public boolean isThinkingEnabled() {
+        return thinkingEnabled;
+    }
+
+    /**
+     * 设置思考模式开关
+     *
+     * @param thinkingEnabled 是否启用思考模式
+     */
+    public void setThinkingEnabled(boolean thinkingEnabled) {
+        this.thinkingEnabled = thinkingEnabled;
     }
 
     /**

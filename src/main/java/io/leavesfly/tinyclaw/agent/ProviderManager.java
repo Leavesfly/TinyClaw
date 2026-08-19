@@ -109,7 +109,11 @@ class ProviderManager {
         }
 
         String apiBase = providerConfig.getApiBaseOrDefault(ProvidersConfig.getDefaultApiBase(providerName));
-        setProvider(new HTTPProvider(providerConfig.getApiKey(), apiBase));
+        // 必须携带 providerName：思考模式关闭参数按 name 区分（ollama 用 reasoning_effort，
+        // 其他用 enable_thinking），name 缺失会导致 ollama 注入错误参数而不生效
+        HTTPProvider newProvider = new HTTPProvider(providerConfig.getApiKey(), apiBase, providerName);
+        newProvider.setThinkingEnabled(config.getAgent().isThinkingEnabled());
+        setProvider(newProvider);
 
         logger.info("Model reloaded successfully", Map.of("provider", providerName, "model", modelName));
         return true;

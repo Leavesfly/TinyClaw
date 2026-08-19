@@ -8,6 +8,7 @@ import io.leavesfly.tinyclaw.config.AgentConfig;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -97,6 +98,7 @@ public class ConfigHandler {
                 result.put("heartbeatIntervalSeconds", agentConfig.getHeartbeat().getIntervalSeconds());
                 result.put("heartbeatTimeoutSeconds",  agentConfig.getHeartbeat().getTimeoutSeconds());
                 result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
+                result.put("thinkingEnabled",     agentConfig.isThinkingEnabled());
                 WebUtils.sendJson(exchange, 200, result, corsOrigin);
 
             } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
@@ -113,7 +115,12 @@ public class ConfigHandler {
                 if (json.has("heartbeatTimeoutSeconds"))
                     agentConfig.getHeartbeat().setTimeoutSeconds(json.get("heartbeatTimeoutSeconds").asInt());
                 if (json.has("restrictToWorkspace")) agentConfig.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
+                if (json.has("thinkingEnabled"))    agentConfig.setThinkingEnabled(json.get("thinkingEnabled").asBoolean());
                 WebUtils.saveConfig(config, logger);
+                // 思考模式开关热更新：直接作用于当前 provider，无需重建即可生效
+                if (agentRuntime != null && agentRuntime.getProvider() instanceof HTTPProvider httpProvider) {
+                    httpProvider.setThinkingEnabled(agentConfig.isThinkingEnabled());
+                }
                 WebUtils.sendJson(exchange, 200, WebUtils.successJson("Agent config updated"), corsOrigin);
 
             } else {

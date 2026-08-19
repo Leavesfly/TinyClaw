@@ -17,6 +17,8 @@ public class Message {
     
     private String role;
     private String content;
+    /** 思考过程（仅 assistant 消息）：仅用于持久化展示，不会进入 LLM 请求上下文 */
+    private String thinking;
     private List<String> images;  // 图片路径列表，支持多模态
     private List<ToolCall> toolCalls;
     private String toolCallId;
@@ -48,6 +50,14 @@ public class Message {
     
     public void setContent(String content) {
         this.content = content;
+    }
+    
+    public String getThinking() {
+        return thinking;
+    }
+    
+    public void setThinking(String thinking) {
+        this.thinking = thinking;
     }
     
     public List<String> getImages() {

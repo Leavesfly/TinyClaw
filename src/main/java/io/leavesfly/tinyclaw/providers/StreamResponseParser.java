@@ -91,6 +91,16 @@ public class StreamResponseParser {
                         continue;
                     }
                     
+                    // 处理思维链内容（ollama 用 reasoning，dashscope/deepseek 等用 reasoning_content）
+                    // 不计入最终回复正文，仅通过 THINKING 事件实时透出供前端折叠展示
+                    String reasoningChunk = extractText(delta, "reasoning");
+                    if (reasoningChunk == null) {
+                        reasoningChunk = extractText(delta, "reasoning_content");
+                    }
+                    if (reasoningChunk != null && callback instanceof LLMProvider.EnhancedStreamCallback enhanced) {
+                        enhanced.onEvent(StreamEvent.thinking(reasoningChunk));
+                    }
+                    
                     // 处理流式内容
                     if (delta.has("content") && !delta.get("content").isNull()) {
                         String content = delta.get("content").asText();
@@ -226,6 +236,21 @@ public class StreamResponseParser {
         ));
         
         return response;
+    }
+    
+    /**
+     * 提取 delta 中指定字段的非空文本值。
+     *
+     * @param delta delta 节点
+     * @param field 字段名
+     * @return 字段文本值，字段不存在、为 null 或空串时返回 null
+     */
+    private String extractText(JsonNode delta, String field) {
+        if (!delta.has(field) || delta.get(field).isNull()) {
+            return null;
+        }
+        String value = delta.get(field).asText();
+        return value.isEmpty() ? null : value;
     }
     
     /**

@@ -123,6 +123,10 @@ public class SessionsHandler {
                     ObjectNode m = WebUtils.MAPPER.createObjectNode();
                     m.put("role", msg.getRole());
                     m.put("content", msg.getContent() != null ? msg.getContent() : "");
+                    // 思考过程（仅 assistant 消息可能有），供前端历史回放还原折叠卡片
+                    if (msg.getThinking() != null && !msg.getThinking().isEmpty()) {
+                        m.put("thinking", msg.getThinking());
+                    }
                     // 添加图片字段（多模态支持）
                     if (msg.hasImages()) {
                         ArrayNode imagesArray = m.putArray("images");

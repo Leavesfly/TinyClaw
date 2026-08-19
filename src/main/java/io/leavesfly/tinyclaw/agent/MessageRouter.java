@@ -197,9 +197,9 @@ class MessageRouter {
         }
 
         boolean usedStreaming = isStreamingChannel(msg);
-        String response = ensureNonBlank(
-                executeWithStreamingIfSupported(msg, messages, sessionKey, usedStreaming),
-                DEFAULT_EMPTY_RESPONSE);
+        ReActExecutor.StreamResult streamResult =
+                executeWithStreamingIfSupported(msg, messages, sessionKey, usedStreaming);
+        String response = ensureNonBlank(streamResult.content(), DEFAULT_EMPTY_RESPONSE);
 
         // ---------- Stop ----------
         HookContext stopCtx = HookContext.builder(HookEvent.STOP)
@@ -221,7 +221,7 @@ class MessageRouter {
                     "session_key", sessionKey == null ? "" : sessionKey));
         }
 
-        persistAndSummarize(sessionKey, response);
+        persistAndSummarize(sessionKey, response, streamResult.thinking());
         publishReplyIfNeeded(msg, response);
         return response;
     }
@@ -288,13 +288,14 @@ class MessageRouter {
      * @param usedStreaming 是否走流式路径
      * @return LLM 生成的完整回复内容
      */
-    private String executeWithStreamingIfSupported(InboundMessage msg,
+    private ReActExecutor.StreamResult executeWithStreamingIfSupported(InboundMessage msg,
                                                    List<Message> messages,
                                                    String sessionKey,
                                                    boolean usedStreaming) throws Exception {
         if (!usedStreaming) {
             ProviderComponents comps = providerManager.getComponents();
-            return comps.reActExecutor.execute(messages, sessionKey);
+            return new ReActExecutor.StreamResult(
+                    comps.reActExecutor.execute(messages, sessionKey), "");
         }
 
         Channel channel = channelManager.getChannel(msg.getChannel()).orElse(null);
@@ -302,7 +303,7 @@ class MessageRouter {
 
         logger.info("Using streaming output for channel", Map.of("channel", msg.getChannel()));
         ProviderComponents comps = providerManager.getComponents();
-        return comps.reActExecutor.executeStream(messages, sessionKey, streamingCallback);
+        return comps.reActExecutor.executeStreamWithThinking(messages, sessionKey, streamingCallback);
     }
 
     /**
@@ -375,7 +376,14 @@ class MessageRouter {
      * 保存助手回复并按需触发会话摘要。
      */
     void persistAndSummarize(String sessionKey, String response) {
-        sessions.recordReply(sessionKey, response);
+        persistAndSummarize(sessionKey, response, null);
+    }
+
+    /**
+     * 保存助手回复（含可选的思考过程）并按需触发会话摘要。
+     */
+    void persistAndSummarize(String sessionKey, String response, String thinking) {
+        sessions.recordReply(sessionKey, response, thinking);
         ProviderComponents comps = providerManager.getComponents();
         comps.summarizer.maybeSummarize(sessionKey);
     }

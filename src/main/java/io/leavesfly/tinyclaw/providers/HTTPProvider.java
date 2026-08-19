@@ -53,6 +53,18 @@ public class HTTPProvider implements LLMProvider {
     private final OkHttpClient httpClient;    // HTTP 客户端
     private final LLMRequestBuilder requestBuilder;       // 请求构建器
     private final StreamResponseParser responseParser;    // 响应解析器
+    
+    /** 思考模式开关（默认开启）：关闭时请求中注入对应 provider 的关闭参数 */
+    private volatile boolean thinkingEnabled = true;
+    
+    /**
+     * 设置思考模式开关，保存配置后可热更新，无需重建 Provider。
+     *
+     * @param thinkingEnabled 是否启用思考模式
+     */
+    public void setThinkingEnabled(boolean thinkingEnabled) {
+        this.thinkingEnabled = thinkingEnabled;
+    }
         
     public HTTPProvider(String apiKey, String apiBase) {
         this(apiKey, apiBase, "unknown");
@@ -86,6 +98,7 @@ public class HTTPProvider implements LLMProvider {
         } catch (Exception e) {
             throw new LLMException("构建请求体失败", e);
         }
+        applyThinkingDefaults(requestBody);
         requestBody.put("stream", true);
         // 显式要求在流式响应的最后一个 chunk 中返回 usage 信息（OpenAI 兼容 API 标准）
         ObjectNode streamOptions = requestBody.putObject("stream_options");
@@ -127,6 +140,7 @@ public class HTTPProvider implements LLMProvider {
         } catch (Exception e) {
             throw new LLMException("构建请求体失败", e);
         }
+        applyThinkingDefaults(requestBody);
         String requestJson;
         try {
             requestJson = requestBuilder.toJson(requestBody);
@@ -149,6 +163,33 @@ public class HTTPProvider implements LLMProvider {
             return responseParser.parseResponse(responseBody);
         } catch (IOException e) {
             throw new LLMException("执行请求失败", e);
+        }
+    }
+    
+    /**
+     * 按思考模式开关注入对应参数。
+     * 
+     * 开启（默认）：不注入任何参数，由模型自行决定是否思考。
+     * 关闭：按 provider 差异注入关闭参数：
+     * - ollama 使用 {@code reasoning_effort: "none"}
+     *   （注意：顶层 think 参数仅在原生 /api/chat 生效，
+     *   本项目使用的 OpenAI 兼容 /v1/chat/completions 端点会忽略它）
+     * - 其他 OpenAI 兼容服务（如 dashscope）使用 {@code enable_thinking: false}
+     * 
+     * 若请求体中已显式携带思考参数，则以调用方设置为准，不覆盖。
+     * 
+     * @param requestBody 请求体对象
+     */
+    private void applyThinkingDefaults(ObjectNode requestBody) {
+        if (thinkingEnabled) {
+            return;
+        }
+        if ("ollama".equals(name)) {
+            if (!requestBody.has("reasoning_effort")) {
+                requestBody.put("reasoning_effort", "none");
+            }
+        } else if (!requestBody.has("enable_thinking")) {
+            requestBody.put("enable_thinking", false);
         }
     }
     
@@ -273,7 +314,9 @@ public class HTTPProvider implements LLMProvider {
             "api_base", providerConfig.apiBase
         ));
         
-        return new HTTPProvider(providerConfig.apiKey, providerConfig.apiBase, providerName);
+        HTTPProvider provider = new HTTPProvider(providerConfig.apiKey, providerConfig.apiBase, providerName);
+        provider.setThinkingEnabled(config.getAgent().isThinkingEnabled());
+        return provider;
     }
     
     /**

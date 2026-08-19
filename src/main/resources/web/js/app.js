@@ -546,7 +546,7 @@ class TinyClawConsole {
             const visibleMessages = (messages || []).filter(msg => {
                 if (msg.role === 'summary') return true; // 摘要消息始终保留
                 if (msg.role !== 'user' && msg.role !== 'assistant') return false;
-                const hasContent = msg.content || (msg.images && msg.images.length > 0);
+                const hasContent = msg.content || msg.thinking || (msg.images && msg.images.length > 0);
                 const hasToolCalls = msg.role === 'assistant' && msg.toolCallRecords && msg.toolCallRecords.length > 0;
                 return hasContent || hasToolCalls;
             });
@@ -569,13 +569,15 @@ class TinyClawConsole {
                 // 确保工具卡片能插入在正确位置（两段文字之间）
                 const lastHasToolCalls = last && last.toolCallRecords && last.toolCallRecords.length > 0;
                 if (msg.role === 'assistant' && last && last.role === 'assistant' && !lastHasToolCalls) {
-                    // 合并：用双换行分隔，保持段落感
+                    // 合并：用双换行分隔，保持段落感；思考过程同样拼接保留
                     last.content = [last.content, cleanContent].filter(Boolean).join('\n\n');
+                    last.thinking = [last.thinking, msg.thinking].filter(Boolean).join('\n\n');
                 } else {
                     mergedMessages.push({
                         role: msg.role,
                         content: cleanContent,
                         images: msg.images || [],
+                        thinking: msg.thinking || '',
                         toolCallRecords: msg.toolCallRecords || []
                     });
                 }
@@ -600,6 +602,14 @@ class TinyClawConsole {
                     continue;
                 }
                 this.addMessage(msg.content, msg.role, msg.images, false);
+                // 思考过程卡片（历史回放）：插在正文前，与流式渲染顺序一致，默认折叠
+                if (msg.role === 'assistant' && msg.thinking) {
+                    const thinkingMsgEl = messagesDiv.lastElementChild;
+                    const thinkingContentEl = thinkingMsgEl ? thinkingMsgEl.querySelector('.message-content') : null;
+                    if (thinkingContentEl) {
+                        this.prependHistoryThinkingCard(thinkingContentEl, msg.thinking);
+                    }
+                }
                 // assistant 消息后插入工具调用卡片（历史回放）
                 // 卡片必须追加到消息气泡的 .message-content 内部，与流式渲染保持一致
                 if (msg.role === 'assistant' && msg.toolCallRecords && msg.toolCallRecords.length > 0) {
@@ -740,6 +750,29 @@ class TinyClawConsole {
         if (toolName === 'collaborate' && record.collaborationDetail) {
             this.appendCollaborationTimeline(container, record.collaborationDetail);
         }
+    }
+
+    /**
+     * 历史回放时，将思考过程渲染为折叠卡片并插入到消息容器最前。
+     * 复用流式渲染的 thinking-card 样式；已完成态，默认折叠，点击可展开。
+     *
+     * @param {HTMLElement} container - 消息正文容器（.message-content）
+     * @param {string} thinking - 思考过程全文
+     */
+    prependHistoryThinkingCard(container, thinking) {
+        const card = document.createElement('div');
+        card.className = 'thinking-card';
+        card.innerHTML = `
+            <div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')">
+                <span class="tool-call-icon">💭</span>
+                <span class="thinking-name">思考过程</span>
+                <span class="thinking-status">✅ 完成</span>
+                <span class="tool-call-toggle">▼</span>
+            </div>
+            <div class="thinking-body"></div>
+        `;
+        card.querySelector('.thinking-body').textContent = thinking;
+        container.prepend(card);
     }
 
     /**
@@ -1046,6 +1079,9 @@ class TinyClawConsole {
         const toolCardMap = {};
         // subagentCardMap: taskId -> { card, bodyEl, statusEl, contentBuffer }
         const subagentCardMap = {};
+        // 当前思维链折叠卡片（THINKING 事件流式追加目标）
+        let currentThinkingDiv = null;
+        let currentThinkingContent = '';
 
         /**
          * 获取或创建当前文本输出区域（用于流式追加 CONTENT 事件）。
@@ -1080,9 +1116,45 @@ class TinyClawConsole {
         };
 
         /**
+         * 结束当前思维链卡片：标记完成、移除流式光标并折叠。
+         * 思考结束（正文开始、工具调用或流结束）时调用。
+         */
+        const finalizeThinking = () => {
+            if (!currentThinkingDiv) return;
+            const statusEl = currentThinkingDiv.querySelector('.thinking-status');
+            if (statusEl) statusEl.innerHTML = '✅ 完成';
+            currentThinkingDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+            // 思考结束后默认折叠，用户可点击展开查看
+            currentThinkingDiv.classList.remove('expanded');
+            currentThinkingDiv = null;
+            currentThinkingContent = '';
+        };
+
+        /**
+         * 处理 THINKING 事件：创建/复用思维链折叠卡片，流式追加推理内容。
+         */
+        const handleThinking = (event) => {
+            if (!currentThinkingDiv) {
+                finalizeCurrentText();
+                currentThinkingDiv = document.createElement('div');
+                currentThinkingDiv.className = 'thinking-card expanded';
+                currentThinkingDiv.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">💭</span><span class="thinking-name">思考过程</span><span class="thinking-status"><span class="tool-call-spinner"></span>思考中</span><span class="tool-call-toggle">▼</span></div><div class="thinking-body"></div>`;
+                contentDiv.appendChild(currentThinkingDiv);
+                currentThinkingContent = '';
+            }
+            currentThinkingContent += event.content || '';
+            const bodyEl = currentThinkingDiv.querySelector('.thinking-body');
+            bodyEl.textContent = currentThinkingContent;
+            const cursor = document.createElement('span');
+            cursor.className = 'streaming-cursor';
+            bodyEl.appendChild(cursor);
+        };
+
+        /**
          * 处理 TOOL_START 事件：创建工具调用卡片，显示工具名和运行状态。
          */
         const handleToolStart = (event) => {
+            finalizeThinking();
             finalizeCurrentText();
 
             const toolName = event.tool || 'unknown';
@@ -1146,6 +1218,7 @@ class TinyClawConsole {
          * 处理 SUBAGENT_START 事件：创建子代理卡片。
          */
         const handleSubagentStart = (event) => {
+            finalizeThinking();
             finalizeCurrentText();
 
             const taskId = event.taskId || 'unknown';
@@ -1229,6 +1302,8 @@ class TinyClawConsole {
 
             switch (event.type) {
                 case 'CONTENT': {
+                    // 正文开始，结束当前的思维链卡片
+                    finalizeThinking();
                     const textDiv = getOrCreateTextDiv();
                     currentTextContent += event.content || '';
                     // 流式阶段实时用 marked.parse 渲染，保证列表等 Markdown 结构正确显示
@@ -1246,10 +1321,7 @@ class TinyClawConsole {
                     break;
                 }
                 case 'THINKING': {
-                    const thinkingDiv = document.createElement('div');
-                    thinkingDiv.className = 'thinking-block';
-                    thinkingDiv.textContent = event.content || '';
-                    contentDiv.appendChild(thinkingDiv);
+                    handleThinking(event);
                     break;
                 }
                 case 'TOOL_START':
@@ -1407,6 +1479,7 @@ class TinyClawConsole {
             }
 
             // 流结束：将最后一段文本用 Markdown 渲染
+            finalizeThinking();
             finalizeCurrentText();
             // 移除所有残留的流式光标
             contentDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
@@ -2819,6 +2892,8 @@ class TinyClawConsole {
             document.getElementById('cfgHeartbeatInterval').value = config.heartbeatIntervalSeconds;
             document.getElementById('cfgHeartbeatTimeout').value = config.heartbeatTimeoutSeconds;
             document.getElementById('cfgRestrictToWorkspace').value = config.restrictToWorkspace.toString();
+            // 后端未返回时默认开启思考模式
+            document.getElementById('cfgThinkingEnabled').value = (config.thinkingEnabled !== false).toString();
         } catch (error) {
             console.error('Failed to load agent config:', error);
         }
@@ -2831,7 +2906,8 @@ class TinyClawConsole {
                 heartbeatEnabled: document.getElementById('cfgHeartbeatEnabled').value === 'true',
                 heartbeatIntervalSeconds: parseInt(document.getElementById('cfgHeartbeatInterval').value) || 0,
                 heartbeatTimeoutSeconds: parseInt(document.getElementById('cfgHeartbeatTimeout').value) || 0,
-                restrictToWorkspace: document.getElementById('cfgRestrictToWorkspace').value === 'true'
+                restrictToWorkspace: document.getElementById('cfgRestrictToWorkspace').value === 'true',
+                thinkingEnabled: document.getElementById('cfgThinkingEnabled').value === 'true'
             };
             
             await this.authFetch('/api/config/agent', {
