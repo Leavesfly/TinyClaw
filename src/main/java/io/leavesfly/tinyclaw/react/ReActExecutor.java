@@ -1,4 +1,4 @@
-package io.leavesfly.tinyclaw.agent;
+package io.leavesfly.tinyclaw.react;
 
 import io.leavesfly.tinyclaw.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.hooks.HookContext;
@@ -94,10 +94,13 @@ public class ReActExecutor {
      */
     private static final class ExecutionState {
         final LLMProvider.EnhancedStreamCallback enhancedCallback;
+        /** 本次执行归属的会话，供按会话粒度中断（可为 null） */
+        final String sessionKey;
         volatile boolean aborted;
 
-        ExecutionState(LLMProvider.EnhancedStreamCallback enhancedCallback) {
+        ExecutionState(LLMProvider.EnhancedStreamCallback enhancedCallback, String sessionKey) {
             this.enhancedCallback = enhancedCallback;
+            this.sessionKey = sessionKey;
         }
     }
     
@@ -165,12 +168,54 @@ public class ReActExecutor {
     }
 
     /**
+     * 仅中断指定会话的执行循环。
+     *
+     * <p>同一个 ReActExecutor 实例同时服务 Web 控制台与各消息通道，无参的 {@link #abort()}
+     * 会把其他会话正在跑的任务一并杀掉；用户在 Web 上点“停止”不应该影响别人在
+     * Telegram 上的任务，因此默认走按会话粒度的中断。</p>
+     *
+     * @param sessionKey 目标会话标识符
+     * @return 是否命中了至少一个活跃执行
+     */
+    public boolean abortSession(String sessionKey) {
+        if (sessionKey == null) {
+            return false;
+        }
+        boolean matched = false;
+        for (ExecutionState state : activeExecutions) {
+            if (sessionKey.equals(state.sessionKey)) {
+                state.aborted = true;
+                matched = true;
+            }
+        }
+        return matched;
+    }
+
+    /**
      * 检查当前是否有执行循环正在运行。
      *
      * @return 如果正在运行返回 true
      */
     public boolean isRunning() {
         return !activeExecutions.isEmpty();
+    }
+
+    /**
+     * 检查指定会话是否有执行循环正在运行。
+     *
+     * @param sessionKey 会话标识符
+     * @return 如果该会话正在运行返回 true
+     */
+    public boolean isSessionRunning(String sessionKey) {
+        if (sessionKey == null) {
+            return false;
+        }
+        for (ExecutionState state : activeExecutions) {
+            if (sessionKey.equals(state.sessionKey)) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
@@ -188,7 +233,7 @@ public class ReActExecutor {
      * @throws Exception 调用 LLM 或执行工具时的异常
      */
     public String execute(List<Message> messages, String sessionKey) throws Exception {
-        ExecutionState state = new ExecutionState(null);
+        ExecutionState state = new ExecutionState(null, sessionKey);
         activeExecutions.add(state);
         try {
             return executeLoop(messages, sessionKey, null, state,
@@ -248,7 +293,7 @@ public class ReActExecutor {
             }
             wrapped.onEvent(event);
         };
-        ExecutionState state = new ExecutionState(enhancedCallback);
+        ExecutionState state = new ExecutionState(enhancedCallback, sessionKey);
         activeExecutions.add(state);
         
         try {
@@ -394,7 +439,9 @@ public class ReActExecutor {
             toolExecutor.execute(messages, response.getToolCalls(), sessionKey, iteration);
 
             // 每轮工具调用后保存一次，防止多轮迭代中途崩溃丢失进度
-            sessions.save(sessionKey);
+            if (sessionKey != null) {
+                sessions.save(sessionKey);
+            }
         }
         
         if (finalContent == null) {
@@ -597,7 +644,9 @@ public class ReActExecutor {
             // 与 session 里存储的完整历史长度不同。
             String argsSummary = ToolCallRecord.truncate(args != null ? args.toString() : "", 500);
             String resultSummary = ToolCallRecord.truncate(result, 500);
-            int messageIndex = sessions.getHistory(sessionKey).size() - 1;
+            // sessionKey 为 null 或会话尚不存在时 getHistory 返回空列表，下标会算出 -1，
+            // 直接存下去会让前端回放时无法定位卡片，夹到 0 保底
+            int messageIndex = Math.max(0, sessions.getHistory(sessionKey).size() - 1);
             ToolCallRecord record = new ToolCallRecord(toolName, argsSummary, resultSummary, success, messageIndex);
             sessions.addToolCallRecord(sessionKey, record);
 

@@ -1,11 +1,9 @@
-package io.leavesfly.tinyclaw.tools;
+package io.leavesfly.tinyclaw.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import io.leavesfly.tinyclaw.mcp.MCPClient;
-import io.leavesfly.tinyclaw.mcp.MCPManager;
-import io.leavesfly.tinyclaw.mcp.MCPMessage;
-import io.leavesfly.tinyclaw.mcp.MCPServerInfo;
+import io.leavesfly.tinyclaw.tools.Tool;
+import io.leavesfly.tinyclaw.tools.ToolException;
 
 import java.util.HashMap;
 import java.util.List;

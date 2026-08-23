@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.File;
 import java.io.IOException;
@@ -369,7 +370,7 @@ public class CollaborationRecord {
             Path filePath = dirPath.resolve(fileName);
             
             // 写入文件
-            OBJECT_MAPPER.writeValue(filePath.toFile(), this);
+            JsonFileStore.writeJson(OBJECT_MAPPER, filePath, this);
             
             return filePath.toString();
         } catch (IOException e) {

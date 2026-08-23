@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.agent;
 
 import io.leavesfly.tinyclaw.memory.MemoryEvolver;
+import io.leavesfly.tinyclaw.memory.MemoryScope;
 import io.leavesfly.tinyclaw.memory.MemoryStore;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -387,13 +388,15 @@ public class SessionSummarizer {
             return; // 持久化失败时不继续写入记忆，避免数据不一致
         }
 
-        // 将摘要直接写入结构化记忆
+        // 将摘要写入结构化记忆，归属于该会话所属的聊天域：
+        // 摘要逐字复述了对话内容，写成全局可见会被注入到其他用户的上下文
         try {
             String channel = "unknown";
             if (sessionKey != null && sessionKey.contains(":")) {
                 channel = sessionKey.substring(0, sessionKey.indexOf(":"));
             }
-            memoryStore.addEntry(summary, 0.4, List.of("session", channel), "session_summary");
+            memoryStore.addEntry(MemoryScope.ofSessionKey(sessionKey), summary, 0.4,
+                    List.of("session", channel), "session_summary");
         } catch (Exception e) {
             logger.warn("Failed to write session summary to memory", Map.of(
                     "session_key", sessionKey,

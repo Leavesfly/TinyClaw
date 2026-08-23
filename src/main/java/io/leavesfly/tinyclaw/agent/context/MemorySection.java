@@ -5,7 +5,7 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 
 /**
  * 记忆上下文部分。
- * 根据当前消息和 token 预算智能选取长期记忆内容。
+ * 根据当前消息、可见归属域和 token 预算智能选取长期记忆内容。
  */
 public class MemorySection implements ContextSection {
     
@@ -17,7 +17,8 @@ public class MemorySection implements ContextSection {
     @Override
     public String build(SectionContext context) {
         int memoryBudget = calculateMemoryTokenBudget(context.getContextWindow());
-        String memoryContext = context.getMemory().getMemoryContext(context.getCurrentMessage(), memoryBudget);
+        String memoryContext = context.getMemory().getMemoryContext(
+                context.getCurrentMessage(), memoryBudget, context.getMemoryScopes());
         
         if (StringUtils.isNotBlank(memoryContext)) {
             return "# Memory\n\n" + memoryContext;

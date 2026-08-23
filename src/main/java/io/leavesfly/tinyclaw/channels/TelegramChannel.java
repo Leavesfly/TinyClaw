@@ -375,11 +375,14 @@ public class TelegramChannel extends BaseChannel {
 
             String fileUrl = "https://api.telegram.org/file/bot" + config.getToken() + "/" + filePath;
 
-            Path mediaDir = Paths.get(System.getProperty("java.io.tmpdir"), "tinyclaw_media");
+            Path mediaDir = io.leavesfly.tinyclaw.util.MediaPaths.channelMediaDir();
             Files.createDirectories(mediaDir);
 
             String fileName = fileId.substring(0, Math.min(16, fileId.length())) + extension;
-            Path localPath = mediaDir.resolve(fileName);
+            Path localPath = mediaDir.resolve(fileName).normalize();
+            if (!localPath.startsWith(mediaDir)) {
+                throw new IllegalArgumentException("非法文件名: " + fileName);
+            }
 
             try (InputStream in = new URL(fileUrl).openStream();
                  FileOutputStream out = new FileOutputStream(localPath.toFile())) {

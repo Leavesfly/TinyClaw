@@ -27,7 +27,7 @@ import java.util.Map;
  * - 只允许访问 workspace 目录下的文件
  * - 禁止路径遍历攻击（..）
  */
-public class FilesHandler {
+public class FilesHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
     
@@ -37,50 +37,44 @@ public class FilesHandler {
     /** 文件服务大小上限（20MB），超过则拒绝整块读入内存 */
     private static final long MAX_SERVE_FILE_BYTES = 20L * 1024 * 1024;
 
-    private final Config config;
-    private final SecurityMiddleware security;
-
     /**
      * 构造 FilesHandler，注入全局配置与安全中间件。
      */
     public FilesHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /**
-     * 入口路由：处理文件访问请求。
+     * 重写鉴权：不走标准 preCheck，因为 {@code <img src>} 等浏览器直接请求
+     * 无法携带 Authorization header，此接口额外支持 {@code ?token=<sessionToken>} 查询参数。
      *
-     * <p>认证策略：由于 {@code <img src>} 等浏览器直接请求不会携带 Authorization header，
-     * 此接口支持通过 {@code ?token=<sessionToken>} 查询参数进行认证。
+     * <p>同时有意不叠加限流：一个页面常一次性拉十几张图，按请求数限流会直接把图卡死。
      * 认证未启用时维持原有行为（仅路径防护）。</p>
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        // 处理 CORS 预检
-        if (security.handleCorsPreFlight(exchange)) return;
-
-        // 认证检查：认证启用时要求有效的 session token（通过查询参数或 Authorization 头）
-        if (config.getGateway().isAuthEnabled()) {
-            if (!isAuthenticated(exchange)) {
-                WebUtils.sendJson(exchange, 401, WebUtils.errorJson("Authentication required"),
-                        config.getGateway().getCorsOrigin());
-                return;
-            }
+    @Override
+    protected boolean authorize(HttpExchange exchange) throws IOException {
+        if (security.handleCorsPreFlight(exchange)) {
+            return false;
         }
-
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            if (WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleGetFile(exchange);
-            } else {
-                WebUtils.sendNotFound(exchange, corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Files API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+        if (config.getGateway().isAuthEnabled() && !isAuthenticated(exchange)) {
+            WebUtils.sendJson(exchange, 401, WebUtils.errorJson("Authentication required"),
+                    corsOrigin());
+            return false;
         }
+        return true;
+    }
+
+    /**
+     * 只处理 GET：从 workspace 下读取并返回文件。
+     */
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (!WebUtils.HTTP_METHOD_GET.equals(method)) {
+            return false;
+        }
+        handleGetFile(exchange);
+        return true;
     }
 
     /**

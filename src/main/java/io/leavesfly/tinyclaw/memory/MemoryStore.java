@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -26,14 +26,19 @@ import java.util.stream.Stream;
  * 架构：
  * - Layer 1 索引层：memory/MEMORY.md，始终注入上下文，Agent 知道"自己记得什么"
  * - Layer 2 内容层：
- *   - memory/topics/*.md，按主题组织的知识文件，按需加载
+ *   - memory/topics/*.md，全局主题知识文件，按需加载
+ *   - memory/topics/&lt;域目录&gt;/*.md，按归属域隔离的主题知识文件
  *   - memory/MEMORIES.json，带元数据的结构化记忆条目，按评分排序选取
  *
  * 核心能力：
+ * - 归属隔离：条目与主题文件均带 {@link MemoryScope}，读取时只取当前请求可见的域
  * - Token 预算控制：索引层始终注入（~200 token），内容层受预算控制
  * - 相关性检索：根据当前对话关键词匹配相关主题文件和结构化记忆
  * - 重要性排序：综合考虑重要性评分、时间衰减、访问频率
  * - 主题文件管理：autoDream 进化引擎自动整合，Agent 也可直接编辑
+ *
+ * 安全默认：不传可见域的读取重载只返回全局域内容。索引层是单份全局文件，因此只允许
+ * 承载全局安全的信息（统计量与全局主题名），不得写入任何记忆原文。
  */
 public class MemoryStore {
 
@@ -96,26 +101,38 @@ public class MemoryStore {
     // ==================== 结构化记忆操作 ====================
 
     /**
-     * 添加一条结构化记忆。
+     * 添加一条归属指定域的结构化记忆。
      *
+     * @param scope      归属域，见 {@link MemoryScope}
      * @param content    记忆内容
      * @param importance 重要性评分 (0.0 ~ 1.0)
      * @param tags       标签列表
      * @param source     来源标识（如 session_summary, per_turn, evolution, user_explicit）
      */
-    public void addEntry(String content, double importance, List<String> tags, String source) {
+    public void addEntry(String scope, String content, double importance, List<String> tags, String source) {
         writeLock.lock();
         try {
-            MemoryEntry entry = new MemoryEntry(content, importance, tags, source);
+            MemoryEntry entry = new MemoryEntry(scope, content, importance, tags, source);
             entries.add(entry);
             saveEntries();
             logger.debug("Added memory entry", Map.of(
+                    "scope", entry.getScope(),
                     "source", source,
                     "importance", importance,
                     "tags", tags != null ? tags.toString() : "[]"));
         } finally {
             writeLock.unlock();
         }
+    }
+
+    /**
+     * 添加一条全局可见的结构化记忆，用于 Agent 自身的通用知识。
+     *
+     * <p>写入前请确认内容不含特定用户或特定聊天的隐私信息——全局域会被注入到所有会话。
+     * 与用户或聊天相关的记忆应改用 {@link #addEntry(String, String, double, List, String)}。</p>
+     */
+    public void addGlobalEntry(String content, double importance, List<String> tags, String source) {
+        addEntry(MemoryScope.GLOBAL, content, importance, tags, source);
     }
 
     /**
@@ -212,13 +229,35 @@ public class MemoryStore {
     // ==================== 主题文件管理 ====================
 
     /**
-     * 读取指定主题文件的内容。
+     * 解析指定域的主题目录。
+     *
+     * <p>全局域直接用 topics 根目录，因此引入归属域之前已存在的主题文件
+     * 无需迁移，自然被归入全局主题。</p>
+     */
+    private Path topicDir(String scope) {
+        String dirName = MemoryScope.toDirName(scope);
+        return dirName == null ? Paths.get(topicsDir) : Paths.get(topicsDir, dirName);
+    }
+
+    /**
+     * 读取全局主题文件的内容。
      *
      * @param topicName 主题名称（不含 .md 后缀）
      * @return 主题内容，不存在或失败时返回空字符串
      */
     public String readTopic(String topicName) {
-        Path topicFile = Paths.get(topicsDir, topicName + ".md");
+        return readTopic(MemoryScope.GLOBAL, topicName);
+    }
+
+    /**
+     * 读取指定域下主题文件的内容。
+     *
+     * @param scope     归属域
+     * @param topicName 主题名称（不含 .md 后缀）
+     * @return 主题内容，不存在或失败时返回空字符串
+     */
+    public String readTopic(String scope, String topicName) {
+        Path topicFile = topicDir(scope).resolve(topicName + ".md");
         try {
             if (Files.exists(topicFile)) {
                 return Files.readString(topicFile);
@@ -230,17 +269,30 @@ public class MemoryStore {
     }
 
     /**
-     * 写入主题文件（创建或覆盖）。
+     * 写入全局主题文件（创建或覆盖）。
      *
      * @param topicName 主题名称（不含 .md 后缀）
      * @param content   主题内容
      */
     public void writeTopic(String topicName, String content) {
+        writeTopic(MemoryScope.GLOBAL, topicName, content);
+    }
+
+    /**
+     * 写入指定域下的主题文件（创建或覆盖）。
+     *
+     * @param scope     归属域
+     * @param topicName 主题名称（不含 .md 后缀）
+     * @param content   主题内容
+     */
+    public void writeTopic(String scope, String topicName, String content) {
         writeLock.lock();
         try {
-            Path topicFile = Paths.get(topicsDir, topicName + ".md");
-            Files.writeString(topicFile, content);
-            logger.debug("Wrote topic file", Map.of("topic", topicName));
+            Path dir = topicDir(scope);
+            ensureDirectoryExists(dir);
+            JsonFileStore.writeAtomic(dir.resolve(topicName + ".md"), content);
+            logger.debug("Wrote topic file", Map.of(
+                    "scope", MemoryScope.normalize(scope), "topic", topicName));
         } catch (IOException e) {
             logger.error("Failed to write topic: " + topicName, Map.of("error", e.getMessage()));
         } finally {
@@ -249,14 +301,21 @@ public class MemoryStore {
     }
 
     /**
-     * 列出所有主题文件名（不含 .md 后缀）。
+     * 列出全局主题文件名（不含 .md 后缀）。
      */
     public List<String> listTopics() {
-        Path topicsDirPath = Paths.get(topicsDir);
-        if (!Files.exists(topicsDirPath)) {
+        return listTopics(MemoryScope.GLOBAL);
+    }
+
+    /**
+     * 列出指定域下的主题文件名（不含 .md 后缀）。
+     */
+    public List<String> listTopics(String scope) {
+        Path dir = topicDir(scope);
+        if (!Files.exists(dir)) {
             return Collections.emptyList();
         }
-        try (Stream<Path> stream = Files.list(topicsDirPath)) {
+        try (Stream<Path> stream = Files.list(dir)) {
             return stream
                     .filter(path -> path.toString().endsWith(".md"))
                     .map(path -> {
@@ -272,15 +331,23 @@ public class MemoryStore {
     }
 
     /**
-     * 删除指定主题文件。
+     * 删除全局主题文件。
      */
     public boolean removeTopic(String topicName) {
+        return removeTopic(MemoryScope.GLOBAL, topicName);
+    }
+
+    /**
+     * 删除指定域下的主题文件。
+     */
+    public boolean removeTopic(String scope, String topicName) {
         writeLock.lock();
         try {
-            Path topicFile = Paths.get(topicsDir, topicName + ".md");
+            Path topicFile = topicDir(scope).resolve(topicName + ".md");
             if (Files.exists(topicFile)) {
                 Files.delete(topicFile);
-                logger.info("Removed topic", Map.of("topic", topicName));
+                logger.info("Removed topic", Map.of(
+                        "scope", MemoryScope.normalize(scope), "topic", topicName));
                 return true;
             }
             return false;
@@ -314,7 +381,7 @@ public class MemoryStore {
     public void writeIndex(String content) {
         writeLock.lock();
         try {
-            Files.writeString(Paths.get(indexFile), content);
+            JsonFileStore.writeAtomic(Paths.get(indexFile), content);
             logger.debug("Wrote memory index");
         } catch (IOException e) {
             logger.error("Failed to write memory index", Map.of("error", e.getMessage()));
@@ -325,25 +392,29 @@ public class MemoryStore {
 
     /**
      * 根据当前记忆状态重建索引文件。
-     * 由 autoDream 的 Prune & Index 阶段调用。
+     * 由 autoDream 的 Prune &amp; Index 阶段调用。
+     *
+     * <p>MEMORY.md 是单份全局文件且无条件注入所有会话，因此只写入全局安全的信息：
+     * 全局主题的名称与摘要、各类计数。域内主题名与任何记忆原文都不得出现——否则
+     * 某个用户的记忆会随索引泄露给其他所有用户，使条目级的归属隔离失效。</p>
      */
     public void rebuildIndex() {
         StringBuilder index = new StringBuilder();
         index.append("# Agent Memory Index\n\n");
 
-        // 主题摘要
-        List<String> topics = listTopics();
+        // 全局主题摘要（域内主题不入索引，由读取时按可见域动态加载）
+        List<String> topics = listTopics(MemoryScope.GLOBAL);
         if (!topics.isEmpty()) {
             index.append("## Topics\n\n");
             for (String topic : topics) {
-                String content = readTopic(topic);
+                String content = readTopic(MemoryScope.GLOBAL, topic);
                 String firstLine = extractFirstMeaningfulLine(content);
                 index.append("- **").append(topic).append("**: ").append(firstLine).append("\n");
             }
             index.append("\n");
         }
 
-        // 结构化记忆统计
+        // 结构化记忆统计：只给计数，不列任何条目内容
         int entryCount = entries.size();
         if (entryCount > 0) {
             index.append("## Structured Memories\n\n");
@@ -356,17 +427,12 @@ public class MemoryStore {
                         .append(sourceEntry.getValue()).append("\n");
             }
 
-            index.append("\n### Top Memories\n\n");
-            entries.stream()
-                    .sorted(Comparator.comparingDouble(MemoryEntry::computeScore).reversed())
-                    .limit(5)
-                    .forEach(entry -> {
-                        String truncated = entry.getContent().length() > 80
-                                ? entry.getContent().substring(0, 80) + "..."
-                                : entry.getContent();
-                        index.append("- ").append(truncated).append("\n");
-                    });
-            index.append("\n");
+            long scopeCount = entries.stream()
+                    .map(entry -> MemoryScope.normalize(entry.getScope()))
+                    .distinct()
+                    .count();
+            index.append("- Scopes: ").append(scopeCount).append("\n");
+            index.append("\n相关记忆会根据当前发言人与聊天的归属域自动注入，不在此处展开。\n\n");
         }
 
         index.append("## Meta\n\n");
@@ -379,21 +445,25 @@ public class MemoryStore {
     // ==================== 记忆上下文构建 ====================
 
     /**
-     * 获取格式化的记忆上下文，带 token 预算控制和相关性检索。
+     * 获取格式化的记忆上下文，带 token 预算控制、归属域过滤和相关性检索。
      *
      * 构建策略：
      * - 索引层（MEMORY.md）：始终注入，不计入预算
-     * - 主题文件：按关键词匹配相关主题，占 50% 预算
-     * - 结构化记忆：按评分排序选取，占 50% 预算
+     * - 主题文件：仅取可见域下的主题，按关键词匹配，占 50% 预算
+     * - 结构化记忆：仅取可见域下的条目，按评分排序选取，占 50% 预算
      *
      * @param currentMessage 当前用户消息，用于相关性匹配
      * @param tokenBudget    记忆部分的 token 预算上限
+     * @param visibleScopes  本次请求可见的归属域集合，null 或空时退化为仅全局域
      * @return 格式化的记忆上下文
      */
-    public String getMemoryContext(String currentMessage, int tokenBudget) {
+    public String getMemoryContext(String currentMessage, int tokenBudget, Set<String> visibleScopes) {
         if (tokenBudget <= 0) {
             tokenBudget = DEFAULT_MEMORY_TOKEN_BUDGET;
         }
+        Set<String> scopes = (visibleScopes == null || visibleScopes.isEmpty())
+                ? MemoryScope.globalOnly()
+                : visibleScopes;
 
         List<String> keywords = extractKeywords(currentMessage);
         List<String> parts = new ArrayList<>();
@@ -406,14 +476,14 @@ public class MemoryStore {
 
         // 主题文件：按关键词匹配，占 50% 预算
         int topicsBudget = (int) (tokenBudget * TOPICS_TOKEN_RATIO);
-        String topicsSection = buildTopicsSection(keywords, topicsBudget);
+        String topicsSection = buildTopicsSection(scopes, keywords, topicsBudget);
         if (StringUtils.isNotBlank(topicsSection)) {
             parts.add(topicsSection);
         }
 
         // 结构化记忆：按评分排序，占 50% 预算
         int structuredBudget = (int) (tokenBudget * STRUCTURED_MEMORY_TOKEN_RATIO);
-        String structuredSection = buildStructuredMemorySection(keywords, structuredBudget);
+        String structuredSection = buildStructuredMemorySection(scopes, keywords, structuredBudget);
         if (StringUtils.isNotBlank(structuredSection)) {
             parts.add(structuredSection);
         }
@@ -426,39 +496,47 @@ public class MemoryStore {
     }
 
     /**
-     * 无参版本，使用默认预算且不做相关性过滤。
+     * 安全默认重载：拿不到身份信息时只返回全局域内容。
      */
-    public String getMemoryContext() {
-        return getMemoryContext(null, DEFAULT_MEMORY_TOKEN_BUDGET);
+    public String getMemoryContext(String currentMessage, int tokenBudget) {
+        return getMemoryContext(currentMessage, tokenBudget, MemoryScope.globalOnly());
     }
 
     /**
-     * 构建主题文件部分。按关键词匹配相关主题，按 token 预算加载。
+     * 无参版本，使用默认预算、不做相关性过滤，且仅全局域可见。
      */
-    private String buildTopicsSection(List<String> keywords, int tokenBudget) {
-        List<String> topics = listTopics();
-        if (topics.isEmpty() || tokenBudget <= 0) {
+    public String getMemoryContext() {
+        return getMemoryContext(null, DEFAULT_MEMORY_TOKEN_BUDGET, MemoryScope.globalOnly());
+    }
+
+    /**
+     * 构建主题文件部分。遍历所有可见域，按关键词匹配相关主题，按 token 预算加载。
+     */
+    private String buildTopicsSection(Set<String> scopes, List<String> keywords, int tokenBudget) {
+        if (tokenBudget <= 0) {
             return "";
         }
 
-        List<ScoredTopic> scoredTopics = topics.stream()
-                .map(topicName -> {
-                    int relevance = computeTopicRelevance(topicName, keywords);
-                    return new ScoredTopic(topicName, relevance);
-                })
-                .filter(scored -> scored.relevance() > 0)
-                .sorted(Comparator.comparingInt(ScoredTopic::relevance).reversed())
-                .collect(Collectors.toList());
+        List<ScoredTopic> scoredTopics = new ArrayList<>();
+        for (String scope : scopes) {
+            for (String topicName : listTopics(scope)) {
+                int relevance = computeTopicRelevance(scope, topicName, keywords);
+                if (relevance > 0) {
+                    scoredTopics.add(new ScoredTopic(scope, topicName, relevance));
+                }
+            }
+        }
 
         if (scoredTopics.isEmpty()) {
             return "";
         }
+        scoredTopics.sort(Comparator.comparingInt(ScoredTopic::relevance).reversed());
 
         StringBuilder section = new StringBuilder("## Relevant Topics\n\n");
         int usedTokens = StringUtils.estimateTokens(section.toString());
 
         for (ScoredTopic scored : scoredTopics) {
-            String content = readTopic(scored.topicName());
+            String content = readTopic(scored.scope(), scored.topicName());
             if (StringUtils.isBlank(content)) {
                 continue;
             }
@@ -491,14 +569,14 @@ public class MemoryStore {
     /**
      * 计算主题与关键词的相关性。匹配主题名称和主题文件首行摘要。
      */
-    private int computeTopicRelevance(String topicName, List<String> keywords) {
+    private int computeTopicRelevance(String scope, String topicName, List<String> keywords) {
         if (keywords == null || keywords.isEmpty()) {
             return 0;
         }
         int matchCount = 0;
         String lowerTopicName = topicName.toLowerCase().replace("-", " ").replace("_", " ");
 
-        String content = readTopic(topicName);
+        String content = readTopic(scope, topicName);
         String firstLine = extractFirstMeaningfulLine(content).toLowerCase();
 
         for (String keyword : keywords) {
@@ -514,14 +592,21 @@ public class MemoryStore {
     }
 
     /**
-     * 构建结构化记忆部分。按综合得分排序选取。
+     * 构建结构化记忆部分。先按可见域过滤，再按综合得分排序选取。
      */
-    private String buildStructuredMemorySection(List<String> keywords, int tokenBudget) {
+    private String buildStructuredMemorySection(Set<String> scopes, List<String> keywords, int tokenBudget) {
         if (entries.isEmpty() || tokenBudget <= 0) {
             return "";
         }
 
-        List<ScoredEntry> scoredEntries = entries.stream()
+        List<MemoryEntry> visibleEntries = entries.stream()
+                .filter(entry -> scopes.contains(MemoryScope.normalize(entry.getScope())))
+                .collect(Collectors.toList());
+        if (visibleEntries.isEmpty()) {
+            return "";
+        }
+
+        List<ScoredEntry> scoredEntries = visibleEntries.stream()
                 .map(entry -> {
                     double baseScore = entry.computeScore();
                     int relevance = entry.computeRelevance(keywords);
@@ -564,10 +649,10 @@ public class MemoryStore {
             return "";
         }
 
-        int totalEntries = entries.size();
-        if (selectedCount < totalEntries) {
+        int totalVisible = visibleEntries.size();
+        if (selectedCount < totalVisible) {
             section.append(String.format("\n_(%d of %d memories shown, filtered by relevance and importance)_\n",
-                    selectedCount, totalEntries));
+                    selectedCount, totalVisible));
         }
 
         return section.toString();
@@ -691,15 +776,7 @@ public class MemoryStore {
      */
     private void saveEntriesToFile(String filePath, List<MemoryEntry> entriesToSave) {
         try {
-            String json = objectMapper.writeValueAsString(entriesToSave);
-            Path target = Paths.get(filePath);
-            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
-            Files.writeString(temp, json);
-            try {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            JsonFileStore.writeJson(objectMapper, Paths.get(filePath), entriesToSave);
         } catch (IOException e) {
             logger.error("Failed to save entries to " + filePath, Map.of("error", e.getMessage()));
         }
@@ -710,8 +787,12 @@ public class MemoryStore {
     public Map<String, Object> getStats() {
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("structured_entries", entries.size());
-        stats.put("topics_count", listTopics().size());
+        stats.put("topics_count", listTopics(MemoryScope.GLOBAL).size());
         stats.put("index_tokens", StringUtils.estimateTokens(readIndex()));
+        stats.put("scopes", entries.stream()
+                .map(entry -> MemoryScope.normalize(entry.getScope()))
+                .distinct()
+                .count());
 
         if (!entries.isEmpty()) {
             DoubleSummaryStatistics importanceStats = entries.stream()
@@ -748,5 +829,5 @@ public class MemoryStore {
 
     private record ScoredEntry(MemoryEntry entry, double score) {}
 
-    private record ScoredTopic(String topicName, int relevance) {}
+    private record ScoredTopic(String scope, String topicName, int relevance) {}
 }

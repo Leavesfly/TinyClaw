@@ -9,6 +9,7 @@ import java.util.Objects;
  * 结构化记忆条目，是自进化记忆系统的基本单元。
  *
  * 每条记忆包含内容本身及其元数据，用于支持：
+ * - 归属隔离：通过 scope 划定可见边界，避免记忆跨用户、跨聊天泄漏
  * - 重要性评分：决定记忆在上下文中的优先级
  * - 时间衰减：越久远的记忆重要性越低（除非被频繁访问）
  * - 相关性检索：通过标签进行粗粒度匹配
@@ -43,6 +44,12 @@ public class MemoryEntry {
     /** 记忆来源（如 session_summary, heartbeat, user_explicit, evolution） */
     private String source;
 
+    /**
+     * 归属域，决定这条记忆对哪些会话可见。取值见 {@link MemoryScope}。
+     * 反序列化历史数据时该字段缺失，会保留构造器里的 {@link MemoryScope#GLOBAL} 默认值。
+     */
+    private String scope;
+
     public MemoryEntry() {
         this.createdAt = Instant.now();
         this.lastAccessedAt = this.createdAt;
@@ -50,10 +57,16 @@ public class MemoryEntry {
         this.importance = 0.5;
         this.tags = new ArrayList<>();
         this.source = "unknown";
+        this.scope = MemoryScope.GLOBAL;
     }
 
     public MemoryEntry(String content, double importance, List<String> tags, String source) {
+        this(MemoryScope.GLOBAL, content, importance, tags, source);
+    }
+
+    public MemoryEntry(String scope, String content, double importance, List<String> tags, String source) {
         this();
+        this.scope = MemoryScope.normalize(scope);
         this.content = content;
         this.importance = Math.max(0.0, Math.min(1.0, importance));
         if (tags != null) {
@@ -149,9 +162,12 @@ public class MemoryEntry {
     public String getSource() { return source; }
     public void setSource(String source) { this.source = source; }
 
+    public String getScope() { return scope; }
+    public void setScope(String scope) { this.scope = MemoryScope.normalize(scope); }
+
     @Override
     public String toString() {
-        return String.format("MemoryEntry{id='%s', importance=%.2f, score=%.3f, tags=%s, source='%s'}",
-                id, importance, computeScore(), tags, source);
+        return String.format("MemoryEntry{id='%s', scope='%s', importance=%.2f, score=%.3f, tags=%s, source='%s'}",
+                id, scope, importance, computeScore(), tags, source);
     }
 }

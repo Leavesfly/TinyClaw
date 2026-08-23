@@ -1,8 +1,10 @@
-package io.leavesfly.tinyclaw.tools;
+package io.leavesfly.tinyclaw.subagent;
 
+import io.leavesfly.tinyclaw.tools.StreamAwareTool;
+import io.leavesfly.tinyclaw.tools.Tool;
+import io.leavesfly.tinyclaw.tools.ToolContextAware;
+import io.leavesfly.tinyclaw.tools.ToolException;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
-import io.leavesfly.tinyclaw.subagent.SubagentDefinition;
-import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

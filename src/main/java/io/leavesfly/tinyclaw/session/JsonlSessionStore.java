@@ -8,21 +8,15 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 import io.leavesfly.tinyclaw.providers.Message;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -31,7 +25,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -74,7 +67,6 @@ public class JsonlSessionStore implements SessionStore {
     private static final String JSONL_SUFFIX = ".jsonl";
     private static final String LEGACY_SUFFIX = ".json";
     private static final String MIGRATED_SUFFIX = ".json.migrated";
-    private static final String CORRUPT_DIR = "corrupt";
     private static final String INDEX_FILE = "_index.json";
 
     /** 行类型：文件头 / 消息 / 工具调用记录 / 上下文压缩 */
@@ -88,8 +80,6 @@ public class JsonlSessionStore implements SessionStore {
     /** 文件名中可读前缀的最大长度，避免超出文件系统单段 255 字节限制 */
     private static final int MAX_READABLE_NAME_LENGTH = 80;
 
-    private static final Set<PosixFilePermission> OWNER_ONLY =
-            Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
 
     private final Path root;
     private final Map<String, SessionMeta> index = new ConcurrentHashMap<>();
@@ -296,7 +286,7 @@ public class JsonlSessionStore implements SessionStore {
                 if (delta.compactionChanged()) {
                     buffer.append(compactLine(delta.summary(), delta.contextStartIndex()));
                 }
-                appendAndSync(path, buffer.toString());
+                JsonFileStore.appendAndSync(path, buffer.toString());
             });
             touchIndex(session);
         } catch (Exception e) {
@@ -322,7 +312,7 @@ public class JsonlSessionStore implements SessionStore {
             buffer.append(compactLine(summary, session.getContextStartIndex()));
         }
 
-        writeAtomic(sessionPath(session.getKey()), buffer.toString());
+        JsonFileStore.writeAtomic(sessionPath(session.getKey()), buffer.toString());
         session.markFullyPersisted();
         touchIndex(session);
     }
@@ -360,87 +350,6 @@ public class JsonlSessionStore implements SessionStore {
         return MAPPER.writeValueAsString(node) + "\n";
     }
 
-    /**
-     * 追加写入并 fsync：保证已返回的写入在掉电后依然存在
-     */
-    private void appendAndSync(Path path, String content) throws IOException {
-        if (content.isEmpty()) {
-            return;
-        }
-        createWithOwnerOnlyPermissions(path);
-        try (FileChannel channel = FileChannel.open(path,
-                StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
-            writeFully(channel, ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
-            channel.force(true);
-        }
-    }
-
-    /**
-     * 原子全量写入：唯一临时文件名（避免并发写同一 tmp 互相踩）→ fsync → rename
-     */
-    private void writeAtomic(Path target, String content) throws IOException {
-        Path temp = target.resolveSibling(target.getFileName() + "."
-                + UUID.randomUUID().toString().substring(0, 8) + ".tmp");
-        try {
-            createWithOwnerOnlyPermissions(temp);
-            try (FileChannel channel = FileChannel.open(temp,
-                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                writeFully(channel, ByteBuffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
-                channel.force(true);
-            }
-            try {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            syncDirectory(target.getParent());
-        } finally {
-            Files.deleteIfExists(temp);
-        }
-    }
-
-    /**
-     * 将 buffer 完整写入 channel：FileChannel.write 可能发生短写，需循环写至耗尽，
-     * 否则记录行被截断会导致会话数据丢失。
-     */
-    private void writeFully(FileChannel channel, ByteBuffer buffer) throws IOException {
-        while (buffer.hasRemaining()) {
-            channel.write(buffer);
-        }
-    }
-
-    /**
-     * 以 600 权限创建文件（若不存在）。先建后写，避免存在 644 可读窗口。
-     */
-    private void createWithOwnerOnlyPermissions(Path path) throws IOException {
-        if (Files.exists(path)) {
-            return;
-        }
-        try {
-            Files.createFile(path, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
-        } catch (FileAlreadyExistsException e) {
-            // 并发创建，无需处理
-        } catch (UnsupportedOperationException e) {
-            // 非 POSIX 文件系统（Windows）
-            Files.createFile(path);
-        }
-    }
-
-    /**
-     * 尽力 fsync 目录项，让 rename 本身也具备持久性；不支持的平台静默跳过。
-     */
-    private void syncDirectory(Path dir) {
-        if (dir == null) {
-            return;
-        }
-        try (FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
-            channel.force(true);
-        } catch (Exception e) {
-            // Windows 等平台不允许对目录 open/force
-        }
-    }
-
     // ==================== 删除与隔离 ====================
 
     @Override
@@ -461,16 +370,10 @@ public class JsonlSessionStore implements SessionStore {
      * 把无法解析的文件移入 corrupt/ 保留，而不是让上层覆盖销毁
      */
     private void quarantine(Path path, String key, String reason) {
-        try {
-            Path corruptDir = root.resolve(CORRUPT_DIR);
-            Files.createDirectories(corruptDir);
-            Path target = corruptDir.resolve(path.getFileName() + ".corrupt." + System.currentTimeMillis());
-            Files.move(path, target, StandardCopyOption.REPLACE_EXISTING);
+        Path target = JsonFileStore.quarantine(path, reason);
+        if (target != null) {
             logger.error("Session file quarantined, original content preserved", Map.of(
                     "key", key, "reason", reason, "quarantined_to", target.toString()));
-        } catch (IOException e) {
-            logger.error("Failed to quarantine corrupt session file", Map.of(
-                    "key", key, "path", path.toString(), "error", String.valueOf(e.getMessage())));
         }
     }
 
@@ -510,7 +413,7 @@ public class JsonlSessionStore implements SessionStore {
                 return;
             }
             try {
-                writeAtomic(root.resolve(INDEX_FILE),
+                JsonFileStore.writeAtomic(root.resolve(INDEX_FILE),
                         MAPPER.writeValueAsString(index));
                 indexDirty = false;
                 lastIndexFlushAt = System.currentTimeMillis();

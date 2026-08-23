@@ -5,12 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -229,7 +229,7 @@ public class RepairApplier {
         String toolName = proposal.getToolName();
         String content = proposal.getProposedContent();
         descriptionOverrides.put(toolName, content);
-        Files.writeString(descriptionFilePath(toolName), content);
+        JsonFileStore.writeAtomic(descriptionFilePath(toolName), content);
     }
 
     private void applyValidationRule(RepairProposal proposal) throws IOException {
@@ -244,14 +244,14 @@ public class RepairApplier {
             rules = Map.of("_raw", ruleJson);
         }
         validationRules.put(toolName, rules);
-        Files.writeString(validationFilePath(toolName), mapper.writeValueAsString(rules));
+        JsonFileStore.writeJson(mapper, validationFilePath(toolName), rules);
     }
 
     private void applyFewShotExample(RepairProposal proposal) throws IOException {
         String toolName = proposal.getToolName();
         String content = proposal.getProposedContent();
         fewShotExamples.put(toolName, content);
-        Files.writeString(fewShotFilePath(toolName), content);
+        JsonFileStore.writeAtomic(fewShotFilePath(toolName), content);
     }
 
     // ==================== 持久化 ====================
@@ -274,10 +274,7 @@ public class RepairApplier {
             existing.removeIf(m -> proposal.getProposalId().equals(m.get("proposalId")));
             existing.add(proposal.toMap());
 
-            // 原子写入：先写临时文件，再 rename 覆盖目标文件
-            Path tmpFile = repairsRoot.resolve(PROPOSALS_FILE + ".tmp");
-            Files.writeString(tmpFile, mapper.writeValueAsString(existing));
-            Files.move(tmpFile, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            JsonFileStore.writeJson(mapper, file, existing);
         } catch (IOException e) {
             logger.error("Failed to persist proposal", Map.of("error", e.getMessage()));
         }

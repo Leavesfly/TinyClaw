@@ -123,9 +123,11 @@ public class WorkflowEngine {
      * 拓扑排序，按依赖关系分层。
      * 同层内的节点可以并行执行。
      *
+     * <p>不依赖实例状态，声明为静态包级可见以便直接单测分层与环检测。</p>
+     *
      * @throws IllegalStateException 当检测到循环依赖时
      */
-    private List<List<WorkflowNode>> topologicalSort(List<WorkflowNode> nodes) {
+    static List<List<WorkflowNode>> topologicalSort(List<WorkflowNode> nodes) {
         List<List<WorkflowNode>> layers = new ArrayList<>();
         Set<String> scheduled = new HashSet<>();
         List<WorkflowNode> remaining = new ArrayList<>(nodes);

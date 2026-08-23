@@ -4,7 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -309,44 +311,33 @@ public class FeedbackManager {
     // ==================== 持久化 ====================
 
     private void load() {
-        try {
-            Path path = Paths.get(feedbackFile);
-            if (Files.exists(path)) {
-                String json = Files.readString(path);
-                if (json != null && !json.isBlank()) {
-                    List<EvaluationFeedback> loaded = objectMapper.readValue(json,
-                            new TypeReference<List<EvaluationFeedback>>() {});
-                    feedbacks.addAll(loaded);
-                    logger.info("Loaded feedbacks", Map.of("count", loaded.size()));
-                }
-            }
-        } catch (IOException e) {
-            logger.warn("Failed to load feedbacks: " + e.getMessage());
+        List<EvaluationFeedback> loaded = JsonFileStore.readJson(objectMapper,
+                Paths.get(feedbackFile),
+                new TypeReference<List<EvaluationFeedback>>() {},
+                ArrayList::new);
+        if (!loaded.isEmpty()) {
+            feedbacks.addAll(loaded);
+            logger.info("Loaded feedbacks", Map.of("count", loaded.size()));
         }
     }
 
     private void persist() {
         try {
-            Files.writeString(Paths.get(feedbackFile),
-                    objectMapper.writeValueAsString(new ArrayList<>(feedbacks)));
+            JsonFileStore.writeJson(objectMapper, Paths.get(feedbackFile),
+                    new ArrayList<>(feedbacks));
         } catch (IOException e) {
             logger.error("Failed to persist feedbacks", Map.of("error", e.getMessage()));
         }
     }
 
     private void archive(List<EvaluationFeedback> toArchive) {
+        Path archivePath = Paths.get(archiveFile);
+        List<EvaluationFeedback> existing = JsonFileStore.readJson(objectMapper, archivePath,
+                new TypeReference<List<EvaluationFeedback>>() {},
+                ArrayList::new);
+        existing.addAll(toArchive);
         try {
-            List<EvaluationFeedback> existing = new ArrayList<>();
-            Path archivePath = Paths.get(archiveFile);
-            if (Files.exists(archivePath)) {
-                String json = Files.readString(archivePath);
-                if (json != null && !json.isBlank()) {
-                    existing = objectMapper.readValue(json,
-                            new TypeReference<List<EvaluationFeedback>>() {});
-                }
-            }
-            existing.addAll(toArchive);
-            Files.writeString(archivePath, objectMapper.writeValueAsString(existing));
+            JsonFileStore.writeJson(objectMapper, archivePath, existing);
         } catch (IOException e) {
             logger.error("Failed to archive feedbacks", Map.of("error", e.getMessage()));
         }

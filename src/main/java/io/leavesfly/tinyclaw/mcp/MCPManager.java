@@ -2,7 +2,6 @@ package io.leavesfly.tinyclaw.mcp;
 
 import io.leavesfly.tinyclaw.config.MCPServersConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
-import io.leavesfly.tinyclaw.tools.MCPTool;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.io.IOException;

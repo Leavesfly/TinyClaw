@@ -66,4 +66,25 @@ public class LLMException extends TinyClawException {
     public LLMException(String message, Throwable cause, String errorCode) {
         super(message, cause, errorCode);
     }
+    
+    /**
+     * 提取异常链最底层的根因信息（类名 + 消息）。
+     * 
+     * <p>LLM 调用异常常被多层包装（如 {@code LLMException("执行请求失败", cause)}），
+     * 仅打印外层消息会丢失底层网络根因（如 {@code SocketTimeoutException: timeout}），
+     * 错误日志与用户提示应始终携带该方法提取的根因。</p>
+     * 
+     * @param e 待解析的异常（可为 null）
+     * @return 根因描述，入参为 null 时返回 "unknown"
+     */
+    public static String rootCauseMessage(Throwable e) {
+        if (e == null) {
+            return "unknown";
+        }
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getName() + ": " + cause.getMessage();
+    }
 }

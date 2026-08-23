@@ -1,13 +1,17 @@
 package io.leavesfly.tinyclaw.heartbeat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.leavesfly.tinyclaw.config.ActiveHours;
+import io.leavesfly.tinyclaw.config.HeartbeatSettings;
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
+import io.leavesfly.tinyclaw.bus.LastContact;
 import io.leavesfly.tinyclaw.config.AgentConfig;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronJob;
 import io.leavesfly.tinyclaw.cron.CronSchedule;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 import io.leavesfly.tinyclaw.session.SessionManager;
 
 import java.nio.file.Files;
@@ -119,7 +123,7 @@ public class HeartbeatRunner {
      */
     public void registerSystemJobs(CronService cron) {
         AgentConfig agent = config.getAgent();
-        AgentConfig.HeartbeatSettings hb = agent != null ? agent.getHeartbeat() : null;
+        HeartbeatSettings hb = agent != null ? agent.getHeartbeat() : null;
         boolean enabled = agent != null && agent.isHeartbeatEnabled();
 
         if (!enabled) {
@@ -129,11 +133,11 @@ public class HeartbeatRunner {
         }
 
         Set<String> desired = new HashSet<>();
-        Map<String, AgentConfig.HeartbeatSettings> entries = hb.getEntries();
+        Map<String, HeartbeatSettings> entries = hb.getEntries();
         if (entries != null && !entries.isEmpty()) {
             // per-agent 模式：仅 entries 中的 agent 跑心跳
-            for (Map.Entry<String, AgentConfig.HeartbeatSettings> entry : entries.entrySet()) {
-                AgentConfig.HeartbeatSettings merged = entry.getValue().mergedOver(hb);
+            for (Map.Entry<String, HeartbeatSettings> entry : entries.entrySet()) {
+                HeartbeatSettings merged = entry.getValue().mergedOver(hb);
                 if (!merged.isEnabled() || merged.getIntervalSeconds() <= 0) {
                     continue;
                 }
@@ -229,8 +233,8 @@ public class HeartbeatRunner {
         long startMs = System.currentTimeMillis();
 
         AgentConfig agent = config.getAgent();
-        AgentConfig.HeartbeatSettings hb = agent != null ? agent.getHeartbeat() : null;
-        AgentConfig.HeartbeatSettings settings = resolveSettings(hb, agentId);
+        HeartbeatSettings hb = agent != null ? agent.getHeartbeat() : null;
+        HeartbeatSettings settings = resolveSettings(hb, agentId);
 
         try {
             if (!settings.isEnabled()) {
@@ -278,7 +282,7 @@ public class HeartbeatRunner {
      * @return LLM 回复内容
      * @throws TimeoutException 整轮超时（已取消并发送中断信号）
      */
-    private String executeRound(String agentKey, AgentConfig.HeartbeatSettings settings,
+    private String executeRound(String agentKey, HeartbeatSettings settings,
                                 String checklist) throws Exception {
         int timeoutSeconds = settings.effectiveTimeoutSeconds();
         String sessionKey = settings.isIsolatedSession()
@@ -328,7 +332,7 @@ public class HeartbeatRunner {
     /**
      * 构建心跳 prompt：默认指令含 HEARTBEAT_OK 契约，配置 prompt 可整体覆盖指令体。
      */
-    String buildPrompt(AgentConfig.HeartbeatSettings settings, String checklist) {
+    String buildPrompt(HeartbeatSettings settings, String checklist) {
         String body = settings.getPrompt();
         if (body == null || body.isEmpty()) {
             String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
@@ -353,7 +357,7 @@ public class HeartbeatRunner {
      * 按 HEARTBEAT_OK 契约处理回复：剥离 token 后剩余为空或 ≤300 字符视为无事静默，
      * 否则按 showAlerts/目标投递告警。
      */
-    void handleResult(String agentKey, AgentConfig.HeartbeatSettings settings, String result, long startMs) {
+    void handleResult(String agentKey, HeartbeatSettings settings, String result, long startMs) {
         String remaining = stripOkToken(result == null ? "" : result);
         boolean silent = remaining.isBlank() || remaining.length() <= SILENT_THRESHOLD;
 
@@ -397,7 +401,7 @@ public class HeartbeatRunner {
      * 按投递目标发送内容：none 仅记日志；last 投递最近联系人；显式 channel 名
      * 复用最近联系人中匹配的 chatId。
      */
-    private void deliver(String agentKey, AgentConfig.HeartbeatSettings settings, String content) {
+    private void deliver(String agentKey, HeartbeatSettings settings, String content) {
         String target = settings.getTarget() == null ? "none" : settings.getTarget();
         if ("none".equalsIgnoreCase(target)) {
             logger.info("Heartbeat output (target=none)", Map.of(
@@ -485,14 +489,14 @@ public class HeartbeatRunner {
     /**
      * 解析指定 agent 的生效配置（entry 叠加到顶层默认之上）。
      */
-    private AgentConfig.HeartbeatSettings resolveSettings(AgentConfig.HeartbeatSettings hb, String agentId) {
+    private HeartbeatSettings resolveSettings(HeartbeatSettings hb, String agentId) {
         if (hb == null) {
-            return new AgentConfig.HeartbeatSettings();
+            return new HeartbeatSettings();
         }
         if (agentId == null || hb.getEntries() == null) {
             return hb;
         }
-        AgentConfig.HeartbeatSettings entry = hb.getEntries().get(agentId);
+        HeartbeatSettings entry = hb.getEntries().get(agentId);
         return entry == null ? hb : entry.mergedOver(hb);
     }
 
@@ -500,7 +504,7 @@ public class HeartbeatRunner {
      * 判断当前时间是否落在活跃时段窗口内。
      * start == end 视为零宽窗口（全部跳过）；跨午夜窗口按 start > end 处理。
      */
-    static boolean isWithinActiveHours(AgentConfig.ActiveHours hours) {
+    static boolean isWithinActiveHours(ActiveHours hours) {
         if (hours == null || hours.getStart() == null || hours.getEnd() == null
                 || hours.getStart().isEmpty() || hours.getEnd().isEmpty()) {
             return true;
@@ -551,7 +555,7 @@ public class HeartbeatRunner {
             Path dir = Paths.get(workspace, "memory");
             Files.createDirectories(dir);
             String json = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(statusMap);
-            Files.writeString(dir.resolve("heartbeat-status.json"), json);
+            JsonFileStore.writeAtomic(dir.resolve("heartbeat-status.json"), json);
         } catch (Exception e) {
             logger.warn("Failed to persist heartbeat status", Map.of("error", e.getMessage()));
         }

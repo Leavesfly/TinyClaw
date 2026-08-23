@@ -3,7 +3,9 @@ package io.leavesfly.tinyclaw.evolution;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -245,7 +247,7 @@ public class VariantManager {
             VariantsData data = new VariantsData();
             data.currentVersion = currentVersion;
             data.variants = new ArrayList<>(variants.values());
-            Files.writeString(Paths.get(variantsFile), objectMapper.writeValueAsString(data));
+            JsonFileStore.writeJson(objectMapper, Paths.get(variantsFile), data);
         } catch (IOException e) {
             logger.error("Failed to persist variants", Map.of("error", e.getMessage()));
         }
@@ -256,7 +258,7 @@ public class VariantManager {
             return;
         }
         try {
-            Files.writeString(Paths.get(activeFile), activePrompt);
+            JsonFileStore.writeAtomic(Paths.get(activeFile), activePrompt);
         } catch (IOException e) {
             logger.error("Failed to persist active prompt", Map.of("error", e.getMessage()));
         }
@@ -269,7 +271,7 @@ public class VariantManager {
         try {
             String timestamp = VERSION_FORMATTER.format(LocalDateTime.now());
             String fileName = String.format("v%d_%s.md", currentVersion, timestamp);
-            Files.writeString(Paths.get(historyDir, fileName), activePrompt);
+            JsonFileStore.writeAtomic(Paths.get(historyDir, fileName), activePrompt);
             cleanupHistory();
         } catch (IOException e) {
             logger.warn("Failed to archive prompt version: " + e.getMessage());

@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.collaboration;
 
-import io.leavesfly.tinyclaw.agent.ReActExecutor;
+import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.providers.StreamEvent;

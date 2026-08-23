@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
-import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
@@ -18,10 +17,7 @@ import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 飞书通道实现 - 基于飞书开放平台
@@ -46,10 +42,6 @@ public class FeishuChannel extends BaseChannel {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("feishu");
     
-    private static final int MAX_RECONNECT_ATTEMPTS = 10;
-    private static final long INITIAL_RECONNECT_DELAY_MS = 1000L;
-    private static final long MAX_RECONNECT_DELAY_MS = 60000L;
-    
     private static final String API_BASE_URL = "https://open.feishu.cn/open-apis";
     
     private final ChannelsConfig.FeishuConfig config;
@@ -62,12 +54,14 @@ public class FeishuChannel extends BaseChannel {
     // WebSocket 连接
     private WebSocket webSocket;
     private Thread heartbeatThread;
+    /** 当前 WebSocket 连接是否活着，用于控制心跳线程 */
     private volatile boolean webSocketRunning;
+    /** 是否希望保持 WebSocket 连接；与 webSocketRunning 不同，断线期间它仍为 true */
+    private volatile boolean webSocketMode;
     private long pingInterval = 30000;
     
-    // 重连调度器（单线程守护，避免每次重连创建新线程）与重连计数
-    private volatile ScheduledExecutorService reconnectScheduler;
-    private final AtomicInteger reconnectAttempts = new AtomicInteger();
+    private final Reconnector reconnector =
+            new Reconnector("飞书 WebSocket", logger, () -> webSocketMode, this::reconnect);
     
     /**
      * 创建飞书通道
@@ -113,15 +107,12 @@ public class FeishuChannel extends BaseChannel {
     private void startWebSocketMode() {
         logger.info("飞书通道以 WebSocket 模式启动");
         
+        webSocketMode = true;
         try {
             // 预先获取一次令牌，确保配置正确
             tokenManager.getValidToken();
             
-            reconnectScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread thread = new Thread(r, "FeishuWebSocketReconnect");
-                thread.setDaemon(true);
-                return thread;
-            });
+            reconnector.start();
             
             String wsUrl = fetchWebSocketEndpoint();
             connectWebSocket(wsUrl);
@@ -130,8 +121,21 @@ public class FeishuChannel extends BaseChannel {
             
             logger.info("飞书通道已启动（WebSocket 模式）");
         } catch (Exception e) {
+            // 首次连接失败按启动失败处理（通常是配置错误），不进入重连
+            webSocketMode = false;
+            reconnector.stop();
             throw new ChannelException("启动飞书 WebSocket 模式失败", e);
         }
+    }
+    
+    /**
+     * 重连动作：令牌可能已过期、WebSocket 端点是一次性的，都必须重新获取。
+     * 心跳线程也要重建，否则重连后没有心跳会被对端判定为死连接。
+     */
+    private void reconnect() throws Exception {
+        tokenManager.getValidToken();
+        connectWebSocket(fetchWebSocketEndpoint());
+        startHeartbeat();
     }
     
     /**
@@ -156,6 +160,10 @@ public class FeishuChannel extends BaseChannel {
         logger.info("正在停止飞书通道...");
         setRunning(false);
         
+        // 先停重连再关连接：否则 close 触发的 onClosed 会又排一次重连
+        webSocketMode = false;
+        reconnector.stop();
+        
         if (webSocket != null) {
             webSocket.close(1000, "Shutdown");
             webSocket = null;
@@ -164,12 +172,6 @@ public class FeishuChannel extends BaseChannel {
         webSocketRunning = false;
         
         stopHeartbeat();
-        
-        ScheduledExecutorService scheduler = reconnectScheduler;
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            reconnectScheduler = null;
-        }
         
         tokenManager.invalidate();
         
@@ -317,8 +319,8 @@ public class FeishuChannel extends BaseChannel {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
                 logger.info("飞书 WebSocket 连接已建立");
-                // 连接真正建立后才重置重连计数，避免异步连接失败时计数被错误清零导致无限重连
-                reconnectAttempts.set(0);
+                // 连接真正建立后才重置退避，避免异步连接失败时计数被错误清零导致无间隔重连
+                reconnector.onConnected();
             }
             
             @Override
@@ -335,16 +337,16 @@ public class FeishuChannel extends BaseChannel {
             public void onClosed(WebSocket webSocket, int code, String reason) {
                 logger.info("飞书 WebSocket 连接已关闭", Map.of("code", String.valueOf(code), "reason", reason));
                 webSocketRunning = false;
+                // 对端主动关连（令牌轮换、负载均衡漂移、空闲超时）走的是 onClosed 而不是 onFailure，
+                // 这里不重连就会在最常见的断线场景下静默停摆
+                reconnector.schedule();
             }
             
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-                logger.error("飞书 WebSocket 连接失败", Map.of("error", t.getMessage()));
+                logger.error("飞书 WebSocket 连接失败", Map.of("error", String.valueOf(t.getMessage())));
                 webSocketRunning = false;
-                
-                if (isRunning()) {
-                    scheduleReconnect();
-                }
+                reconnector.schedule();
             }
         };
         
@@ -390,57 +392,6 @@ public class FeishuChannel extends BaseChannel {
             heartbeatThread.interrupt();
             heartbeatThread = null;
         }
-    }
-    
-    /**
-     * 计划重连：通过单线程调度器按指数退避延迟重试，失败后再次排队，
-     * 避免递归创建线程与计数并发问题
-     */
-    private void scheduleReconnect() {
-        int attempt = reconnectAttempts.incrementAndGet();
-        // 检查重连次数限制
-        if (attempt > MAX_RECONNECT_ATTEMPTS) {
-            logger.error("飞书 WebSocket 重连次数已达上限，停止重连", Map.of(
-                    "attempts", String.valueOf(attempt - 1),
-                    "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS)
-            ));
-            return;
-        }
-        
-        ScheduledExecutorService scheduler = reconnectScheduler;
-        if (scheduler == null || scheduler.isShutdown()) {
-            return;
-        }
-        
-        // 计算指数退避延迟
-        long delay = Math.min(INITIAL_RECONNECT_DELAY_MS * (1L << (attempt - 1)), MAX_RECONNECT_DELAY_MS);
-        
-        scheduler.schedule(() -> {
-            if (!isRunning()) {
-                return;
-            }
-            logger.info("尝试重新连接飞书 WebSocket", Map.of(
-                    "attempt", String.valueOf(attempt),
-                    "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS),
-                    "delay_ms", String.valueOf(delay)
-            ));
-            
-            try {
-                tokenManager.getValidToken();
-                String wsUrl = fetchWebSocketEndpoint();
-                // newWebSocket 是异步的，连接是否成功由 onOpen/onFailure 回调决定，
-                // 重连计数在 onOpen 中重置
-                connectWebSocket(wsUrl);
-                startHeartbeat();
-                logger.info("飞书 WebSocket 重连请求已发起");
-            } catch (Exception e) {
-                logger.error("重连飞书 WebSocket 失败", Map.of(
-                        "attempt", String.valueOf(attempt),
-                        "error", e.getMessage()
-                ));
-                scheduleReconnect();
-            }
-        }, delay, TimeUnit.MILLISECONDS);
     }
     
     /**

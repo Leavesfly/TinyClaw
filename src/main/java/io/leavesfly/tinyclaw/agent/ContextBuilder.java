@@ -1,20 +1,24 @@
 package io.leavesfly.tinyclaw.agent;
 
 import io.leavesfly.tinyclaw.agent.context.*;
+import io.leavesfly.tinyclaw.memory.MemoryScope;
 import io.leavesfly.tinyclaw.memory.MemoryStore;
 import io.leavesfly.tinyclaw.evolution.PromptOptimizer;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.Message;
+import io.leavesfly.tinyclaw.providers.ToolCall;
 import io.leavesfly.tinyclaw.skills.SkillInfo;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
+import io.leavesfly.tinyclaw.util.MediaPaths;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 上下文构建器，用于构建 Agent 运行所需的完整上下文。
@@ -153,14 +157,28 @@ public class ContextBuilder {
     /**
      * 构建系统提示词（轻量上下文版本）。
      *
+     * <p>不传归属域，因此只会注入全局可见的长期记忆。</p>
+     *
      * @param currentMessage 当前用户消息（可为 null）
      * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入，降低 token 成本
      * @return 完整的系统提示词字符串
      */
     public String buildSystemPrompt(String currentMessage, boolean lightContext) {
+        return buildSystemPrompt(currentMessage, lightContext, MemoryScope.globalOnly());
+    }
+
+    /**
+     * 构建系统提示词，指定本次可见的记忆归属域。
+     *
+     * @param currentMessage 当前用户消息（可为 null）
+     * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
+     * @param memoryScopes 可见的记忆归属域，null 或空时退化为仅全局域
+     * @return 完整的系统提示词字符串
+     */
+    public String buildSystemPrompt(String currentMessage, boolean lightContext, Set<String> memoryScopes) {
         SectionContext ctx = new SectionContext(
             currentMessage, workspace, contextWindow,
-            tools, promptOptimizer, skillsLoader, memory
+            tools, promptOptimizer, skillsLoader, memory, memoryScopes
         );
 
         List<String> parts = new ArrayList<>();
@@ -217,7 +235,7 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         String channel, String chatId) {
-        return buildMessages(history, summary, currentMessage, null, channel, chatId, false);
+        return buildMessages(history, summary, currentMessage, null, channel, chatId, null, false);
     }
 
     /**
@@ -233,7 +251,7 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage,
                                         String channel, String chatId, boolean lightContext) {
-        return buildMessages(history, summary, currentMessage, null, channel, chatId, lightContext);
+        return buildMessages(history, summary, currentMessage, null, channel, chatId, null, lightContext);
     }
     
     /**
@@ -252,7 +270,7 @@ public class ContextBuilder {
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
                                         List<String> images, String channel, String chatId) {
-        return buildMessages(history, summary, currentMessage, images, channel, chatId, false);
+        return buildMessages(history, summary, currentMessage, images, channel, chatId, null, false);
     }
 
     /**
@@ -264,15 +282,18 @@ public class ContextBuilder {
      * @param images 图片路径列表（可为 null）
      * @param channel 当前通道名称
      * @param chatId 当前聊天 ID
+     * @param senderId 发言人标识，用于确定可见的记忆归属域（可为 null）
      * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
      * @return 完整的消息列表
      */
     public List<Message> buildMessages(List<Message> history, String summary, String currentMessage, 
-                                        List<String> images, String channel, String chatId, boolean lightContext) {
+                                        List<String> images, String channel, String chatId,
+                                        String senderId, boolean lightContext) {
         List<Message> messages = new ArrayList<>();
         
         // 构建系统提示词（传入当前消息用于记忆相关性检索）
-        String systemPrompt = buildSystemPromptWithSession(currentMessage, channel, chatId, summary, lightContext);
+        String systemPrompt = buildSystemPromptWithSession(
+                currentMessage, channel, chatId, senderId, summary, lightContext);
         
         logger.debug("System prompt built", Map.of(
                 "total_chars", systemPrompt.length(),
@@ -290,9 +311,8 @@ public class ContextBuilder {
         }
         
         // 添加当前用户消息（支持多模态）
-        if (images != null && !images.isEmpty()) {
-            // 将相对路径转换为完整路径
-            List<String> fullPaths = resolveImagePaths(images);
+        List<String> fullPaths = resolveImagePaths(images);
+        if (fullPaths != null && !fullPaths.isEmpty()) {
             messages.add(Message.user(currentMessage, fullPaths));
         } else {
             messages.add(Message.user(currentMessage));
@@ -302,25 +322,41 @@ public class ContextBuilder {
     }
     
     /**
-     * 将相对图片路径转换为完整路径。
-     * 如果路径已经是完整路径或 data URI，则不做转换。
+     * 把图片路径解析为绝对路径，并丢弃越界路径。
+     *
+     * <p>data URI 原样保留。其余路径（相对或绝对）交由
+     * {@link MediaPaths#resolveMediaPath} 归一化并校验归属：只允许 workspace 与通道媒体
+     * 目录内的文件。图片路径来自 HTTP 请求体等不可信输入，越界路径会被
+     * {@code LLMRequestBuilder} 读成 Base64 外发给模型服务商，等价于任意文件读取，
+     * 因此必须在进入消息之前拦掉，而不是等读文件时才失败。</p>
+     *
+     * <p>包级可见：{@link AgentRuntime} 复用同一份校验逻辑，避免两处各自解析路径导致
+     * 其中一处漏掉校验。</p>
+     *
+     * @param images 原始图片路径列表
+     * @return 校验通过的绝对路径列表，越界项已剔除
      */
-    private List<String> resolveImagePaths(List<String> images) {
+    List<String> resolveImagePaths(List<String> images) {
+        if (images == null || images.isEmpty()) {
+            return images;
+        }
         List<String> resolved = new ArrayList<>();
         for (String imagePath : images) {
-            if (imagePath.startsWith("data:") || imagePath.startsWith("/")) {
-                // 已经是 data URI 或完整路径
-                resolved.add(imagePath);
-                logger.info("图片路径保持不变", Map.of("path", imagePath.length() > 50 ? imagePath.substring(0, 50) + "..." : imagePath));
-            } else {
-                // 相对路径，转换为完整路径
-                String fullPath = Paths.get(workspace, imagePath).toAbsolutePath().toString();
-                resolved.add(fullPath);
-                logger.info("图片路径转换", Map.of(
-                        "relative", imagePath,
-                        "workspace", workspace,
-                        "full_path", fullPath));
+            if (imagePath == null || imagePath.isEmpty()) {
+                continue;
             }
+            if (imagePath.startsWith("data:")) {
+                resolved.add(imagePath);
+                continue;
+            }
+            Path safePath = MediaPaths.resolveMediaPath(workspace, imagePath);
+            if (safePath == null) {
+                logger.warn("拒绝越界图片路径", Map.of(
+                        "path", StringUtils.truncate(imagePath, 200),
+                        "workspace", workspace));
+                continue;
+            }
+            resolved.add(safePath.toString());
         }
         return resolved;
     }
@@ -358,14 +394,17 @@ public class ContextBuilder {
      * @param currentMessage 当前用户消息（用于记忆相关性检索）
      * @param channel 通道名称
      * @param chatId 聊天 ID
+     * @param senderId 发言人标识，用于确定可见的记忆归属域
      * @param summary 对话摘要
      * @param lightContext 为 true 时跳过 workspace bootstrap 文件注入
      * @return 完整的系统提示词
      */
     private String buildSystemPromptWithSession(String currentMessage, String channel, String chatId,
-                                                String summary, boolean lightContext) {
+                                                String senderId, String summary, boolean lightContext) {
 
-        StringBuilder systemPrompt = new StringBuilder(buildSystemPrompt(currentMessage, lightContext));
+        Set<String> memoryScopes = MemoryScope.visibleScopes(channel, senderId, chatId);
+        StringBuilder systemPrompt =
+                new StringBuilder(buildSystemPrompt(currentMessage, lightContext, memoryScopes));
         
         // 添加当前会话信息
         if (StringUtils.isNotBlank(channel) && StringUtils.isNotBlank(chatId)) {
@@ -382,11 +421,17 @@ public class ContextBuilder {
     }
     
     /**
-     * 清理历史消息，确保 tool 消息前面有对应的 assistant(tool_calls) 消息。
+     * 修复历史消息中的 tool_calls / tool 配对关系，避免 LLM API 返回 400。
      * 
-     * LLM API 要求每条 role="tool" 的消息前面必须紧跟一条包含 tool_calls 的
-     * role="assistant" 消息。此方法会跳过历史开头处缺少配对 assistant 消息的
-     * 孤立 tool 消息，防止发送给 LLM 时报 400 错误。
+     * <p>OpenAI 兼容协议要求：每条 {@code role="tool"} 消息必须能对应到前面某条
+     * {@code assistant.tool_calls} 里的 id；反之，带 tool_calls 的 assistant 消息也必须有
+     * tool 消息应答。两侧都可能被破坏：</p>
+     * <ul>
+     *   <li><b>头部孤立 tool</b>：上下文被摘要压缩后，起点落在 tool 消息上；</li>
+     *   <li><b>尾部孤立 assistant(tool_calls)</b>：工具循环中途异常退出时，
+     *       {@code ReActExecutor} 的 finally 会把已产生的 assistant 消息落盘，但工具结果还没写入，
+     *       下一轮带上这段历史就会被 API 拒结，使会话永久卡死。</li>
+     * </ul>
      * 
      * @param history 原始历史消息列表
      * @return 清理后的历史消息列表
@@ -396,22 +441,43 @@ public class ContextBuilder {
             return history;
         }
         
-        // 找到第一条非孤立 tool 消息的位置
+        // 跳过历史开头缺少配对 assistant 的孤立 tool 消息
         int startIndex = 0;
         while (startIndex < history.size() && "tool".equals(history.get(startIndex).getRole())) {
             startIndex++;
         }
-        
-        if (startIndex == 0) {
-            return history;
-        }
-        
         if (startIndex > 0) {
             logger.warn("Skipped orphaned tool messages at history start", Map.of(
                     "skipped_count", startIndex));
         }
         
-        return new ArrayList<>(history.subList(startIndex, history.size()));
+        List<Message> sanitized = startIndex == 0
+                ? history
+                : new ArrayList<>(history.subList(startIndex, history.size()));
+        
+        // 剔除尾部未被应答的 assistant(tool_calls)：从尾部往前看，末尾的 tool 消息是已有应答，
+        // 紧接着的 assistant(tool_calls) 则需判断应答数量是否足够
+        int endIndex = sanitized.size();
+        int toolReplies = 0;
+        while (endIndex > 0 && "tool".equals(sanitized.get(endIndex - 1).getRole())) {
+            toolReplies++;
+            endIndex--;
+        }
+        if (endIndex > 0) {
+            Message last = sanitized.get(endIndex - 1);
+            List<ToolCall> calls = last.getToolCalls();
+            boolean unanswered = "assistant".equals(last.getRole())
+                    && calls != null && !calls.isEmpty()
+                    && toolReplies < calls.size();
+            if (unanswered) {
+                logger.warn("Dropped trailing assistant(tool_calls) without complete tool replies",
+                        Map.of("tool_calls", calls.size(), "tool_replies", toolReplies));
+                // 连同已有的部分应答一起丢弃，否则它们反过来变成孤立 tool 消息
+                sanitized = new ArrayList<>(sanitized.subList(0, endIndex - 1));
+            }
+        }
+        
+        return sanitized;
     }
     
     /**

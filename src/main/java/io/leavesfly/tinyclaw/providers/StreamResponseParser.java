@@ -21,6 +21,13 @@ import java.util.UUID;
 public class StreamResponseParser {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("provider");
+
+    /**
+     * 思维链行缓冲软上限：无换行的长段落累积到该长度也提前透出，
+     * 避免前端思考卡片长时间无增量。
+     */
+    private static final int REASONING_SOFT_FLUSH_CHARS = 160;
+    
     private final ObjectMapper objectMapper;
     
     public StreamResponseParser() {
@@ -44,6 +51,9 @@ public class StreamResponseParser {
      */
     public LLMResponse parseStreamResponse(BufferedSource source, LLMProvider.StreamCallback callback) throws IOException {
         StringBuilder fullContent = new StringBuilder();
+        // 思维链按行缓冲：token 粒度直接透出会让 CLI 等纯文本端碎片化
+        // （每个 token 前后都被加上格式化分隔），聚合到行粒度再发 THINKING 事件
+        StringBuilder reasoningBuffer = new StringBuilder();
         List<ToolCall> toolCalls = new ArrayList<>();
         String finishReason = "stop";
         LLMResponse.UsageInfo usage = null;
@@ -97,8 +107,9 @@ public class StreamResponseParser {
                     if (reasoningChunk == null) {
                         reasoningChunk = extractText(delta, "reasoning_content");
                     }
-                    if (reasoningChunk != null && callback instanceof LLMProvider.EnhancedStreamCallback enhanced) {
-                        enhanced.onEvent(StreamEvent.thinking(reasoningChunk));
+                    if (reasoningChunk != null) {
+                        reasoningBuffer.append(reasoningChunk);
+                        flushReasoningLines(callback, reasoningBuffer, false);
                     }
                     
                     // 处理流式内容
@@ -125,12 +136,64 @@ public class StreamResponseParser {
                 }
             }
         } catch (IOException e) {
-            logger.error("Stream read error", Map.of("error", e.getMessage()));
+            // 已缓冲的思维链先冲刷：流式中断时这部分内容已经收到，丢掉会让
+            // 前端思考卡片停在上一行，反而掩盖了“模型思考到哪里断的”这个关键线索
+            flushReasoningLines(callback, reasoningBuffer, true);
+            // content_chars 可区分"流中途断开"（已收到部分内容）与"一直没等到首包"
+            // （如思考型模型长时间静默触发 readTimeout）；provider/model 上下文由
+            // HTTPProvider 层的包装日志补充
+            logger.error("Stream read error", Map.of(
+                    "error_type", e.getClass().getName(),
+                    "error", String.valueOf(e.getMessage()),
+                    "content_chars", fullContent.length(),
+                    "tool_calls_count", toolCalls.size()
+            ));
             throw e;
         }
         
+        // 流结束，冲刷未换行的剩余思维链内容
+        flushReasoningLines(callback, reasoningBuffer, true);
+        
         // 构建完整响应
         return buildStreamResponse(fullContent.toString(), toolCalls, finishReason, usage);
+    }
+    
+    /**
+     * 按行冲刷思维链缓冲。
+     *
+     * <p>遇到换行符时透出完整行（保留行尾换行，便于前端按 pre-wrap 分行显示）；
+     * 无换行部分在流结束或超过软上限时整体透出。仅对 EnhancedStreamCallback 生效，
+     * 普通回调无法接收 THINKING 事件，缓冲直接丢弃。</p>
+     *
+     * @param callback 流式回调
+     * @param buffer 思维链累积缓冲（原地消费）
+     * @param endOfStream 是否流结束（强制冲刷全部剩余）
+     */
+    private void flushReasoningLines(LLMProvider.StreamCallback callback,
+                                     StringBuilder buffer, boolean endOfStream) {
+        if (buffer.length() == 0) {
+            return;
+        }
+        if (!(callback instanceof LLMProvider.EnhancedStreamCallback enhanced)) {
+            buffer.setLength(0);
+            return;
+        }
+        
+        int start = 0;
+        int newlineIdx;
+        while ((newlineIdx = buffer.indexOf("\n", start)) >= 0) {
+            enhanced.onEvent(StreamEvent.thinking(buffer.substring(start, newlineIdx + 1)));
+            start = newlineIdx + 1;
+        }
+        
+        int remaining = buffer.length() - start;
+        if (endOfStream || remaining >= REASONING_SOFT_FLUSH_CHARS) {
+            if (remaining > 0) {
+                enhanced.onEvent(StreamEvent.thinking(buffer.substring(start)));
+            }
+            start = buffer.length();
+        }
+        buffer.delete(0, start);
     }
     
     /**

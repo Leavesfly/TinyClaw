@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.config.Config;
-import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -21,51 +20,41 @@ import java.util.Map;
  *
  * <p>请求示例：GET /api/token-stats?startDate=2026-02-17&endDate=2026-03-19</p>
  */
-public class TokenStatsHandler {
+public class TokenStatsHandler extends BaseHandler {
 
-    private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-    private final Config config;
     private final TokenUsageStore tokenUsageStore;
-    private final SecurityMiddleware security;
 
     public TokenStatsHandler(Config config, TokenUsageStore tokenUsageStore, SecurityMiddleware security) {
-        this.config = config;
+        super(config, security);
         this.tokenUsageStore = tokenUsageStore;
-        this.security = security;
     }
 
     /**
      * 处理 GET /api/token-stats 请求。
      * 查询参数：startDate（yyyy-MM-dd）、endDate（yyyy-MM-dd），均可选，默认最近 30 天。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        if (!WebUtils.HTTP_METHOD_GET.equals(exchange.getRequestMethod())) {
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (!WebUtils.HTTP_METHOD_GET.equals(method)) {
             WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
-            return;
+            return true;
         }
 
-        try {
-            String query = exchange.getRequestURI().getQuery();
-            Map<String, String> params = parseQueryParams(query);
+        String query = exchange.getRequestURI().getQuery();
+        Map<String, String> params = parseQueryParams(query);
 
-            String endDate = params.getOrDefault("endDate", LocalDate.now().format(DATE_FORMATTER));
-            String startDate = params.getOrDefault("startDate",
-                    LocalDate.now().minusDays(30).format(DATE_FORMATTER));
+        String endDate = params.getOrDefault("endDate", LocalDate.now().format(DATE_FORMATTER));
+        String startDate = params.getOrDefault("startDate",
+                LocalDate.now().minusDays(30).format(DATE_FORMATTER));
 
-            TokenUsageStore.TokenStats stats = tokenUsageStore.query(startDate, endDate);
+        TokenUsageStore.TokenStats stats = tokenUsageStore.query(startDate, endDate);
 
-            ObjectNode result = buildResponse(stats, startDate, endDate);
-            WebUtils.sendJson(exchange, 200, result, corsOrigin);
-
-        } catch (Exception e) {
-            logger.error("Token stats API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
-        }
+        ObjectNode result = buildResponse(stats, startDate, endDate);
+        WebUtils.sendJson(exchange, 200, result, corsOrigin);
+        return true;
     }
 
     // ==================== 内部工具方法 ====================

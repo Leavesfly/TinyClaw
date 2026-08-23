@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.cli;
 
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
+import io.leavesfly.tinyclaw.bootstrap.RuntimeAssembly;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.channels.ChannelManager;
@@ -18,7 +19,6 @@ import io.leavesfly.tinyclaw.voice.AliyunTranscriber;
 import io.leavesfly.tinyclaw.voice.Transcriber;
 import io.leavesfly.tinyclaw.web.WebConsoleServer;
 
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -56,7 +56,8 @@ public class GatewayBootstrap {
 
     // 服务组件
     private ChannelManager channelManager;         // 通道管理器
-    private CronService cronService;               // 定时任务服务
+    private final CronService cronService;         // 定时任务服务（由装配根注入，全局单实例）
+    private final CronTool cronTool;               // 定时任务工具（与 cronService 绑定，用于执行用户 job）
     private HeartbeatRunner heartbeatRunner;       // 心跳运行器（由 cron job 调度）
     private WebhookServer webhookServer;           // Webhook 服务器
     private WebConsoleServer webConsoleServer;     // Web 控制台服务器
@@ -73,16 +74,20 @@ public class GatewayBootstrap {
 
     /**
      * 构造网关启动器。
-     * 
-     * @param config 配置对象
-     * @param agentRuntime Agent 主循环
-     * @param bus 消息总线
+     *
+     * <p>有状态组件（AgentRuntime / MessageBus / CronService）一律从装配根取用，
+     * 不在本类内重建——此前本类另建一份 CronService，与 {@code registerTools} 里那份
+     * 共用同一个 jobs.json 且各自全量覆盖写，导致用户创建的定时任务静默丢失。</p>
+     *
+     * @param assembly 运行时装配结果
      */
-    public GatewayBootstrap(Config config, AgentRuntime agentRuntime, MessageBus bus) {
-        this.config = config;
-        this.agentRuntime = agentRuntime;
-        this.bus = bus;
-        this.workspace = config.getWorkspacePath();
+    public GatewayBootstrap(RuntimeAssembly assembly) {
+        this.config = assembly.config();
+        this.agentRuntime = assembly.agentRuntime();
+        this.bus = assembly.bus();
+        this.workspace = assembly.config().getWorkspacePath();
+        this.cronService = assembly.cronService();
+        this.cronTool = assembly.cronTool();
     }
 
     /**
@@ -104,14 +109,7 @@ public class GatewayBootstrap {
         // 2. 初始化语音转写器
         initializeTranscriber();
 
-        // 3. 初始化定时任务服务
-        String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
-        cronService = new CronService(cronStorePath);
-
-        // 设置任务处理器：系统内置 job（心跳/记忆进化）按名称分发，
-        // 其余用户 job 通过 CronTool 执行
-        CronTool cronTool = new CronTool(cronService, (content, sessionKey, channel, chatId) ->
-                agentRuntime.processDirectWithChannel(content, sessionKey, channel, chatId), bus);
+        // 3. 定时任务服务已由装配根创建，此处只负责接上任务处理器与内置 job
 
         // 4. 初始化心跳运行器（tick 由 cron 调度，不再有独立心跳线程）
         heartbeatRunner = new HeartbeatRunner(
@@ -123,6 +121,8 @@ public class GatewayBootstrap {
                 (channel, chatId, content) -> bus.publishOutbound(new OutboundMessage(channel, chatId, content))
         );
 
+        // 设置任务处理器：系统内置 job（心跳/记忆进化）按名称分发，
+        // 其余用户 job 通过 CronTool 执行
         cronService.setOnJob(job -> {
             String name = job.getName();
             if (name != null && name.startsWith(HeartbeatRunner.HEARTBEAT_JOB_PREFIX)) {

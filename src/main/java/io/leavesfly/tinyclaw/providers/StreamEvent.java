@@ -14,6 +14,7 @@ import java.util.Map;
  * - TOOL_END: 工具调用结束
  * - SUBAGENT_START: 子代理开始执行
  * - SUBAGENT_CONTENT: 子代理输出内容
+ * - SUBAGENT_THINKING: 子代理思考/推理过程（可选展示）
  * - SUBAGENT_END: 子代理执行结束
  * - COLLABORATE_START: 多 Agent 协同开始
  * - COLLABORATE_AGENT: 协同中的 Agent 发言
@@ -35,6 +36,8 @@ public class StreamEvent {
         SUBAGENT_START,
         /** 子代理输出内容 */
         SUBAGENT_CONTENT,
+        /** 子代理思考/推理过程 */
+        SUBAGENT_THINKING,
         /** 子代理执行结束 */
         SUBAGENT_END,
         /** 多 Agent 协同开始 */
@@ -69,60 +72,77 @@ public class StreamEvent {
     /** 创建工具调用开始事件 */
     public static StreamEvent toolStart(String toolName, Map<String, Object> args) {
         return new StreamEvent(EventType.TOOL_START, toolName, 
-                Map.of("tool", toolName, "args", args != null ? args : Map.of()));
+                Map.of("tool", safe(toolName), "args", args != null ? args : Map.of()));
     }
     
     /** 创建工具调用结束事件 */
     public static StreamEvent toolEnd(String toolName, String result, boolean success) {
         return new StreamEvent(EventType.TOOL_END, result, 
-                Map.of("tool", toolName, "success", success));
+                Map.of("tool", safe(toolName), "success", success));
     }
     
     /** 创建子代理开始事件 */
     public static StreamEvent subagentStart(String taskId, String task, String label) {
         return new StreamEvent(EventType.SUBAGENT_START, task,
-                Map.of("taskId", taskId, "label", label != null ? label : ""));
+                Map.of("taskId", safe(taskId), "label", safe(label)));
     }
     
     /** 创建子代理内容事件 */
     public static StreamEvent subagentContent(String taskId, String content) {
         return new StreamEvent(EventType.SUBAGENT_CONTENT, content,
-                Map.of("taskId", taskId));
+                Map.of("taskId", safe(taskId)));
+    }
+    
+    /** 创建子代理思考过程事件 */
+    public static StreamEvent subagentThinking(String taskId, String content) {
+        return new StreamEvent(EventType.SUBAGENT_THINKING, content,
+                Map.of("taskId", safe(taskId)));
     }
     
     /** 创建子代理结束事件 */
     public static StreamEvent subagentEnd(String taskId, String result, boolean success) {
         return new StreamEvent(EventType.SUBAGENT_END, result,
-                Map.of("taskId", taskId, "success", success));
+                Map.of("taskId", safe(taskId), "success", success));
     }
     
     /** 创建协同开始事件 */
     public static StreamEvent collaborateStart(String mode, String topic) {
         return new StreamEvent(EventType.COLLABORATE_START, topic,
-                Map.of("mode", mode));
+                Map.of("mode", safe(mode)));
     }
     
     /** 创建协同 Agent 发言事件（完整消息） */
     public static StreamEvent collaborateAgent(String agentName, String content) {
         return new StreamEvent(EventType.COLLABORATE_AGENT, content,
-                Map.of("agent", agentName));
+                Map.of("agent", safe(agentName)));
     }
     
     /** 创建协同 Agent 发言增量事件（流式 chunk） */
     public static StreamEvent collaborateAgentChunk(String agentName, String chunk) {
         return new StreamEvent(EventType.COLLABORATE_AGENT_CHUNK, chunk,
-                Map.of("agent", agentName));
+                Map.of("agent", safe(agentName)));
     }
     
     /** 创建协同结束事件 */
     public static StreamEvent collaborateEnd(String mode, String result) {
         return new StreamEvent(EventType.COLLABORATE_END, result,
-                Map.of("mode", mode));
+                Map.of("mode", safe(mode)));
     }
     
     /** 创建思考过程事件 */
     public static StreamEvent thinking(String content) {
         return new StreamEvent(EventType.THINKING, content, null);
+    }
+    
+    /**
+     * metadata 值的空值兜底。
+     * 
+     * <p>{@code Map.of} 不接受 null 值，会直接抛 NPE。这些标识字段（taskId / 工具名 /
+     * 角色名）由上游传入，一旦某条链路漏传就会在构造事件时炸掉整个执行循环——而事件
+     * 只是过程展示，不该有能力中断任务。</p>
+     */
+    private static String safe(String value) {
+        return value != null ? value : "";
     }
     
     // ==================== Getters ====================
@@ -190,6 +210,7 @@ public class StreamEvent {
                 yield "\n👤 子代理" + displayLabel + " 开始执行...\n";
             }
             case SUBAGENT_CONTENT -> content;
+            case SUBAGENT_THINKING -> "💭 " + ensureTrailingNewline(content);
             case SUBAGENT_END -> {
                 Boolean success = getMeta("success");
                 String icon = Boolean.TRUE.equals(success) ? "✅" : "❌";
@@ -205,8 +226,17 @@ public class StreamEvent {
             }
             case COLLABORATE_AGENT_CHUNK -> content;
             case COLLABORATE_END -> "\n🎯 协同完成\n";
-            case THINKING -> "💭 " + content + "\n";
+            case THINKING -> "💭 " + ensureTrailingNewline(content);
         };
+    }
+    
+    /**
+     * 保证思考文本以换行结尾：行粒度的 THINKING 内容自带行尾换行，
+     * 软冲刷或外部构造的内容可能缺失，补齐避免 CLI 降级输出与后续内容粘连。
+     */
+    private static String ensureTrailingNewline(String content) {
+        String text = content != null ? content : "";
+        return text.endsWith("\n") ? text : text + "\n";
     }
     
     /**
@@ -261,6 +291,11 @@ public class StreamEvent {
                     node.put("task", content != null ? content : "");
                 }
                 case SUBAGENT_CONTENT -> {
+                    String taskId = getMeta("taskId");
+                    node.put("taskId", taskId != null ? taskId : "");
+                    node.put("content", content != null ? content : "");
+                }
+                case SUBAGENT_THINKING -> {
                     String taskId = getMeta("taskId");
                     node.put("taskId", taskId != null ? taskId : "");
                     node.put("content", content != null ? content : "");

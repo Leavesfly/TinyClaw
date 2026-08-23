@@ -13,17 +13,14 @@ import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
 import java.io.IOException;
-import java.util.Map;
 
 /**
  * 处理 Agent 及模型配置 API（/api/config）。
  */
-public class ConfigHandler {
+public class ConfigHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
 
-    private final Config config;
-    private final SecurityMiddleware security;
     private final ProvidersHandler providersHandler;
     private final AgentRuntime agentRuntime;
 
@@ -32,8 +29,7 @@ public class ConfigHandler {
      */
     public ConfigHandler(Config config, SecurityMiddleware security, ProvidersHandler providersHandler,
                          AgentRuntime agentRuntime) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
         this.providersHandler = providersHandler;
         this.agentRuntime = agentRuntime;
     }
@@ -47,88 +43,81 @@ public class ConfigHandler {
      *   <li>PUT  /api/config/agent   —— 更新 Agent 配置并持久化</li>
      * </ul>
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (WebUtils.API_CONFIG_MODEL.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            ObjectNode result = WebUtils.MAPPER.createObjectNode();
+            result.put("model", config.getAgent().getModel());
+            String savedProvider = config.getAgent().getProvider();
+            String currentProvider = (savedProvider != null && !savedProvider.isEmpty())
+                    ? savedProvider : providersHandler.getCurrentProvider();
+            result.put("provider", currentProvider);
+            WebUtils.sendJson(exchange, 200, result, corsOrigin);
 
-        try {
-            if (WebUtils.API_CONFIG_MODEL.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                ObjectNode result = WebUtils.MAPPER.createObjectNode();
-                result.put("model", config.getAgent().getModel());
-                String savedProvider = config.getAgent().getProvider();
-                String currentProvider = (savedProvider != null && !savedProvider.isEmpty())
-                        ? savedProvider : providersHandler.getCurrentProvider();
-                result.put("provider", currentProvider);
-                WebUtils.sendJson(exchange, 200, result, corsOrigin);
-
-            } else if (WebUtils.API_CONFIG_MODEL.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
-                String body = WebUtils.readRequestBodyLimited(exchange);
-                JsonNode json = WebUtils.MAPPER.readTree(body);
-                if (json.has("model")) {
-                    String newModel = json.path("model").asText();
-                    config.getAgent().setModel(newModel);
-                    // 切换 model 时，自动从 ModelsConfig 同步对应的 provider，
-                    // 避免 provider 与 model 手动错配（如 qwen3-max 被发到智谱的 api_base）
-                    ModelsConfig.ModelDefinition modelDef =
-                            config.getModels().getDefinitions().get(newModel);
-                    if (modelDef != null) {
-                        config.getAgent().setProvider(modelDef.getProvider());
-                    }
+        } else if (WebUtils.API_CONFIG_MODEL.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            String body = WebUtils.readRequestBodyLimited(exchange);
+            JsonNode json = WebUtils.MAPPER.readTree(body);
+            if (json.has("model")) {
+                String newModel = json.path("model").asText();
+                config.getAgent().setModel(newModel);
+                // 切换 model 时，自动从 ModelsConfig 同步对应的 provider，
+                // 避免 provider 与 model 手动错配（如 qwen3-max 被发到智谱的 api_base）
+                ModelsConfig.ModelDefinition modelDef =
+                        config.getModels().getDefinitions().get(newModel);
+                if (modelDef != null) {
+                    config.getAgent().setProvider(modelDef.getProvider());
                 }
-                // 允许显式覆盖 provider（优先级高于 model 自动推断，适用于自定义场景）
-                if (json.has("provider")) config.getAgent().setProvider(json.path("provider").asText());
-                WebUtils.saveConfig(config, logger);
-                // 配置保存后立即热重载，使模型选择无需重启即可生效
-                if (agentRuntime != null) {
-                    agentRuntime.reloadModel();
-                }
-                WebUtils.sendJson(exchange, 200, WebUtils.successJson("Model updated"), corsOrigin);
-
-            } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                AgentConfig agentConfig = config.getAgent();
-                ObjectNode result = WebUtils.MAPPER.createObjectNode();
-                result.put("workspace",           agentConfig.getWorkspace());
-                result.put("model",               agentConfig.getModel());
-                result.put("maxTokens",           agentConfig.getMaxTokens());
-                result.put("temperature",         agentConfig.getTemperature());
-                result.put("maxToolIterations",   agentConfig.getMaxToolIterations());
-                result.put("heartbeatEnabled",    agentConfig.isHeartbeatEnabled());
-                result.put("heartbeatIntervalSeconds", agentConfig.getHeartbeat().getIntervalSeconds());
-                result.put("heartbeatTimeoutSeconds",  agentConfig.getHeartbeat().getTimeoutSeconds());
-                result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
-                result.put("thinkingEnabled",     agentConfig.isThinkingEnabled());
-                WebUtils.sendJson(exchange, 200, result, corsOrigin);
-
-            } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
-                String body = WebUtils.readRequestBodyLimited(exchange);
-                JsonNode json = WebUtils.MAPPER.readTree(body);
-                AgentConfig agentConfig = config.getAgent();
-                if (json.has("model"))               agentConfig.setModel(json.get("model").asText());
-                if (json.has("maxTokens"))           agentConfig.setMaxTokens(json.get("maxTokens").asInt());
-                if (json.has("temperature"))         agentConfig.setTemperature(json.get("temperature").asDouble());
-                if (json.has("maxToolIterations"))   agentConfig.setMaxToolIterations(json.get("maxToolIterations").asInt());
-                if (json.has("heartbeatEnabled"))    agentConfig.setHeartbeatEnabled(json.get("heartbeatEnabled").asBoolean());
-                if (json.has("heartbeatIntervalSeconds"))
-                    agentConfig.getHeartbeat().setIntervalSeconds(json.get("heartbeatIntervalSeconds").asInt());
-                if (json.has("heartbeatTimeoutSeconds"))
-                    agentConfig.getHeartbeat().setTimeoutSeconds(json.get("heartbeatTimeoutSeconds").asInt());
-                if (json.has("restrictToWorkspace")) agentConfig.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
-                if (json.has("thinkingEnabled"))    agentConfig.setThinkingEnabled(json.get("thinkingEnabled").asBoolean());
-                WebUtils.saveConfig(config, logger);
-                // 思考模式开关热更新：直接作用于当前 provider，无需重建即可生效
-                if (agentRuntime != null && agentRuntime.getProvider() instanceof HTTPProvider httpProvider) {
-                    httpProvider.setThinkingEnabled(agentConfig.isThinkingEnabled());
-                }
-                WebUtils.sendJson(exchange, 200, WebUtils.successJson("Agent config updated"), corsOrigin);
-
-            } else {
-                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not found"), corsOrigin);
             }
-        } catch (Exception e) {
-            logger.error("Config API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+            // 允许显式覆盖 provider（优先级高于 model 自动推断，适用于自定义场景）
+            if (json.has("provider")) config.getAgent().setProvider(json.path("provider").asText());
+            WebUtils.saveConfig(config, logger);
+            // 配置保存后立即热重载，使模型选择无需重启即可生效
+            if (agentRuntime != null) {
+                agentRuntime.reloadModel();
+            }
+            WebUtils.sendJson(exchange, 200, WebUtils.successJson("Model updated"), corsOrigin);
+
+        } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            AgentConfig agentConfig = config.getAgent();
+            ObjectNode result = WebUtils.MAPPER.createObjectNode();
+            result.put("workspace",           agentConfig.getWorkspace());
+            result.put("model",               agentConfig.getModel());
+            result.put("maxTokens",           agentConfig.getMaxTokens());
+            result.put("temperature",         agentConfig.getTemperature());
+            result.put("maxToolIterations",   agentConfig.getMaxToolIterations());
+            result.put("heartbeatEnabled",    agentConfig.isHeartbeatEnabled());
+            result.put("heartbeatIntervalSeconds", agentConfig.getHeartbeat().getIntervalSeconds());
+            result.put("heartbeatTimeoutSeconds",  agentConfig.getHeartbeat().getTimeoutSeconds());
+            result.put("restrictToWorkspace", agentConfig.isRestrictToWorkspace());
+            result.put("thinkingEnabled",     agentConfig.isThinkingEnabled());
+            WebUtils.sendJson(exchange, 200, result, corsOrigin);
+
+        } else if (WebUtils.API_CONFIG_AGENT.equals(path) && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            String body = WebUtils.readRequestBodyLimited(exchange);
+            JsonNode json = WebUtils.MAPPER.readTree(body);
+            AgentConfig agentConfig = config.getAgent();
+            if (json.has("model"))               agentConfig.setModel(json.get("model").asText());
+            if (json.has("maxTokens"))           agentConfig.setMaxTokens(json.get("maxTokens").asInt());
+            if (json.has("temperature"))         agentConfig.setTemperature(json.get("temperature").asDouble());
+            if (json.has("maxToolIterations"))   agentConfig.setMaxToolIterations(json.get("maxToolIterations").asInt());
+            if (json.has("heartbeatEnabled"))    agentConfig.setHeartbeatEnabled(json.get("heartbeatEnabled").asBoolean());
+            if (json.has("heartbeatIntervalSeconds"))
+                agentConfig.getHeartbeat().setIntervalSeconds(json.get("heartbeatIntervalSeconds").asInt());
+            if (json.has("heartbeatTimeoutSeconds"))
+                agentConfig.getHeartbeat().setTimeoutSeconds(json.get("heartbeatTimeoutSeconds").asInt());
+            if (json.has("restrictToWorkspace")) agentConfig.setRestrictToWorkspace(json.get("restrictToWorkspace").asBoolean());
+            if (json.has("thinkingEnabled"))    agentConfig.setThinkingEnabled(json.get("thinkingEnabled").asBoolean());
+            WebUtils.saveConfig(config, logger);
+            // 思考模式开关热更新：直接作用于当前 provider，无需重建即可生效
+            if (agentRuntime != null && agentRuntime.getProvider() instanceof HTTPProvider httpProvider) {
+                httpProvider.setThinkingEnabled(agentConfig.isThinkingEnabled());
+            }
+            WebUtils.sendJson(exchange, 200, WebUtils.successJson("Agent config updated"), corsOrigin);
+
+        } else {
+            return false;
         }
+        return true;
     }
 }

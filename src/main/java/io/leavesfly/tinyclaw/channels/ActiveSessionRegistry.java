@@ -1,12 +1,13 @@
 package io.leavesfly.tinyclaw.channels;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -76,17 +77,15 @@ public final class ActiveSessionRegistry {
     }
 
     private static void load() {
-        if (storageFile == null || !Files.exists(storageFile)) {
+        if (storageFile == null) {
             return;
         }
-        try {
-            Map<String, String> loaded = MAPPER.readValue(Files.readAllBytes(storageFile),
-                    MAPPER.getTypeFactory().constructMapType(
-                            HashMap.class, String.class, String.class));
+        Map<String, String> loaded = JsonFileStore.readJson(MAPPER, storageFile,
+                new TypeReference<HashMap<String, String>>() {},
+                HashMap::new);
+        if (!loaded.isEmpty()) {
             POINTERS.putAll(loaded);
             logger.info("Loaded active session pointers", Map.of("count", POINTERS.size()));
-        } catch (Exception e) {
-            logger.warn("Active session pointers unreadable, starting fresh: " + e.getMessage());
         }
     }
 
@@ -95,18 +94,10 @@ public final class ActiveSessionRegistry {
         if (target == null) {
             return;
         }
-        Path temp = target.resolveSibling(FILE_NAME + "." + System.nanoTime() + ".tmp");
         try {
-            Files.write(temp, MAPPER.writeValueAsBytes(POINTERS));
-            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            JsonFileStore.writeJson(MAPPER, target, POINTERS);
         } catch (Exception e) {
             logger.warn("Failed to persist active session pointers: " + e.getMessage());
-        } finally {
-            try {
-                Files.deleteIfExists(temp);
-            } catch (Exception ignored) {
-                // 临时文件清理失败不影响主流程
-            }
         }
     }
 }

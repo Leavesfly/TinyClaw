@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
 import io.leavesfly.tinyclaw.config.Config;
-import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -14,13 +13,9 @@ import java.util.Map;
 /**
  * 处理进化功能状态查询 API（/api/feedback）。
  */
-public class FeedbackHandler {
+public class FeedbackHandler extends BaseHandler {
 
-    private static final TinyClawLogger logger = TinyClawLogger.getLogger("web.feedback");
-
-    private final Config config;
     private final AgentRuntime agentRuntime;
-    private final SecurityMiddleware security;
 
     /**
      * 构造 FeedbackHandler。
@@ -30,29 +25,21 @@ public class FeedbackHandler {
      * @param security  安全中间件
      */
     public FeedbackHandler(Config config, AgentRuntime agentRuntime, SecurityMiddleware security) {
-        this.config = config;
+        super(config, security);
         this.agentRuntime = agentRuntime;
-        this.security = security;
     }
 
     /**
-     * 入口路由：预检通过后，返回进化功能状态。
+     * 返回进化功能状态。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            if (WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleGetStatus(exchange);
-            } else {
-                WebUtils.sendNotFound(exchange, corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Feedback API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (!WebUtils.HTTP_METHOD_GET.equals(method)) {
+            return false;
         }
+        handleGetStatus(exchange);
+        return true;
     }
 
     /**

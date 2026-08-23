@@ -63,8 +63,6 @@ public class DingTalkChannel extends BaseChannel {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
     private static final String STREAM_CONNECTION_URL = "https://api.dingtalk.com/v1.0/gateway/connections/open";
-    private static final long RECONNECT_DELAY_SECONDS = 5;
-    private static final int MAX_RECONNECT_ATTEMPTS = 10;
     
     private final ChannelsConfig.DingTalkConfig config;
     private final OkHttpClient httpClient;
@@ -74,12 +72,11 @@ public class DingTalkChannel extends BaseChannel {
     
     // Stream 模式相关
     private WebSocket webSocket;
+    /** 是否希望保持 Stream 长连接；断线期间仍为 true */
     private volatile boolean streamModeRunning = false;
     
-    // 重连调度器（单线程守护，避免每次重连创建新线程）与重连计数
-    private volatile java.util.concurrent.ScheduledExecutorService reconnectScheduler;
-    private final java.util.concurrent.atomic.AtomicInteger reconnectAttempts =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private final Reconnector reconnector =
+            new Reconnector("钉钉 Stream", logger, () -> streamModeRunning, this::connectStreamConnection);
     
     /**
      * 创建钉钉通道
@@ -124,34 +121,14 @@ public class DingTalkChannel extends BaseChannel {
     
     /**
      * 启动 Stream 模式
-     * 在守护线程中运行，避免阻塞主线程
+     *
+     * <p>首次连接也交给重连调度器异步执行：既不阻塞 start()，失败后又能直接沿用
+     * 同一套指数退避，不必再养一个固定间隔的重试循环。</p>
      */
     private void startStreamMode() {
         streamModeRunning = true;
-        reconnectScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "DingTalkReconnectThread");
-            thread.setDaemon(true);
-            return thread;
-        });
-        Thread streamThread = new Thread(() -> {
-            while (isRunning() && streamModeRunning) {
-                try {
-                    connectStreamConnection();
-                    break;
-                } catch (Exception e) {
-                    logger.error("Stream 连接失败，将在 " + RECONNECT_DELAY_SECONDS + " 秒后重试", 
-                        Map.of("error", e.getMessage()));
-                    try {
-                        Thread.sleep(RECONNECT_DELAY_SECONDS * 1000);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
-        }, "DingTalkStreamThread");
-        streamThread.setDaemon(true);
-        streamThread.start();
+        reconnector.start();
+        reconnector.connectNow();
     }
     
     /**
@@ -171,7 +148,7 @@ public class DingTalkChannel extends BaseChannel {
             @Override
             public void onOpen(WebSocket webSocket, Response response) {
                 logger.info("钉钉 Stream 连接已建立");
-                reconnectAttempts.set(0);
+                reconnector.onConnected();
             }
             
             @Override
@@ -187,17 +164,13 @@ public class DingTalkChannel extends BaseChannel {
             @Override
             public void onClosed(WebSocket webSocket, int code, String reason) {
                 logger.info("钉钉 Stream 连接已关闭", Map.of("code", String.valueOf(code), "reason", reason));
-                if (streamModeRunning && isRunning()) {
-                    scheduleReconnect();
-                }
+                reconnector.schedule();
             }
             
             @Override
             public void onFailure(WebSocket webSocket, Throwable t, Response response) {
-                logger.error("钉钉 Stream 连接失败", Map.of("error", t.getMessage()));
-                if (streamModeRunning && isRunning()) {
-                    scheduleReconnect();
-                }
+                logger.error("钉钉 Stream 连接失败", Map.of("error", String.valueOf(t.getMessage())));
+                reconnector.schedule();
             }
         };
         
@@ -340,57 +313,17 @@ public class DingTalkChannel extends BaseChannel {
         }
     }
     
-    /**
-     * 调度重连：通过单线程调度器延迟重试，失败后再次排队，
-     * 避免重连失败后静默停摆
-     */
-    private void scheduleReconnect() {
-        if (!streamModeRunning || !isRunning()) {
-            return;
-        }
-        
-        int attempt = reconnectAttempts.incrementAndGet();
-        if (attempt > MAX_RECONNECT_ATTEMPTS) {
-            logger.error("钉钉 Stream 重连次数已达上限，停止重连", Map.of(
-                    "max_attempts", String.valueOf(MAX_RECONNECT_ATTEMPTS)));
-            return;
-        }
-        
-        java.util.concurrent.ScheduledExecutorService scheduler = reconnectScheduler;
-        if (scheduler == null || scheduler.isShutdown()) {
-            return;
-        }
-        
-        scheduler.schedule(() -> {
-            if (!streamModeRunning || !isRunning()) {
-                return;
-            }
-            try {
-                connectStreamConnection();
-            } catch (Exception e) {
-                logger.error("重连失败", Map.of(
-                        "attempt", String.valueOf(attempt),
-                        "error", e.getMessage()));
-                scheduleReconnect();
-            }
-        }, RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS);
-    }
-    
     @Override
     public void stop() {
         logger.info("正在停止钉钉通道...");
         
+        // 先停重连再关连接：否则 close 触发的 onClosed 会又排一次重连
         streamModeRunning = false;
+        reconnector.stop();
         
         if (webSocket != null) {
             webSocket.close(1000, "Channel stopped");
             webSocket = null;
-        }
-        
-        java.util.concurrent.ScheduledExecutorService scheduler = reconnectScheduler;
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            reconnectScheduler = null;
         }
         
         setRunning(false);

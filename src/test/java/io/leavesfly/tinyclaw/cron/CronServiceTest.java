@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * CronService 单元测试
  *
  * <p>覆盖：findJobByName 按名查找、updateJobSchedule 调度更新、
- * EVERY 任务 misfire 重启补跑。</p>
+ * EVERY 任务 misfire 重启补跑、多实例共享同一存储时的丢失更新防护。</p>
  */
 @DisplayName("CronService 定时服务测试")
 class CronServiceTest {
@@ -26,11 +26,15 @@ class CronServiceTest {
     Path tempDir;
 
     private CronService service;
+    private CronService secondService;
 
     @AfterEach
     void tearDown() {
         if (service != null && service.isRunning()) {
             service.stop();
+        }
+        if (secondService != null && secondService.isRunning()) {
+            secondService.stop();
         }
     }
 
@@ -121,5 +125,49 @@ class CronServiceTest {
         assertNotNull(job.getState().getNextRunAtMs());
         assertTrue(job.getState().getNextRunAtMs() >= now + 40_000,
                 "未错过周期的任务应重算为 now + interval");
+    }
+
+    // ==================== 多实例共享存储：丢失更新防护 ====================
+
+    /**
+     * 回归：同一份 jobs.json 上存在另一个实例（如常驻网关进程外的
+     * {@code tinyclaw cron add}）时，后写方不得抹掉先写方的任务。
+     *
+     * <p>saveStoreUnsafe 是内存全量覆盖写，修复前两个实例会互相覆盖，
+     * 表现为用户创建的定时任务静默消失。</p>
+     */
+    @Test
+    @DisplayName("多实例: 后写方不会覆盖先写方新增的任务")
+    void concurrentInstances_DoNotClobberEachOther() {
+        String storePath = tempDir.resolve("jobs.json").toString();
+
+        // 实例 A（模拟网关）：先注册系统 job
+        service = new CronService(storePath);
+        service.addJob("__heartbeat__", CronSchedule.every(1800_000), "", "system", null);
+
+        // 实例 B（模拟 CLI 进程）：加载后新增用户 job
+        secondService = new CronService(storePath);
+        secondService.addJob("user-job", CronSchedule.every(60_000), "hi", "cli", "me");
+
+        // B 写入后，系统 job 必须仍在
+        assertNotNull(secondService.findJobByName("__heartbeat__"),
+                "B 的写入不应抹掉 A 注册的系统 job");
+
+        // A 再次发生写入（如任务状态更新）时，应先同步到 B 的新增，不得抹掉 user-job
+        service.addJob("another", CronSchedule.every(60_000), "x", "", "");
+
+        CronService verifier = new CronService(storePath);
+        assertNotNull(verifier.findJobByName("__heartbeat__"), "__heartbeat__ 应存在");
+        assertNotNull(verifier.findJobByName("user-job"), "user-job 应存在（不得被 A 覆盖）");
+        assertNotNull(verifier.findJobByName("another"), "another 应存在");
+    }
+
+    @Test
+    @DisplayName("defaultStorePath: 统一解析工作空间下的任务存储路径")
+    void defaultStorePath_ResolvesUnderWorkspace() {
+        String path = CronService.defaultStorePath(tempDir.toString());
+        assertTrue(path.endsWith("cron" + java.io.File.separator + "jobs.json"),
+                "应为 workspace/cron/jobs.json，实际：" + path);
+        assertTrue(path.startsWith(tempDir.toString()), "应位于工作空间内");
     }
 }

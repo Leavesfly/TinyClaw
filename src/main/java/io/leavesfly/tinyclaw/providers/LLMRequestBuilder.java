@@ -22,6 +22,16 @@ import java.util.Map;
 public class LLMRequestBuilder {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("provider");
+    
+    /**
+     * 单张图片的读取上限（字节）。
+     * 
+     * <p>Base64 会把体积放大约 4/3，再叠上 JSON 转义与请求副本，一张过大的图
+     * 足以把堆撑爆；且上游 {@code /api/upload} 已限制单文件 10MB，超出该量级的路径
+     * 不可能来自正常上传，直接跳过更安全。</p>
+     */
+    private static final long MAX_IMAGE_BYTES = 16L * 1024 * 1024;
+    
     private final ObjectMapper objectMapper;
     
     public LLMRequestBuilder() {
@@ -168,10 +178,20 @@ public class LLMRequestBuilder {
             Path path = Paths.get(imagePath);
             
             // 检查文件是否存在
-            if (!Files.exists(path)) {
+            if (!Files.isRegularFile(path)) {
                 logger.error("Image file not found", Map.of(
                         "path", imagePath,
                         "absolute_path", path.toAbsolutePath().toString()));
+                return null;
+            }
+            
+            // 先看大小再读：避免 readAllBytes 把超大文件整体载入堆
+            long sizeBytes = Files.size(path);
+            if (sizeBytes > MAX_IMAGE_BYTES) {
+                logger.error("Image too large, skipped", Map.of(
+                        "path", imagePath,
+                        "size_bytes", sizeBytes,
+                        "max_bytes", MAX_IMAGE_BYTES));
                 return null;
             }
             

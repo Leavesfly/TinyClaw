@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.evolution;
 
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
 import io.leavesfly.tinyclaw.evolution.strategy.OptimizationContext;
 import io.leavesfly.tinyclaw.evolution.strategy.OptimizationStrategy;
 import io.leavesfly.tinyclaw.evolution.strategy.SelfReflectionStrategy;

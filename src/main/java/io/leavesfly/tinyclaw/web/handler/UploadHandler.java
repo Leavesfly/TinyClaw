@@ -33,7 +33,7 @@ import java.util.UUID;
  *   "files": ["uploads/xxx.jpg", "uploads/yyy.png"]
  * }
  */
-public class UploadHandler {
+public class UploadHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
     
@@ -46,36 +46,24 @@ public class UploadHandler {
     /** 单个文件最大大小（10MB） */
     private static final int MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-    private final Config config;
-    private final SecurityMiddleware security;
-
     /**
      * 构造 UploadHandler，注入全局配置与安全中间件。
      */
     public UploadHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /**
      * 入口路由：预检通过后，处理文件上传请求。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            if (WebUtils.HTTP_METHOD_POST.equals(method)) {
-                handleUpload(exchange);
-            } else {
-                WebUtils.sendNotFound(exchange, corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Upload API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (!WebUtils.HTTP_METHOD_POST.equals(method)) {
+            return false;
         }
+        handleUpload(exchange);
+        return true;
     }
 
     /**

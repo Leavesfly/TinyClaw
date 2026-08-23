@@ -17,46 +17,48 @@ import java.util.Map;
 /**
  * 处理认证相关 API（/api/auth/login、/api/auth/check）。
  */
-public class AuthHandler {
+public class AuthHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
-
-    private final Config config;
-    private final SecurityMiddleware security;
 
     /**
      * 构造 AuthHandler，注入全局配置与安全中间件。
      */
     public AuthHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /**
-     * 入口路由：处理 CORS 预检后，按请求路径分发到
-     * {@link #handleAuthCheck} 或 {@link #handleAuthLogin}。
+     * 重写鉴权：登录与登录态查询是取得凭证的入口，如果这里也要求已认证就永远登不进去。
+     * 因此只做 CORS 预检，认证由各子路径自行处理。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        try {
-            // Auth 端点只做 CORS 预检，不强制认证
-            if (security.handleCorsPreFlight(exchange)) return;
+    @Override
+    protected boolean authorize(HttpExchange exchange) throws IOException {
+        return !security.handleCorsPreFlight(exchange);
+    }
 
-            String path = exchange.getRequestURI().getPath();
-            String method = exchange.getRequestMethod();
-            String corsOrigin = config.getGateway().getCorsOrigin();
+    /**
+     * 认证端点不向未登录调用方回显异常细节。
+     */
+    @Override
+    protected String errorMessage(Exception e) {
+        return "Internal error";
+    }
 
-            if ("/api/auth/check".equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleAuthCheck(exchange, corsOrigin);
-            } else if ("/api/auth/login".equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
-                handleAuthLogin(exchange, corsOrigin);
-            } else {
-                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not Found"), corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Auth handler error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson("Internal error"),
-                    config.getGateway().getCorsOrigin());
+    /**
+     * 按请求路径分发到 {@link #handleAuthCheck} 或 {@link #handleAuthLogin}。
+     */
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if ("/api/auth/check".equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleAuthCheck(exchange, corsOrigin);
+        } else if ("/api/auth/login".equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            handleAuthLogin(exchange, corsOrigin);
+        } else {
+            return false;
         }
+        return true;
     }
 
     /**

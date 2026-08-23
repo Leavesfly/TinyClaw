@@ -1,7 +1,6 @@
 package io.leavesfly.tinyclaw.cli;
 
-import io.leavesfly.tinyclaw.agent.AgentRuntime;
-import io.leavesfly.tinyclaw.bus.MessageBus;
+import io.leavesfly.tinyclaw.bootstrap.RuntimeAssembly;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -59,13 +58,13 @@ public class GatewayCommand extends CliCommand {
             return 1;
         }
         
-        AgentContext agentContext = createAgentContext(config);
+        RuntimeAssembly assembly = createAssembly(config);
         
         // 创建并启动网关
-        GatewayBootstrap gateway = createAndStartGateway(config, agentContext);
+        GatewayBootstrap gateway = createAndStartGateway(assembly);
         
         // 打印启动信息
-        printStartupInfo(gateway, config, agentContext.providerConfigured);
+        printStartupInfo(gateway, config, assembly.isProviderConfigured());
         
         // 等待关闭
         gateway.awaitShutdown();
@@ -90,44 +89,38 @@ public class GatewayCommand extends CliCommand {
     }
     
     /**
-     * 创建 Agent 上下文。
+     * 装配运行时。
      * 
      * @param config 配置对象
-     * @return Agent 上下文
+     * @return 装配结果
      */
-    private AgentContext createAgentContext(Config config) {
-        // 创建服务提供者（允许为 null）
+    private RuntimeAssembly createAssembly(Config config) {
+        // 创建服务提供者（允许为 null，未配置时仍可起 Web Console 让用户配置）
         LLMProvider provider = createProviderOrNull(config);
-        boolean providerConfigured = (provider != null);
         
-        if (!providerConfigured) {
+        if (provider == null) {
             System.out.println();
             System.out.println(WARNING_NO_PROVIDER);
             System.out.println();
         }
         
-        // 创建消息总线和 Agent 循环
-        MessageBus bus = new MessageBus();
-        AgentRuntime agentRuntime = new AgentRuntime(config, bus, provider);
+        RuntimeAssembly assembly = RuntimeAssembly.assemble(config, provider);
         
-        // 注册工具，再打印 Agent 状态
-        if (providerConfigured) {
-            registerTools(agentRuntime, config, bus, provider);
-            printAgentStatus(agentRuntime);
+        if (assembly.isProviderConfigured()) {
+            printAgentStatus(assembly.agentRuntime());
         }
         
-        return new AgentContext(agentRuntime, bus, providerConfigured);
+        return assembly;
     }
     
     /**
      * 创建并启动网关。
      * 
-     * @param config 配置对象
-     * @param agentContext Agent 上下文
+     * @param assembly 运行时装配结果
      * @return 网关实例
      */
-    private GatewayBootstrap createAndStartGateway(Config config, AgentContext agentContext) {
-        return new GatewayBootstrap(config, agentContext.agentRuntime, agentContext.bus)
+    private GatewayBootstrap createAndStartGateway(RuntimeAssembly assembly) {
+        return new GatewayBootstrap(assembly)
                 .initialize()
                 .start();
     }
@@ -228,13 +221,5 @@ public class GatewayCommand extends CliCommand {
         System.out.println();
         System.out.println("Options:");
         System.out.println("  -d, --debug    启用调试模式");
-    }
-    
-    /**
-     * Agent 上下文封装类。
-     * 
-     * 封装 Agent 相关的组件和状态。
-     */
-    private record AgentContext(AgentRuntime agentRuntime, MessageBus bus, boolean providerConfigured) {
     }
 }

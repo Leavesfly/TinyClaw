@@ -1,31 +1,24 @@
 package io.leavesfly.tinyclaw.cli;
 
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
-import io.leavesfly.tinyclaw.bus.MessageBus;
-import io.leavesfly.tinyclaw.bus.OutboundMessage;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.config.ConfigLoader;
 import io.leavesfly.tinyclaw.config.ModelsConfig;
 import io.leavesfly.tinyclaw.config.ProvidersConfig;
-import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
-import io.leavesfly.tinyclaw.security.SecurityGuard;
-import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
-
-import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
-import io.leavesfly.tinyclaw.tools.*;
-import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 
 import java.io.File;
-import java.nio.file.Paths;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * CLI 命令的基类
+ * CLI 命令的基类。
+ *
+ * <p>只负责命令行关心的事：参数解析、配置加载、Provider 创建与错误提示。
+ * 运行时对象图的装配已移到 {@link io.leavesfly.tinyclaw.bootstrap.RuntimeAssembly}，
+ * 避免 CLI 与网关各自装配一份有状态组件。</p>
  */
 public abstract class CliCommand {
 
@@ -240,99 +233,6 @@ public abstract class CliCommand {
         System.err.println("    • dashscope   - https://dashscope.console.aliyun.com/");
         System.err.println("    • ollama      - 本地部署，无需 API Key");
         System.err.println();
-    }
-
-    /**
-     * 注册常用工具到 AgentRuntime
-     */
-    protected void registerTools(AgentRuntime agentRuntime, Config config, MessageBus bus, LLMProvider provider) {
-        String workspace = config.getWorkspacePath();
-
-        // 初始化 SecurityGuard（始终创建，restrictToWorkspace 由配置决定）
-        boolean restrictToWorkspace = config.getAgent().isRestrictToWorkspace();
-        List<String> customBlacklist = config.getAgent().getCommandBlacklist();
-        SecurityGuard securityGuard;
-        if (customBlacklist != null && !customBlacklist.isEmpty()) {
-            securityGuard = new SecurityGuard(workspace, restrictToWorkspace, customBlacklist);
-        } else {
-            securityGuard = new SecurityGuard(workspace, restrictToWorkspace);
-        }
-
-        // 文件工具（SecurityGuard 强制注入）
-        agentRuntime.registerTool(new ReadFileTool(securityGuard));
-        agentRuntime.registerTool(new WriteFileTool(securityGuard));
-        agentRuntime.registerTool(new ListDirTool(securityGuard));
-        agentRuntime.registerTool(new EditFileTool(securityGuard));
-
-        // 执行工具
-        agentRuntime.registerTool(new ExecTool(workspace, securityGuard));
-
-        // 网络工具
-        String braveApiKey = config.getTools() != null ? config.getTools().getBraveApi() : null;
-        if (braveApiKey != null && !braveApiKey.isEmpty()) {
-            agentRuntime.registerTool(new WebSearchTool(braveApiKey, 5));
-        }
-        agentRuntime.registerTool(new WebFetchTool(50000));
-
-        // 消息工具
-        MessageTool messageTool = new MessageTool();
-        messageTool.setSendCallback((channel, chatId, content) -> {
-            bus.publishOutbound(new OutboundMessage(channel, chatId, content));
-        });
-        agentRuntime.registerTool(messageTool);
-
-        // 定时任务工具
-        String cronStorePath = Paths.get(workspace, "cron", "jobs.json").toString();
-        CronService cronService = new CronService(cronStorePath);
-
-        CronTool cronTool = new CronTool(cronService, new CronTool.JobExecutor() {
-            @Override
-            public String processDirectWithChannel(String content, String sessionKey, String channel, String chatId) throws Exception {
-                return agentRuntime.processDirectWithChannel(content, sessionKey, channel, chatId);
-            }
-        }, bus);
-        agentRuntime.registerTool(cronTool);
-
-        // 子代理工具（传入 ToolRegistry 以支持工具调用和 Agent Loop）
-        String model = config.getAgent().getModel();
-        int maxIterations = config.getAgent().getMaxToolIterations();
-        SubagentManager subagentManager = new SubagentManager(provider, workspace, bus, agentRuntime.getToolRegistry(), model, maxIterations);
-        // 注入动态子代理定义加载器（workspace/agents/<name>/AGENT.md，支持运行时热更新）
-        subagentManager.setAgentsLoader(new SubagentsLoader(workspace));
-        agentRuntime.registerTool(new SpawnTool(subagentManager));
-        agentRuntime.registerShutdownHook(subagentManager::shutdown);
-
-        // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
-        agentRuntime.registerTool(new SkillsTool(workspace, agentRuntime.getSkillsLoader(),
-                config.getTools() != null ? config.getTools().getSkills() : null));
-
-        // 社交网络工具
-        if (config.getSocialNetwork() != null && config.getSocialNetwork().isEnabled()) {
-            agentRuntime.registerTool(new SocialNetworkTool(
-                    config.getSocialNetwork().getEndpoint(),
-                    config.getSocialNetwork().getAgentId(),
-                    config.getSocialNetwork().getApiKey()
-            ));
-        }
-
-        // Token 消耗查询工具
-        TokenUsageStore tokenUsageStore = agentRuntime.getTokenUsageStore();
-        if (tokenUsageStore != null) {
-            agentRuntime.registerTool(new TokenUsageTool(tokenUsageStore));
-        }
-
-        // 多 Agent 协同工具（仅在协同功能启用时注册）
-        AgentOrchestrator orchestrator = agentRuntime.getOrchestrator();
-        if (orchestrator != null) {
-            CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
-            collaborateTool.setLLMContext(provider, config.getAgent().getModel());
-            // 注入插件注册的 agent 角色库，使主 Agent 可在 collaborate 中按名复用插件 agent
-            io.leavesfly.tinyclaw.plugins.PluginManager pluginManager = agentRuntime.getPluginManager();
-            if (pluginManager != null && !pluginManager.getPluginAgentsByName().isEmpty()) {
-                collaborateTool.setPluginAgents(pluginManager.getPluginAgentsByName());
-            }
-            agentRuntime.registerTool(collaborateTool);
-        }
     }
 
     /**

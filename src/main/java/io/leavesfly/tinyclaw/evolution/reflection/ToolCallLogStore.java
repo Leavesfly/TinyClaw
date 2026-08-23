@@ -4,15 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -64,13 +63,7 @@ public class ToolCallLogStore {
         Path file = filePathFor(event.getTimestamp() != null ? event.getTimestamp() : Instant.now());
         lock.writeLock().lock();
         try {
-            String line = mapper.writeValueAsString(event);
-            try (BufferedWriter w = Files.newBufferedWriter(
-                    file, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                w.write(line);
-                w.newLine();
-            }
+            JsonFileStore.appendAndSync(file, mapper.writeValueAsString(event) + System.lineSeparator());
         } catch (IOException e) {
             logger.error("Failed to append tool call event", Map.of("error", e.getMessage()));
         } finally {
@@ -92,14 +85,12 @@ public class ToolCallLogStore {
         lock.writeLock().lock();
         try {
             for (Map.Entry<Path, List<ToolCallEvent>> entry : byFile.entrySet()) {
-                try (BufferedWriter w = Files.newBufferedWriter(
-                        entry.getKey(), StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                    for (ToolCallEvent ev : entry.getValue()) {
-                        w.write(mapper.writeValueAsString(ev));
-                        w.newLine();
-                    }
+                // 拼成一次 append：同一文件只 fsync 一次，避免逐行刷盘
+                StringBuilder batch = new StringBuilder();
+                for (ToolCallEvent ev : entry.getValue()) {
+                    batch.append(mapper.writeValueAsString(ev)).append(System.lineSeparator());
                 }
+                JsonFileStore.appendAndSync(entry.getKey(), batch.toString());
             }
         } catch (IOException e) {
             logger.error("Failed to batch append events", Map.of("error", e.getMessage()));

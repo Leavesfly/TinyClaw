@@ -28,12 +28,9 @@ import java.util.Map;
  *   <li><b>GET /api/reflection/repairs</b> — 已应用修复的概览</li>
  * </ul>
  */
-public class ReflectionHandler {
+public class ReflectionHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web.reflection");
-
-    private final Config config;
-    private final SecurityMiddleware security;
 
     /**
      * 持有全部 Reflection 组件的不可变快照，保证原子性设置和读取。
@@ -54,8 +51,7 @@ public class ReflectionHandler {
     private volatile Components components;
 
     public ReflectionHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /** 原子性地注入全部 Reflection 组件（在 Provider 初始化后调用）。 */
@@ -63,32 +59,23 @@ public class ReflectionHandler {
         this.components = new Components(aggregator, engine, applier);
     }
 
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-
-        String method = exchange.getRequestMethod();
-        String path = exchange.getRequestURI().getPath();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            // 路由
-            if (path.equals(WebUtils.API_REFLECTION) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleOverview(exchange);
-            } else if (path.equals(WebUtils.API_REFLECTION + "/health") && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleHealth(exchange);
-            } else if (path.equals(WebUtils.API_REFLECTION + "/proposals") && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleListProposals(exchange);
-            } else if (path.startsWith(WebUtils.API_REFLECTION + "/proposals/") && WebUtils.HTTP_METHOD_POST.equals(method)) {
-                handleProposalAction(exchange, path);
-            } else if (path.equals(WebUtils.API_REFLECTION + "/repairs") && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleRepairs(exchange);
-            } else {
-                WebUtils.sendNotFound(exchange, corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Reflection API error", Map.of("error", e.getMessage(), "path", path));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (path.equals(WebUtils.API_REFLECTION) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleOverview(exchange);
+        } else if (path.equals(WebUtils.API_REFLECTION + "/health") && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleHealth(exchange);
+        } else if (path.equals(WebUtils.API_REFLECTION + "/proposals") && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleListProposals(exchange);
+        } else if (path.startsWith(WebUtils.API_REFLECTION + "/proposals/") && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            handleProposalAction(exchange, path);
+        } else if (path.equals(WebUtils.API_REFLECTION + "/repairs") && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleRepairs(exchange);
+        } else {
+            return false;
         }
+        return true;
     }
 
     // ==================== GET /api/reflection ====================

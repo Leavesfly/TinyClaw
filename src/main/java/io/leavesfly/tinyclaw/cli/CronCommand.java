@@ -6,7 +6,6 @@ import io.leavesfly.tinyclaw.cron.CronJob;
 import io.leavesfly.tinyclaw.cron.CronSchedule;
 import io.leavesfly.tinyclaw.cron.CronService;
 
-import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -43,9 +42,6 @@ public class CronCommand extends CliCommand {
     private static final String SUBCOMMAND_REMOVE = "remove";     // 删除任务子命令
     private static final String SUBCOMMAND_ENABLE = "enable";     // 启用任务子命令
     private static final String SUBCOMMAND_DISABLE = "disable";   // 禁用任务子命令
-    
-    private static final String CRON_DIR = "cron";                // 定时任务目录
-    private static final String JOBS_FILE = "jobs.json";          // 任务配置文件
     
     private static final String DATE_FORMAT = "yyyy-MM-dd HH:mm"; // 日期格式
     
@@ -86,7 +82,7 @@ public class CronCommand extends CliCommand {
     private String getCronStorePath() {
         try {
             Config config = ConfigLoader.load(getConfigPath());
-            return Paths.get(config.getWorkspacePath(), CRON_DIR, JOBS_FILE).toString();
+            return CronService.defaultStorePath(config.getWorkspacePath());
         } catch (Exception e) {
             System.err.println("加载配置错误: " + e.getMessage());
             return null;

@@ -1,6 +1,5 @@
-package io.leavesfly.tinyclaw.evolution;
+package io.leavesfly.tinyclaw.config;
 
-import io.leavesfly.tinyclaw.evolution.reflection.ReflectionConfig;
 
 /**
  * 进化能力配置，控制反馈收集和 Prompt 优化的行为。

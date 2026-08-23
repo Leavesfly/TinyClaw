@@ -15,52 +15,40 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Map;
 
 /**
  * 处理工作空间文件 API（/api/workspace）。
  */
-public class WorkspaceHandler {
+public class WorkspaceHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
-
-    private final Config config;
-    private final SecurityMiddleware security;
 
     /**
      * 构造 WorkspaceHandler，注入全局配置与安全中间件。
      */
     public WorkspaceHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /**
      * 入口路由：预检通过后，按路径分发文件列表、读取或保存操作。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
         String workspace = config.getWorkspacePath();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            if (WebUtils.API_WORKSPACE_FILES.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleListWorkspaceFiles(exchange, workspace, corsOrigin);
-            } else if (path.startsWith(WebUtils.API_WORKSPACE_FILES + WebUtils.PATH_SEPARATOR)
-                    && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleGetWorkspaceFile(exchange, path, workspace, corsOrigin);
-            } else if (path.startsWith(WebUtils.API_WORKSPACE_FILES + WebUtils.PATH_SEPARATOR)
-                    && WebUtils.HTTP_METHOD_PUT.equals(method)) {
-                handleSaveWorkspaceFile(exchange, path, workspace, corsOrigin);
-            } else {
-                WebUtils.sendNotFound(exchange, corsOrigin);
-            }
-        } catch (Exception e) {
-            logger.error("Workspace API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+        if (WebUtils.API_WORKSPACE_FILES.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleListWorkspaceFiles(exchange, workspace, corsOrigin);
+        } else if (path.startsWith(WebUtils.API_WORKSPACE_FILES + WebUtils.PATH_SEPARATOR)
+                && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleGetWorkspaceFile(exchange, path, workspace, corsOrigin);
+        } else if (path.startsWith(WebUtils.API_WORKSPACE_FILES + WebUtils.PATH_SEPARATOR)
+                && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            handleSaveWorkspaceFile(exchange, path, workspace, corsOrigin);
+        } else {
+            return false;
         }
+        return true;
     }
 
     /**

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.File;
 import java.io.IOException;
@@ -67,7 +68,8 @@ public class TokenUsageStore {
             entry.put("completionTokens", completionTokens);
             entry.put("totalTokens", promptTokens + completionTokens);
             records.add(entry);
-            MAPPER.writerWithDefaultPrettyPrinter().writeValue(filePath.toFile(), records);
+            JsonFileStore.writeAtomic(filePath,
+                    MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(records));
         } catch (IOException e) {
             logger.error("Failed to record token usage", Map.of("error", e.getMessage()));
         } finally {
@@ -156,16 +158,7 @@ public class TokenUsageStore {
     // ==================== 内部工具方法 ====================
 
     private ArrayNode loadRecords(Path filePath) {
-        if (!Files.exists(filePath)) {
-            return MAPPER.createArrayNode();
-        }
-        try {
-            return (ArrayNode) MAPPER.readTree(filePath.toFile());
-        } catch (IOException e) {
-            logger.warn("Failed to load token usage file, starting fresh", Map.of(
-                    "file", filePath.toString(), "error", e.getMessage()));
-            return MAPPER.createArrayNode();
-        }
+        return JsonFileStore.readJson(MAPPER, filePath, ArrayNode.class, MAPPER::createArrayNode);
     }
 
     private void ensureDirectoryExists() {

@@ -5,16 +5,17 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.evolution.EvaluationFeedback;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMException;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMResponse;
 import io.leavesfly.tinyclaw.providers.Message;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
@@ -38,8 +39,14 @@ public class MemoryEvolver {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("memory.evolver");
 
-    /** 触发整合的记忆条目数量阈值 */
+    /** 触发整合的记忆条目数量阈值（按归属域分别计算） */
     private static final int CONSOLIDATION_THRESHOLD = 50;
+
+    /** 归属域参与整合所需的最少条目数，避免为单条记忆烧掉一次 LLM 调用 */
+    private static final int MIN_ENTRIES_PER_SCOPE = 3;
+
+    /** 单轮进化最多处理的归属域个数，限制用户数增长时的 LLM 调用量 */
+    private static final int MAX_SCOPES_PER_CYCLE = 5;
 
     /** 归档的综合得分阈值 */
     private static final double ARCHIVE_SCORE_THRESHOLD = 0.10;
@@ -155,26 +162,70 @@ public class MemoryEvolver {
     /**
      * 收集结构化记忆并调用 LLM 整合。
      *
-     * 整合任务：
-     * - 将相关记忆归类到主题文件（topics/*.md）
-     * - 合并重复记忆、解决矛盾、压缩冗余
-     * - 生成或更新主题文件内容
+     * <p>整合按归属域分组独立进行。若把所有域的记忆一起交给 LLM，不同用户、不同聊天
+     * 的内容会被合入同一批主题文件，条目级的归属隔离会在主题层被绕过。</p>
+     *
+     * <p>整合任务（在单个域内）：</p>
+     * <ul>
+     *   <li>将相关记忆归类到该域的主题文件</li>
+     *   <li>合并重复记忆、解决矛盾、压缩冗余</li>
+     *   <li>生成或更新主题文件内容</li>
+     * </ul>
+     *
+     * @return 本轮处理的所有域是否均成功（任一域失败则不推进冷却计时）
      */
     private boolean gatherAndConsolidate() {
-        List<MemoryEntry> currentEntries = memoryStore.getEntries();
-        if (currentEntries.isEmpty()) {
+        List<MemoryEntry> allEntries = memoryStore.getEntries();
+        if (allEntries.isEmpty()) {
             logger.debug("No entries to consolidate");
             return true;
         }
 
-        boolean needsConsolidation = currentEntries.size() >= CONSOLIDATION_THRESHOLD;
-        String prompt = buildConsolidatePrompt(currentEntries, needsConsolidation);
+        Map<String, List<MemoryEntry>> byScope = allEntries.stream()
+                .collect(Collectors.groupingBy(
+                        entry -> MemoryScope.normalize(entry.getScope()),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        // 按条目数降序优先处理堆积最多的域，单轮设上限；未轮到的域在后续周期处理
+        List<Map.Entry<String, List<MemoryEntry>>> targets = byScope.entrySet().stream()
+                .filter(group -> group.getValue().size() >= MIN_ENTRIES_PER_SCOPE)
+                .sorted(Comparator.<Map.Entry<String, List<MemoryEntry>>>comparingInt(
+                        group -> group.getValue().size()).reversed())
+                .limit(MAX_SCOPES_PER_CYCLE)
+                .collect(Collectors.toList());
+
+        if (targets.isEmpty()) {
+            logger.debug("No scope reached the minimum entry count for consolidation",
+                    Map.of("scopes", byScope.size()));
+            return true;
+        }
+
+        boolean allSucceeded = true;
+        for (Map.Entry<String, List<MemoryEntry>> group : targets) {
+            if (!consolidateScope(group.getKey(), group.getValue())) {
+                allSucceeded = false;
+            }
+        }
+        return allSucceeded;
+    }
+
+    /**
+     * 整合单个归属域内的记忆，主题文件与整合结果均保留在同一域内。
+     *
+     * @param scope        归属域
+     * @param scopeEntries 该域下的记忆快照
+     * @return 整合是否完成（LLM 调用失败返回 false）
+     */
+    private boolean consolidateScope(String scope, List<MemoryEntry> scopeEntries) {
+        boolean needsConsolidation = scopeEntries.size() >= CONSOLIDATION_THRESHOLD;
+        String prompt = buildConsolidatePrompt(scope, scopeEntries, needsConsolidation);
 
         String result;
         try {
             result = callConsolidationLLM(prompt);
         } catch (Exception e) {
-            logEvolutionFailure("Failed to consolidate memories", e);
+            logEvolutionFailure("Failed to consolidate memories for scope " + scope, e);
             return false;
         }
 
@@ -182,27 +233,30 @@ public class MemoryEvolver {
             return true;
         }
 
-        // 解析主题文件输出
-        parseAndWriteTopics(result);
+        // 解析主题文件输出，写入当前域的主题目录
+        parseAndWriteTopics(scope, result);
 
         // 如果需要整合，解析整合后的记忆列表
         if (needsConsolidation) {
-            List<MemoryEntry> consolidated = parseMemoryLines(result, "MEMORY", "evolution_consolidate");
-            if (!consolidated.isEmpty() && consolidated.size() < currentEntries.size()) {
-                int maxAccessCount = currentEntries.stream()
+            List<MemoryEntry> consolidated =
+                    parseMemoryLines(result, "MEMORY", "evolution_consolidate", scope);
+            if (!consolidated.isEmpty() && consolidated.size() < scopeEntries.size()) {
+                int maxAccessCount = scopeEntries.stream()
                         .mapToInt(MemoryEntry::getAccessCount)
                         .max().orElse(0);
                 for (MemoryEntry entry : consolidated) {
                     entry.setAccessCount(Math.max(1, maxAccessCount / 2));
                 }
-                // diff 式替换：仅移除整合快照中的条目，LLM 调用期间新增的记忆不受影响
-                Set<String> snapshotIds = currentEntries.stream()
+                // diff 式替换：仅移除本域快照里的条目，LLM 调用期间新增的记忆与其他域不受影响
+                Set<String> snapshotIds = scopeEntries.stream()
                         .map(MemoryEntry::getId)
                         .filter(Objects::nonNull)
                         .collect(Collectors.toSet());
                 memoryStore.replaceEntries(snapshotIds, consolidated);
-                logger.info("Memories consolidated",
-                        Map.of("before", currentEntries.size(), "after", consolidated.size()));
+                logger.info("Memories consolidated", Map.of(
+                        "scope", scope,
+                        "before", scopeEntries.size(),
+                        "after", consolidated.size()));
             }
         }
         return true;
@@ -241,7 +295,7 @@ public class MemoryEvolver {
                         "attempt", attempt,
                         "max_attempts", CONSOLIDATION_MAX_ATTEMPTS,
                         "backoff_ms", backoffMs,
-                        "root_cause", rootCauseMessage(e)));
+                        "root_cause", LLMException.rootCauseMessage(e)));
                 Thread.sleep(backoffMs);
             }
         }
@@ -276,26 +330,16 @@ public class MemoryEvolver {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("error", e.getMessage());
         fields.put("error_type", e.getClass().getName());
-        fields.put("root_cause", rootCauseMessage(e));
+        fields.put("root_cause", LLMException.rootCauseMessage(e));
         // 传入异常对象以输出完整调用堆栈
         logger.error(message, fields, e);
     }
-
+    
     /**
-     * 提取异常链最底层的根因信息（类名 + 消息）。
+     * 构建整合提示词。仅注入当前归属域的记忆与主题，不跟其他域的内容混在一起。
      */
-    private static String rootCauseMessage(Throwable e) {
-        Throwable cause = e;
-        while (cause.getCause() != null && cause.getCause() != cause) {
-            cause = cause.getCause();
-        }
-        return cause.getClass().getName() + ": " + cause.getMessage();
-    }
-
-    /**
-     * 构建整合提示词。
-     */
-    private String buildConsolidatePrompt(List<MemoryEntry> currentEntries, boolean needsConsolidation) {
+    private String buildConsolidatePrompt(String scope, List<MemoryEntry> currentEntries,
+                                          boolean needsConsolidation) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是一个记忆管理系统。请分析以下结构化记忆，完成指定任务。\n\n");
 
@@ -332,11 +376,11 @@ public class MemoryEvolver {
         }
 
         // 现有主题文件全文（覆盖式更新的合并基准）
-        List<String> existingTopics = memoryStore.listTopics();
+        List<String> existingTopics = memoryStore.listTopics(scope);
         if (!existingTopics.isEmpty()) {
             prompt.append("\n## 已有主题文件（完整内容，输出时请在此基础上合并更新）\n\n");
             for (String topic : existingTopics) {
-                String content = memoryStore.readTopic(topic);
+                String content = memoryStore.readTopic(scope, topic);
                 if (content.length() > MAX_TOPIC_PROMPT_CHARS) {
                     content = content.substring(0, MAX_TOPIC_PROMPT_CHARS) + "\n\n_(内容过长已截断，请优先压缩此主题)_";
                 }
@@ -348,13 +392,13 @@ public class MemoryEvolver {
     }
 
     /**
-     * 解析 LLM 输出中的主题文件块并覆盖写入。
+     * 解析 LLM 输出中的主题文件块并覆盖写入指定归属域。
      *
-     * <p>prompt 已携带已有主题全文，LLM 输出的是合并后的完整版本，因此直接覆盖
+     * <p>prompt 已携带该域已有主题全文，LLM 输出的是合并后的完整版本，因此直接覆盖
      * 而非追加，避免主题文件随每轮整合无限膨胀。未以 END_TOPIC 正常终止的块
      * （如输出被截断）会被丢弃，不会用半截内容覆盖原文件。</p>
      */
-    private void parseAndWriteTopics(String llmOutput) {
+    private void parseAndWriteTopics(String scope, String llmOutput) {
         String[] lines = llmOutput.split("\n");
         String currentTopicName = null;
         StringBuilder currentTopicContent = null;
@@ -370,7 +414,7 @@ public class MemoryEvolver {
             } else if ("END_TOPIC".equals(trimmed) && currentTopicName != null && currentTopicContent != null) {
                 String content = currentTopicContent.toString().trim();
                 if (StringUtils.isNotBlank(content)) {
-                    memoryStore.writeTopic(currentTopicName, content);
+                    memoryStore.writeTopic(scope, currentTopicName, content);
                     topicsWritten++;
                 }
                 currentTopicName = null;
@@ -381,15 +425,16 @@ public class MemoryEvolver {
         }
 
         if (topicsWritten > 0) {
-            logger.info("Wrote topic files from consolidation", Map.of("count", topicsWritten));
+            logger.info("Wrote topic files from consolidation", Map.of(
+                    "scope", scope, "count", topicsWritten));
         }
     }
 
     /**
-     * 解析 LLM 输出中指定前缀的记忆行。
+     * 解析 LLM 输出中指定前缀的记忆行，并将结果归属到指定域。
      * 格式：{prefix}|importance|tag1,tag2|content
      */
-    private List<MemoryEntry> parseMemoryLines(String llmOutput, String prefix, String source) {
+    private List<MemoryEntry> parseMemoryLines(String llmOutput, String prefix, String source, String scope) {
         List<MemoryEntry> entries = new ArrayList<>();
         String[] lines = llmOutput.split("\n");
 
@@ -413,8 +458,7 @@ public class MemoryEvolver {
                 String content = parts[3].trim();
 
                 if (StringUtils.isNotBlank(content)) {
-                    MemoryEntry entry = new MemoryEntry(content, importance, tags, source);
-                    entries.add(entry);
+                    entries.add(new MemoryEntry(scope, content, importance, tags, source));
                 }
             } catch (NumberFormatException e) {
                 logger.debug("Skipped malformed memory line: " + line);
@@ -444,22 +488,15 @@ public class MemoryEvolver {
      * 避免进程重启后冷却计时归零，导致每次重启都立即触发一轮 LLM 整合。
      */
     private void loadState() {
-        try {
-            Path path = Paths.get(stateFilePath);
-            if (Files.exists(path)) {
-                Map<String, Object> state = stateMapper.readValue(
-                        Files.readString(path), new TypeReference<Map<String, Object>>() {});
-                Object lastTime = state.get("last_evolution_time_ms");
-                Object lastCount = state.get("entry_count_at_last_evolution");
-                if (lastTime instanceof Number time) {
-                    lastEvolutionTimeMs.set(time.longValue());
-                }
-                if (lastCount instanceof Number count) {
-                    entryCountAtLastEvolution.set(count.intValue());
-                }
-            }
-        } catch (IOException e) {
-            logger.warn("Failed to load evolution state: " + e.getMessage());
+        Map<String, Object> state = JsonFileStore.readJson(stateMapper, Paths.get(stateFilePath),
+                new TypeReference<Map<String, Object>>() {}, Map::of);
+        Object lastTime = state.get("last_evolution_time_ms");
+        Object lastCount = state.get("entry_count_at_last_evolution");
+        if (lastTime instanceof Number time) {
+            lastEvolutionTimeMs.set(time.longValue());
+        }
+        if (lastCount instanceof Number count) {
+            entryCountAtLastEvolution.set(count.intValue());
         }
     }
 
@@ -471,7 +508,7 @@ public class MemoryEvolver {
             Map<String, Object> state = Map.of(
                     "last_evolution_time_ms", lastEvolutionTimeMs.get(),
                     "entry_count_at_last_evolution", entryCountAtLastEvolution.get());
-            Files.writeString(Paths.get(stateFilePath), stateMapper.writeValueAsString(state));
+            JsonFileStore.writeJson(stateMapper, Paths.get(stateFilePath), state);
         } catch (IOException e) {
             logger.warn("Failed to save evolution state: " + e.getMessage());
         }
@@ -532,6 +569,8 @@ public class MemoryEvolver {
      * 根据反馈分数采取不同策略：
      * - 高分会话（> 0.8）：提炼为高重要性记忆，学习成功模式
      * - 低分会话（< 0.3）：分析失败原因，生成避坑记忆
+     *
+     * <p>提炼出的内容可能引用会话原文，因此归入该会话对应的聊天域而不是全局域。</p>
      */
     public void evolveWithFeedback(EvaluationFeedback feedback) {
         if (feedback == null) {
@@ -572,7 +611,7 @@ public class MemoryEvolver {
             tags.add(sessionKey.substring(0, sessionKey.indexOf(":")));
         }
 
-        memoryStore.addEntry(content, 0.7, tags, "evolution_feedback");
+        memoryStore.addEntry(MemoryScope.ofSessionKey(sessionKey), content, 0.7, tags, "evolution_feedback");
         logger.info("Extracted high-value memory from positive feedback", Map.of(
                 "session", sessionKey != null ? sessionKey : "unknown",
                 "score", feedback.getPrimaryScore()));
@@ -610,7 +649,7 @@ public class MemoryEvolver {
             tags.add(sessionKey.substring(0, sessionKey.indexOf(":")));
         }
 
-        memoryStore.addEntry(content, 0.8, tags, "evolution_feedback");
+        memoryStore.addEntry(MemoryScope.ofSessionKey(sessionKey), content, 0.8, tags, "evolution_feedback");
         logger.info("Extracted lesson from negative feedback", Map.of(
                 "session", sessionKey != null ? sessionKey : "unknown",
                 "score", feedback.getPrimaryScore()));

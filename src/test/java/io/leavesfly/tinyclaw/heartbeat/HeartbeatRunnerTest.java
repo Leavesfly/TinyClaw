@@ -1,6 +1,9 @@
 package io.leavesfly.tinyclaw.heartbeat;
 
+import io.leavesfly.tinyclaw.config.ActiveHours;
+import io.leavesfly.tinyclaw.config.HeartbeatSettings;
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
+import io.leavesfly.tinyclaw.bus.LastContact;
 import io.leavesfly.tinyclaw.config.AgentConfig;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronJob;
@@ -92,13 +95,13 @@ class HeartbeatRunnerTest {
     @Test
     @DisplayName("isWithinActiveHours: 零宽窗口全部跳过，普通窗口按时间判断")
     void activeHours_WindowChecks() {
-        AgentConfig.ActiveHours zero = new AgentConfig.ActiveHours("09:00", "09:00", null);
+        ActiveHours zero = new ActiveHours("09:00", "09:00", null);
         assertFalse(HeartbeatRunner.isWithinActiveHours(zero));
 
         // null 视为不限制
         assertTrue(HeartbeatRunner.isWithinActiveHours(null));
 
-        AgentConfig.ActiveHours full = new AgentConfig.ActiveHours("00:00", "23:59", null);
+        ActiveHours full = new ActiveHours("00:00", "23:59", null);
         assertTrue(HeartbeatRunner.isWithinActiveHours(full));
     }
 
@@ -149,7 +152,7 @@ class HeartbeatRunnerTest {
     void activeHours_ZeroWidthSkips() throws Exception {
         Config config = enabledConfig();
         config.getAgent().getHeartbeat().setActiveHours(
-                new AgentConfig.ActiveHours("08:00", "08:00", null));
+                new ActiveHours("08:00", "08:00", null));
         writeChecklist("检查部署状态");
 
         HeartbeatRunner r = newRunner(config, null, null, () -> false);
@@ -164,7 +167,7 @@ class HeartbeatRunnerTest {
     void okResponse_Suppressed() {
         Config config = enabledConfig();
         HeartbeatRunner r = newRunner(config, null, null, () -> false);
-        AgentConfig.HeartbeatSettings settings = config.getAgent().getHeartbeat();
+        HeartbeatSettings settings = config.getAgent().getHeartbeat();
 
         r.handleResult("default", settings, "HEARTBEAT_OK", System.currentTimeMillis());
         assertTrue(delivered.isEmpty());
@@ -180,7 +183,7 @@ class HeartbeatRunnerTest {
         Config config = enabledConfig();
         config.getAgent().getHeartbeat().setTarget("last");
         HeartbeatRunner r = newRunner(config, null, null, () -> false);
-        AgentConfig.HeartbeatSettings settings = config.getAgent().getHeartbeat();
+        HeartbeatSettings settings = config.getAgent().getHeartbeat();
 
         LastContact.update("telegram", "chat-123");
         String longAlert = "x".repeat(HeartbeatRunner.SILENT_THRESHOLD + 50);
@@ -196,7 +199,7 @@ class HeartbeatRunnerTest {
     void alertResponse_TargetNoneDoesNotDeliver() {
         Config config = enabledConfig();
         HeartbeatRunner r = newRunner(config, null, null, () -> false);
-        AgentConfig.HeartbeatSettings settings = config.getAgent().getHeartbeat();
+        HeartbeatSettings settings = config.getAgent().getHeartbeat();
 
         String longAlert = "x".repeat(HeartbeatRunner.SILENT_THRESHOLD + 50);
         r.handleResult("default", settings, longAlert, System.currentTimeMillis());
@@ -258,8 +261,8 @@ class HeartbeatRunnerTest {
         CronService cron = new CronService(store.toString());
 
         Config config = enabledConfig();
-        Map<String, AgentConfig.HeartbeatSettings> entries = new HashMap<>();
-        entries.put("monitor", new AgentConfig.HeartbeatSettings());
+        Map<String, HeartbeatSettings> entries = new HashMap<>();
+        entries.put("monitor", new HeartbeatSettings());
         config.getAgent().getHeartbeat().setEntries(entries);
 
         HeartbeatRunner r = newRunner(config, null, null, () -> false);
@@ -294,7 +297,7 @@ class HeartbeatRunnerTest {
     @DisplayName("buildPrompt: 自定义 prompt 覆盖默认指令体，清单始终附加")
     void buildPrompt_CustomOverride() {
         HeartbeatRunner r = newRunner(enabledConfig(), null, null, () -> false);
-        AgentConfig.HeartbeatSettings settings = new AgentConfig.HeartbeatSettings();
+        HeartbeatSettings settings = new HeartbeatSettings();
 
         String defaultPrompt = r.buildPrompt(settings, "清单内容");
         assertTrue(defaultPrompt.contains("HEARTBEAT_OK"));

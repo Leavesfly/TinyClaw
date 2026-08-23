@@ -2102,7 +2102,13 @@ body {
     white-space: normal;
 }
 
-.subagent-body.markdown-body pre {
+/* 子代理正文独立容器（与思考折叠块同层共存） */
+.subagent-content-zone.markdown-body {
+    white-space: normal;
+}
+
+.subagent-body.markdown-body pre,
+.subagent-content-zone.markdown-body pre {
     white-space: pre-wrap;
     word-break: break-word;
     background: #f8f8f8;
@@ -2111,15 +2117,22 @@ body {
     font-size: 12px;
 }
 
-.subagent-body.markdown-body code {
+.subagent-body.markdown-body code,
+.subagent-content-zone.markdown-body code {
     font-size: 12px;
     background: #f0f0f0;
     padding: 1px 4px;
     border-radius: 3px;
 }
 
-.subagent-body.markdown-body p {
+.subagent-body.markdown-body p,
+.subagent-content-zone.markdown-body p {
     margin: 4px 0;
+}
+
+/* 子代理卡片内嵌的思考折叠卡片：字号随容器缩小 */
+.subagent-body .thinking-card {
+    font-size: 12px;
 }
 
 .subagent-card.expanded .subagent-body {
@@ -2156,6 +2169,37 @@ body {
 
 .running-task-text {
     line-height: 1.5;
+    flex: 1;
+}
+
+/* 横幅内嵌的停止按钮：靠右对齐，与橙色警告风格一致 */
+.running-task-stop-btn {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 4px 12px;
+    border: 1px solid #d97706;
+    border-radius: 6px;
+    background: #fff;
+    color: #92400e;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.running-task-stop-btn:hover {
+    background: #fef3c7;
+}
+
+.running-task-stop-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* 状态查询持续失败后的停滞态：取消呼吸动画，转为静态提示 */
+.running-task-banner.running-task-stalled {
+    animation: none;
+    border-color: #d97706;
 }
 
 /* 协同 Agent 消息 */

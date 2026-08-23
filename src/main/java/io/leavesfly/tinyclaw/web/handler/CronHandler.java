@@ -8,7 +8,6 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronJob;
 import io.leavesfly.tinyclaw.cron.CronSchedule;
 import io.leavesfly.tinyclaw.cron.CronService;
-import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -19,70 +18,58 @@ import java.util.Map;
 /**
  * 处理定时任务 API（/api/cron）。
  */
-public class CronHandler {
+public class CronHandler extends BaseHandler {
 
-    private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
-
-    private final Config config;
     private final CronService cronService;
-    private final SecurityMiddleware security;
 
     /**
      * 构造 CronHandler，注入全局配置、定时任务服务与安全中间件。
      */
     public CronHandler(Config config, CronService cronService, SecurityMiddleware security) {
-        this.config = config;
+        super(config, security);
         this.cronService = cronService;
-        this.security = security;
     }
 
     /**
-     * 入口路由：预检通过后，按路径分发列表、创建、删除或启停操作。
+     * 按路径分发列表、创建、删除或启停操作。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (WebUtils.API_CRON.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            handleListCron(exchange, corsOrigin);
 
-        try {
-            if (WebUtils.API_CRON.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                handleListCron(exchange, corsOrigin);
+        } else if (WebUtils.API_CRON.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            handleCreateCron(exchange, corsOrigin);
 
-            } else if (WebUtils.API_CRON.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
-                handleCreateCron(exchange, corsOrigin);
-
-            } else if (path.matches(WebUtils.API_CRON + "/[^/]+")
-                    && WebUtils.HTTP_METHOD_DELETE.equals(method)) {
-                String id = path.substring(WebUtils.API_CRON.length() + 1);
-                boolean removed = cronService.removeJob(id);
-                if (removed) {
-                    WebUtils.sendJson(exchange, 200, WebUtils.successJson("Job removed"), corsOrigin);
-                } else {
-                    WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
-                }
-
-            } else if (path.matches(WebUtils.API_CRON + "/[^/]+/enable")
-                    && WebUtils.HTTP_METHOD_PUT.equals(method)) {
-                String id = path.substring(WebUtils.API_CRON.length() + 1).replace("/enable", "");
-                String body = WebUtils.readRequestBodyLimited(exchange);
-                JsonNode json = WebUtils.MAPPER.readTree(body);
-                boolean enabled = json.path("enabled").asBoolean(true);
-                CronJob job = cronService.enableJob(id, enabled);
-                if (job != null) {
-                    WebUtils.sendJson(exchange, 200,
-                            WebUtils.successJson("Job " + (enabled ? "enabled" : "disabled")), corsOrigin);
-                } else {
-                    WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
-                }
-
+        } else if (path.matches(WebUtils.API_CRON + "/[^/]+")
+                && WebUtils.HTTP_METHOD_DELETE.equals(method)) {
+            String id = path.substring(WebUtils.API_CRON.length() + 1);
+            boolean removed = cronService.removeJob(id);
+            if (removed) {
+                WebUtils.sendJson(exchange, 200, WebUtils.successJson("Job removed"), corsOrigin);
             } else {
-                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not found"), corsOrigin);
+                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
             }
-        } catch (Exception e) {
-            logger.error("Cron API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+
+        } else if (path.matches(WebUtils.API_CRON + "/[^/]+/enable")
+                && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            String id = path.substring(WebUtils.API_CRON.length() + 1).replace("/enable", "");
+            String body = WebUtils.readRequestBodyLimited(exchange);
+            JsonNode json = WebUtils.MAPPER.readTree(body);
+            boolean enabled = json.path("enabled").asBoolean(true);
+            CronJob job = cronService.enableJob(id, enabled);
+            if (job != null) {
+                WebUtils.sendJson(exchange, 200,
+                        WebUtils.successJson("Job " + (enabled ? "enabled" : "disabled")), corsOrigin);
+            } else {
+                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
+            }
+
+        } else {
+            return false;
         }
+        return true;
     }
 
     /**

@@ -1,7 +1,7 @@
 package io.leavesfly.tinyclaw.cli;
 
 import io.leavesfly.tinyclaw.agent.AgentRuntime;
-import io.leavesfly.tinyclaw.bus.MessageBus;
+import io.leavesfly.tinyclaw.bootstrap.RuntimeAssembly;
 import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
@@ -123,12 +123,13 @@ public class AgentCommand extends CliCommand {
             return null;
         }
         
-        // 创建消息总线和 Agent 循环
-        MessageBus bus = new MessageBus();
-        AgentRuntime agentRuntime = new AgentRuntime(config, bus, provider);
+        // 装配运行时（总线、AgentRuntime、定时服务与内置工具）
+        RuntimeAssembly assembly = RuntimeAssembly.assemble(config, provider);
         
-        // 注册工具
-        registerTools(agentRuntime, config, bus, provider);
+        // 注意：CLI 不启动 CronService。调度是网关的职责，若 CLI 也起一个调度器，
+        // 就会与常驻网关进程竞争同一份 jobs.json。此处通过 cron 工具创建的任务
+        // 仅落盘，由网关后续接管执行。
+        AgentRuntime agentRuntime = assembly.agentRuntime();
         
         // 打印启动信息
         logStartupInfo(agentRuntime);

@@ -11,68 +11,56 @@ import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
 import java.io.IOException;
-import java.util.Map;
 
 /**
  * 处理 LLM 提供商 API（/api/providers）。
  * 同时提供 getProviderByName、getCurrentProvider 供 ModelsHandler / ConfigHandler 复用。
  */
-public class ProvidersHandler {
+public class ProvidersHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
-
-    private final Config config;
-    private final SecurityMiddleware security;
 
     /**
      * 构造 ProvidersHandler，注入全局配置与安全中间件。
      */
     public ProvidersHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
     /**
      * 入口路由：预检通过后，按路径分发列表查询或更新操作。
      */
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (WebUtils.API_PROVIDERS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            ArrayNode providers = WebUtils.MAPPER.createArrayNode();
+            ProvidersConfig pc = config.getProviders();
+            addProviderInfo(providers, WebUtils.PROVIDER_OPENROUTER, pc.getOpenrouter());
+            addProviderInfo(providers, WebUtils.PROVIDER_OPENAI,     pc.getOpenai());
+            addProviderInfo(providers, WebUtils.PROVIDER_ANTHROPIC,  pc.getAnthropic());
+            addProviderInfo(providers, WebUtils.PROVIDER_ZHIPU,      pc.getZhipu());
+            addProviderInfo(providers, WebUtils.PROVIDER_DASHSCOPE,  pc.getDashscope());
+            addProviderInfo(providers, WebUtils.PROVIDER_GEMINI,     pc.getGemini());
+            addProviderInfo(providers, WebUtils.PROVIDER_OLLAMA,     pc.getOllama());
+            WebUtils.sendJson(exchange, 200, providers, corsOrigin);
 
-        try {
-            if (WebUtils.API_PROVIDERS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
-                ArrayNode providers = WebUtils.MAPPER.createArrayNode();
-                ProvidersConfig pc = config.getProviders();
-                addProviderInfo(providers, WebUtils.PROVIDER_OPENROUTER, pc.getOpenrouter());
-                addProviderInfo(providers, WebUtils.PROVIDER_OPENAI,     pc.getOpenai());
-                addProviderInfo(providers, WebUtils.PROVIDER_ANTHROPIC,  pc.getAnthropic());
-                addProviderInfo(providers, WebUtils.PROVIDER_ZHIPU,      pc.getZhipu());
-                addProviderInfo(providers, WebUtils.PROVIDER_DASHSCOPE,  pc.getDashscope());
-                addProviderInfo(providers, WebUtils.PROVIDER_GEMINI,     pc.getGemini());
-                addProviderInfo(providers, WebUtils.PROVIDER_OLLAMA,     pc.getOllama());
-                WebUtils.sendJson(exchange, 200, providers, corsOrigin);
-
-            } else if (path.startsWith(WebUtils.API_PROVIDERS + WebUtils.PATH_SEPARATOR)
-                    && WebUtils.HTTP_METHOD_PUT.equals(method)) {
-                String name = path.substring(WebUtils.API_PROVIDERS.length() + 1);
-                String body = WebUtils.readRequestBodyLimited(exchange);
-                JsonNode json = WebUtils.MAPPER.readTree(body);
-                boolean success = updateProviderConfig(name, json);
-                if (success) {
-                    WebUtils.saveConfig(config, logger);
-                    WebUtils.sendJson(exchange, 200, WebUtils.successJson("Provider updated"), corsOrigin);
-                } else {
-                    WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Update failed"), corsOrigin);
-                }
+        } else if (path.startsWith(WebUtils.API_PROVIDERS + WebUtils.PATH_SEPARATOR)
+                && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            String name = path.substring(WebUtils.API_PROVIDERS.length() + 1);
+            String body = WebUtils.readRequestBodyLimited(exchange);
+            JsonNode json = WebUtils.MAPPER.readTree(body);
+            boolean success = updateProviderConfig(name, json);
+            if (success) {
+                WebUtils.saveConfig(config, logger);
+                WebUtils.sendJson(exchange, 200, WebUtils.successJson("Provider updated"), corsOrigin);
             } else {
-                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not found"), corsOrigin);
+                WebUtils.sendJson(exchange, 400, WebUtils.errorJson("Update failed"), corsOrigin);
             }
-        } catch (Exception e) {
-            logger.error("Providers API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+        } else {
+            return false;
         }
+        return true;
     }
 
     /**

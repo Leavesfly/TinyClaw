@@ -7,6 +7,7 @@ import com.cronutils.model.time.ExecutionTime;
 import com.cronutils.parser.CronParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -75,6 +76,9 @@ public class CronService {
     
     private static final String THREAD_NAME = "cron-service";  // 调度线程名称
     
+    private static final String STORE_DIR = "cron";            // 存储目录名
+    private static final String STORE_FILE = "jobs.json";      // 存储文件名
+    
     private final String storePath;                       // 存储文件路径
     private CronStore store;                              // 任务存储对象
     private JobHandler onJob;                             // 任务处理器
@@ -84,6 +88,9 @@ public class CronService {
     private ExecutorService jobExecutor;                  // 任务执行线程池（隔离调度线程，支持超时中断）
     
     private final CronParser cronParser;                  // Cron 表达式解析器
+    
+    private long lastLoadedMtimeMs = -1L;                  // 上次加载时文件的 mtime，用于检测外部改动
+    private long lastLoadedSize = -1L;                     // 上次加载时文件的大小，同上
     
     /**
      * 任务处理器接口，定义任务执行逻辑。
@@ -98,6 +105,20 @@ public class CronService {
          * @throws Exception 执行异常
          */
         String handle(CronJob job) throws Exception;
+    }
+    
+    /**
+     * 解析工作空间下的默认任务存储路径。
+     *
+     * <p>该路径是全局唯一的任务事实源。由于 {@link #saveStoreUnsafe()} 采用内存全量覆盖写，
+     * 同一路径上并存多个 {@code CronService} 实例会互相覆盖对方的任务，
+     * 因此调用方必须共享单一实例，不要各自按字符串拼接路径再 new 一个。</p>
+     *
+     * @param workspace 工作空间根目录
+     * @return 任务存储文件的绝对路径
+     */
+    public static String defaultStorePath(String workspace) {
+        return Paths.get(workspace, STORE_DIR, STORE_FILE).toString();
     }
     
     /**
@@ -229,6 +250,9 @@ public class CronService {
             if (!running) {
                 return List.of();
             }
+            
+            // 先同步外部改动（如 CLI 新增的任务），否则下面的 saveStoreUnsafe 会把它们覆盖掉
+            reloadIfChangedUnsafe();
             
             long now = System.currentTimeMillis();
             List<CronJob> dueJobs = new ArrayList<>();
@@ -529,9 +553,65 @@ public class CronService {
                     store.setJobs(new ArrayList<>());
                 }
             }
+            rememberFileStamp(path);
         } catch (Exception e) {
             logger.warn("Failed to load cron store, using empty", Map.of("error", e.getMessage()));
             store = new CronStore();
+        }
+    }
+    
+    /**
+     * 若存储文件已被外部改动，则丢弃内存快照重新加载。
+     *
+     * <p>{@link #saveStoreUnsafe()} 是内存全量覆盖写，因此只要本进程持有的快照旧于磁盘，
+     * 下一次写入就会抹掉别人新增的任务。典型场景：常驻网关在跑，用户又执行
+     * {@code tinyclaw cron add}（另一个进程）。在每次读取/修改前先按 mtime+size 比对，
+     * 发现外部改动就重载，使“先读后写”而不是“直接覆盖”。</p>
+     *
+     * <p>调用此方法前必须已持有写锁。</p>
+     *
+     * @return true 表示发生了重载
+     */
+    private boolean reloadIfChangedUnsafe() {
+        Path path = Paths.get(storePath);
+        try {
+            if (!Files.exists(path)) {
+                return false;
+            }
+            long mtime = Files.getLastModifiedTime(path).toMillis();
+            long size = Files.size(path);
+            if (mtime == lastLoadedMtimeMs && size == lastLoadedSize) {
+                return false;
+            }
+        } catch (Exception e) {
+            // 无法读取文件属性时保守处理：不重载，避免把内存中的任务弄丢
+            return false;
+        }
+        
+        loadStore();
+        recomputeNextRuns();
+        logger.debug("Cron store reloaded after external change",
+                Map.of("jobs", store.getJobs().size()));
+        return true;
+    }
+    
+    /**
+     * 记录当前存储文件的时间戳与大小，作为外部改动的比对基准。
+     *
+     * @param path 存储文件路径
+     */
+    private void rememberFileStamp(Path path) {
+        try {
+            if (Files.exists(path)) {
+                lastLoadedMtimeMs = Files.getLastModifiedTime(path).toMillis();
+                lastLoadedSize = Files.size(path);
+            } else {
+                lastLoadedMtimeMs = -1L;
+                lastLoadedSize = -1L;
+            }
+        } catch (Exception e) {
+            lastLoadedMtimeMs = -1L;
+            lastLoadedSize = -1L;
         }
     }
     
@@ -543,22 +623,11 @@ public class CronService {
     private void saveStoreUnsafe() {
         try {
             Path path = Paths.get(storePath);
-            Files.createDirectories(path.getParent());
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(store);
-            // 原子写：先写临时文件再 rename，避免写中途崩溃留下半截 JSON 导致任务全部丢失
-            Path temp = path.resolveSibling(path.getFileName() + "."
-                    + java.util.UUID.randomUUID().toString().substring(0, 8) + ".tmp");
-            try {
-                Files.writeString(temp, json);
-                try {
-                    Files.move(temp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                            java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(temp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(temp);
-            }
+            // 原子写，避免写中途崩溃留下半截 JSON 导致任务全部丢失
+            JsonFileStore.writeAtomic(path, json);
+            // 记下自己写出的版本，避免下一次比对时把自己的写入误判为外部改动
+            rememberFileStamp(path);
         } catch (Exception e) {
             logger.error("Failed to save cron store", Map.of("error", e.getMessage()));
         }
@@ -578,6 +647,9 @@ public class CronService {
                           String channel, String to) {
         lock.writeLock().lock();
         try {
+            // 先读后写：先同步外部改动，避免本次全量写入抹掉别的进程新增的任务
+            reloadIfChangedUnsafe();
+            
             long now = System.currentTimeMillis();
             boolean deleteAfterRun = CronSchedule.ScheduleKind.AT == schedule.getKind();
             
@@ -658,6 +730,7 @@ public class CronService {
     public CronJob updateJobSchedule(String jobId, CronSchedule schedule) {
         lock.writeLock().lock();
         try {
+            reloadIfChangedUnsafe();
             CronJob job = findJobById(jobId);
             if (job == null) {
                 return null;
@@ -685,6 +758,7 @@ public class CronService {
     public boolean removeJob(String jobId) {
         lock.writeLock().lock();
         try {
+            reloadIfChangedUnsafe();
             return removeJobUnsafe(jobId);
         } finally {
             lock.writeLock().unlock();
@@ -715,6 +789,7 @@ public class CronService {
     public CronJob enableJob(String jobId, boolean enabled) {
         lock.writeLock().lock();
         try {
+            reloadIfChangedUnsafe();
             CronJob job = findJobById(jobId);
             if (job == null) {
                 return null;

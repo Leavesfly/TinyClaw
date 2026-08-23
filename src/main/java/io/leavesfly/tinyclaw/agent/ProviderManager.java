@@ -1,7 +1,9 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.config.ReflectionConfig;
+import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
-import io.leavesfly.tinyclaw.evolution.EvolutionConfig;
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
 import io.leavesfly.tinyclaw.evolution.FeedbackManager;
 import io.leavesfly.tinyclaw.evolution.reflection.*;
 import io.leavesfly.tinyclaw.memory.MemoryEvolver;
@@ -263,7 +265,7 @@ class ProviderManager {
 
                 reflectionEngine = new ReflectionEngine(
                         newProvider, model, reflectionConfig,
-                        logStore, patternMiner, healthAggregator, tools);
+                        logStore, patternMiner, healthAggregator, this::describeTool);
 
                 // 连接 FailureDetector 到 ToolCallRecorder 的事件流
                 recorder.setFailureDetector(failureDetector);
@@ -280,6 +282,23 @@ class ProviderManager {
                 feedbackManager, promptOptimizer, orchestrator,
                 recorder, logStore, healthAggregator, failureDetector,
                 patternMiner, reflectionEngine, repairApplier);
+    }
+
+    /**
+     * 把 {@link ToolRegistry} 适配为反思引擎需要的 {@code ToolDefinitionLookup}。
+     *
+     * <p>反思引擎只需要工具的文本定义，不需要整个注册表。适配放在装配层（本类同时依赖
+     * {@code tools} 与 {@code evolution.reflection}），使 {@code evolution} 包无需反向依赖
+     * {@code tools} 包，从而消除包级循环依赖。</p>
+     *
+     * @param toolName 工具名称
+     * @return 工具定义文本；工具已注销或不存在时返回 null
+     */
+    private String describeTool(String toolName) {
+        return tools.get(toolName)
+                .map(tool -> String.format("Name: %s%nDescription: %s%nParameters: %s",
+                        tool.name(), tool.description(), tool.parameters()))
+                .orElse(null);
     }
 
     // ==================== Getter 方法 ====================

@@ -637,7 +637,7 @@ class TinyClawConsole {
      */
     async checkAndRestoreRunningState() {
         try {
-            const response = await this.authFetch('/api/chat/status');
+            const response = await this.authFetch(this.chatStatusUrl());
             if (!response.ok) return;
             const status = await response.json();
             if (status.running) {
@@ -649,13 +649,17 @@ class TinyClawConsole {
                 }
                 // 创建一个 AbortController 以支持中断
                 this.currentAbortController = new AbortController();
-                // 在消息区域底部添加运行中提示
+                // 在消息区域底部添加运行中提示（内嵌停止按钮，避免用户找不到变形后的发送按钮）
                 const messagesDiv = document.getElementById('chatMessages');
                 const banner = document.createElement('div');
                 banner.className = 'running-task-banner';
                 banner.id = 'runningTaskBanner';
-                banner.innerHTML = `<span class="running-task-icon"><span class="tool-call-spinner"></span></span><span class="running-task-text">有任务正在后台运行中，SSE 连接已断开。点击停止按钮可中断任务。</span>`;
+                banner.innerHTML = `<span class="running-task-icon"><span class="tool-call-spinner"></span></span><span class="running-task-text">有任务正在后台运行中，SSE 连接已断开。任务完成后界面自动恢复。</span><button class="running-task-stop-btn" id="runningTaskStopBtn" title="中断后台任务">⏹ 停止任务</button>`;
                 messagesDiv.appendChild(banner);
+                const stopBtn = banner.querySelector('#runningTaskStopBtn');
+                if (stopBtn) {
+                    stopBtn.addEventListener('click', () => this.stopRunningTask(stopBtn));
+                }
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 // 轮询等待任务完成
                 this.pollTaskCompletion();
@@ -666,24 +670,75 @@ class TinyClawConsole {
     }
 
     /**
+     * 拼接任务状态查询地址：带上当前会话，只关心本会话是否在跑。
+     * 不带会话时后端返回全局状态，其他通道（如 Telegram）的任务会让输入区误锁。
+     */
+    chatStatusUrl() {
+        return this.chatSessionId
+            ? '/api/chat/status?sessionId=' + encodeURIComponent(this.chatSessionId)
+            : '/api/chat/status';
+    }
+
+    /**
+     * 中断后台运行中的任务：通知后端 abort 并给出按钮反馈。
+     * 中断信号需等当前 LLM 调用返回才生效（最长一个读超时周期），
+     * 任务结束后 pollTaskCompletion 会自动清除横幅并恢复输入区。
+     */
+    async stopRunningTask(btn) {
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '已发送中断信号…';
+        }
+        try {
+            await this.authFetch('/api/chat/abort', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: this.chatSessionId })
+            });
+        } catch (e) {
+            console.warn('Failed to send abort to server:', e);
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '⏹ 停止任务';
+            }
+        }
+    }
+
+    /**
+     * 任务结束后恢复输入区状态（发送按钮还原 + 清空中断控制器）。
+     */
+    restoreChatInputAfterTask() {
+        const sendBtn = document.getElementById('sendBtn');
+        if (sendBtn) {
+            sendBtn.classList.remove('loading');
+            sendBtn.innerHTML = '➤';
+            sendBtn.title = '发送消息';
+        }
+        this.currentAbortController = null;
+    }
+
+    /**
      * 轮询后端任务状态，任务完成后恢复按钮状态并刷新历史。
+     *
+     * 单次请求失败（网络抖动/临时 5xx）不终止轮询，连续失败超过上限时
+     * 恢复输入区并把横幅改为明示文案，避免旧实现 !response.ok 直接
+     * return 导致横幅永久卡死。
      */
     async pollTaskCompletion() {
         const pollInterval = 3000;
+        const maxConsecutiveFailures = 10;
+        let failures = 0;
         const poll = async () => {
             try {
-                const response = await this.authFetch('/api/chat/status');
-                if (!response.ok) return;
+                const response = await this.authFetch(this.chatStatusUrl());
+                if (!response.ok) {
+                    throw new Error('status request failed: ' + response.status);
+                }
+                failures = 0;
                 const status = await response.json();
                 if (!status.running) {
                     // 任务已完成，恢复按钮状态
-                    const sendBtn = document.getElementById('sendBtn');
-                    if (sendBtn) {
-                        sendBtn.classList.remove('loading');
-                        sendBtn.innerHTML = '➤';
-                        sendBtn.title = '发送消息';
-                    }
-                    this.currentAbortController = null;
+                    this.restoreChatInputAfterTask();
                     // 移除运行中提示
                     const banner = document.getElementById('runningTaskBanner');
                     if (banner) banner.remove();
@@ -694,7 +749,18 @@ class TinyClawConsole {
                 // 继续轮询
                 setTimeout(poll, pollInterval);
             } catch (error) {
+                failures++;
                 console.warn('Poll task status failed:', error);
+                if (failures >= maxConsecutiveFailures) {
+                    // 持续失败：恢复输入区可用性，横幅改为停滞提示，不再自动刷新
+                    this.restoreChatInputAfterTask();
+                    const banner = document.getElementById('runningTaskBanner');
+                    if (banner) {
+                        banner.classList.add('running-task-stalled');
+                        banner.innerHTML = `<span class="running-task-text">后台任务状态查询失败，已停止自动刷新。可刷新页面重新检测。</span>`;
+                    }
+                    return;
+                }
                 setTimeout(poll, pollInterval);
             }
         };
@@ -1236,7 +1302,48 @@ class TinyClawConsole {
                 bodyEl: card.querySelector('.subagent-body'),
                 statusEl: card.querySelector('.subagent-status'),
                 contentBuffer: '',
+                // 当前思考折叠卡片与累积内容（SUBAGENT_THINKING 事件流式追加目标）
+                thinkingDiv: null,
+                thinkingBuffer: '',
+                // 正文独立容器：与思考折叠块同层共存，避免 innerHTML 重写时相互覆盖
+                contentEl: null,
             };
+        };
+
+        /**
+         * 固化子代理当前的思考折叠卡片：移除流式光标并默认折叠。
+         */
+        const finalizeSubagentThinking = (cardInfo) => {
+            if (!cardInfo.thinkingDiv) return;
+            cardInfo.thinkingDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+            // 思考结束后默认折叠，用户可点击展开查看
+            cardInfo.thinkingDiv.classList.remove('expanded');
+            cardInfo.thinkingDiv = null;
+            cardInfo.thinkingBuffer = '';
+        };
+
+        /**
+         * 处理 SUBAGENT_THINKING 事件：在子代理卡片内创建/复用思考折叠卡片，流式追加推理内容。
+         */
+        const handleSubagentThinking = (event) => {
+            const taskId = event.taskId || 'unknown';
+            const cardInfo = subagentCardMap[taskId];
+            if (!cardInfo) return;
+
+            if (!cardInfo.thinkingDiv) {
+                const div = document.createElement('div');
+                div.className = 'thinking-card expanded';
+                div.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">💭</span><span class="thinking-name">思考过程</span><span class="thinking-status"><span class="tool-call-spinner"></span>思考中</span><span class="tool-call-toggle">▼</span></div><div class="thinking-body"></div>`;
+                cardInfo.bodyEl.appendChild(div);
+                cardInfo.thinkingDiv = div;
+                cardInfo.thinkingBuffer = '';
+            }
+            cardInfo.thinkingBuffer += event.content || '';
+            const bodyEl = cardInfo.thinkingDiv.querySelector('.thinking-body');
+            bodyEl.textContent = cardInfo.thinkingBuffer;
+            const cursor = document.createElement('span');
+            cursor.className = 'streaming-cursor';
+            bodyEl.appendChild(cursor);
         };
 
         /**
@@ -1247,13 +1354,21 @@ class TinyClawConsole {
             const content = event.content || '';
             const cardInfo = subagentCardMap[taskId];
             if (cardInfo) {
+                // 正文开始意味着本轮思考结束，固化思考折叠卡片
+                finalizeSubagentThinking(cardInfo);
                 cardInfo.contentBuffer += content;
+                if (!cardInfo.contentEl) {
+                    cardInfo.contentEl = document.createElement('div');
+                    cardInfo.contentEl.className = 'subagent-content-zone';
+                    cardInfo.bodyEl.appendChild(cardInfo.contentEl);
+                }
                 if (typeof marked !== 'undefined') {
-                    cardInfo.bodyEl.classList.add('markdown-body');
-                    cardInfo.bodyEl.style.whiteSpace = '';
-                    cardInfo.bodyEl.innerHTML = marked.parse(cardInfo.contentBuffer) + '<span class="streaming-cursor"></span>';
+                    cardInfo.contentEl.classList.add('markdown-body');
+                    cardInfo.contentEl.style.whiteSpace = '';
+                    cardInfo.contentEl.innerHTML = marked.parse(cardInfo.contentBuffer) + '<span class="streaming-cursor"></span>';
                 } else {
-                    cardInfo.bodyEl.textContent = cardInfo.contentBuffer;
+                    cardInfo.contentEl.style.whiteSpace = 'pre-wrap';
+                    cardInfo.contentEl.textContent = cardInfo.contentBuffer;
                 }
             }
         };
@@ -1266,13 +1381,14 @@ class TinyClawConsole {
             const success = event.success !== false;
             const cardInfo = subagentCardMap[taskId];
             if (cardInfo) {
+                finalizeSubagentThinking(cardInfo);
                 cardInfo.statusEl.className = `subagent-status ${success ? 'success' : 'error'}`;
                 cardInfo.statusEl.innerHTML = success ? '✅ 完成' : '❌ 失败';
                 // 最终渲染 Markdown 并移除流式光标
-                if (typeof marked !== 'undefined' && cardInfo.contentBuffer) {
-                    cardInfo.bodyEl.classList.add('markdown-body');
-                    cardInfo.bodyEl.style.whiteSpace = '';
-                    cardInfo.bodyEl.innerHTML = marked.parse(cardInfo.contentBuffer);
+                if (typeof marked !== 'undefined' && cardInfo.contentBuffer && cardInfo.contentEl) {
+                    cardInfo.contentEl.classList.add('markdown-body');
+                    cardInfo.contentEl.style.whiteSpace = '';
+                    cardInfo.contentEl.innerHTML = marked.parse(cardInfo.contentBuffer);
                 }
                 cardInfo.bodyEl.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
                 delete subagentCardMap[taskId];
@@ -1335,6 +1451,9 @@ class TinyClawConsole {
                     break;
                 case 'SUBAGENT_CONTENT':
                     handleSubagentContent(event);
+                    break;
+                case 'SUBAGENT_THINKING':
+                    handleSubagentThinking(event);
                     break;
                 case 'SUBAGENT_END':
                     handleSubagentEnd(event);
@@ -1510,11 +1629,12 @@ class TinyClawConsole {
      */
     async abortCurrentTask() {
         if (this.currentAbortController) {
-            // 先通知后端中断
+            // 先通知后端中断（带上会话，避免中断其他通道正在跑的任务）
             try {
                 await this.authFetch('/api/chat/abort', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: this.chatSessionId })
                 });
             } catch (e) {
                 console.warn('Failed to send abort to server:', e);

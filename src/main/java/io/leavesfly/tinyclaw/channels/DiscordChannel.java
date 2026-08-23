@@ -3,7 +3,6 @@ package io.leavesfly.tinyclaw.channels;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
@@ -28,7 +27,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,6 +68,19 @@ public class DiscordChannel extends BaseChannel {
     // Gateway Intents: GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT
     private static final int INTENTS = 1 | 512 | 4096 | 32768;
 
+    /**
+     * Discord Gateway 不可恢复的关闭码：重连也不会成功，只会持续冲击对端。
+     * 遇到这些码时永久停止重连，等人改配置后重启。
+     */
+    private static final Map<Integer, String> FATAL_CLOSE_CODES = Map.of(
+            4004, "Authentication failed（Bot Token 无效）",
+            4010, "Invalid shard",
+            4011, "Sharding required",
+            4012, "Invalid API version",
+            4013, "Invalid intent(s)",
+            4014, "Disallowed intent(s)（需在开发者后台开启对应 Privileged Intent）"
+    );
+
     private static final Set<String> AUDIO_EXTENSIONS = Set.of(
             ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".wma"
     );
@@ -88,6 +99,9 @@ public class DiscordChannel extends BaseChannel {
     private String selfUserId;
     private volatile Integer lastSequence;
     private final AtomicBoolean ready = new AtomicBoolean(false);
+
+    private final Reconnector reconnector =
+            new Reconnector("Discord Gateway", logger, this::isRunning, this::reconnectGateway);
 
     /**
      * 创建 Discord 通道
@@ -143,6 +157,21 @@ public class DiscordChannel extends BaseChannel {
         }
 
         setRunning(true);
+        // 首连成功后才开启重连：启动阶段失败通常是配置错误，应当快速报错而不是默默重试
+        reconnector.start();
+    }
+
+    /**
+     * 重连动作：重建 Gateway 连接。
+     *
+     * <p>本实现不做 RESUME（未保存 session_id），而是重新 IDENTIFY 开一个新 session。
+     * 代价是丢失断线期间的消息，换来的是通道能自己恢复收发而不是永久停摆。
+     * 新 session 的序列号从头开始，因此必须清掉 lastSequence，否则心跳会带上旧 session 的值。</p>
+     */
+    private void reconnectGateway() {
+        ready.set(false);
+        lastSequence = null;
+        connectGateway();
     }
 
     /**
@@ -167,10 +196,23 @@ public class DiscordChannel extends BaseChannel {
             }
 
             @Override
+            public void onClosed(WebSocket ws, int code, String reason) {
+                logger.warn("Discord Gateway 已关闭", Map.of("code", code, "reason", reason));
+                ready.set(false);
+                String fatal = FATAL_CLOSE_CODES.get(code);
+                if (fatal != null) {
+                    reconnector.disable("close " + code + ": " + fatal);
+                } else {
+                    reconnector.schedule();
+                }
+            }
+
+            @Override
             public void onFailure(WebSocket ws, Throwable t, Response response) {
                 String errMsg = t.getMessage() != null ? t.getMessage() : "unknown";
                 logger.error("Discord Gateway 连接失败", Map.of("error", errMsg));
                 ready.set(false);
+                reconnector.schedule();
             }
         });
     }
@@ -202,7 +244,14 @@ public class DiscordChannel extends BaseChannel {
                     handleDispatch(payload.path("t").asText(""), d);
                     break;
                 case 9: // INVALID SESSION
-                    logger.error("Discord session 无效");
+                    // session 已失效，必须重新 IDENTIFY；关掉连接由 onClosed 驱动重连，
+                    // 否则 Bot 会就这么挂在那里不再收到任何事件
+                    logger.error("Discord session 无效，将重新连接");
+                    ready.set(false);
+                    WebSocket current = webSocket;
+                    if (current != null) {
+                        current.close(1000, "invalid session");
+                    }
                     break;
                 default:
                     break;
@@ -264,6 +313,9 @@ public class DiscordChannel extends BaseChannel {
                         "bot_id", selfUserId
                 ));
                 ready.set(true);
+                // 在 READY 而不是 onOpen 重置退避：socket 接通不代表 IDENTIFY 被接受，
+                // 否则“接通即被拒”的循环会把退避一直清零成无间隔重连
+                reconnector.onConnected();
                 break;
             case "MESSAGE_CREATE":
                 processMessage(d);
@@ -359,6 +411,8 @@ public class DiscordChannel extends BaseChannel {
         logger.info("正在停止 Discord Bot...");
         setRunning(false);
         ready.set(false);
+        // 先停重连再关连接：否则 close 触发的 onClosed 会又排一次重连
+        reconnector.stop();
         if (heartbeatTask != null) heartbeatTask.cancel(false);
         if (heartbeatExecutor != null) heartbeatExecutor.shutdown();
         if (webSocket != null) webSocket.close(1000, "Normal closure");
@@ -450,7 +504,7 @@ public class DiscordChannel extends BaseChannel {
      */
     private String downloadAttachment(String url, String filename) {
         try {
-            Path mediaDir = Paths.get(System.getProperty("java.io.tmpdir"), "tinyclaw_media");
+            Path mediaDir = io.leavesfly.tinyclaw.util.MediaPaths.channelMediaDir();
             Files.createDirectories(mediaDir);
 
             // 只取文件名的最后一段并过滤特殊字符，拒绝越界路径

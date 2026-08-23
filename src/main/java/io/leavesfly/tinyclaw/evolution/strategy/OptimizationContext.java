@@ -1,6 +1,6 @@
 package io.leavesfly.tinyclaw.evolution.strategy;
 
-import io.leavesfly.tinyclaw.evolution.EvolutionConfig;
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
 import io.leavesfly.tinyclaw.evolution.VariantManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMResponse;

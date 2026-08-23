@@ -1,4 +1,4 @@
-package io.leavesfly.tinyclaw.evolution.reflection;
+package io.leavesfly.tinyclaw.config;
 
 /**
  * Reflection 2.0（工具级自我调试）配置。

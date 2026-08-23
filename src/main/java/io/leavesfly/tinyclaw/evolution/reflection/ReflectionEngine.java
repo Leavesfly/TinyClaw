@@ -2,11 +2,11 @@ package io.leavesfly.tinyclaw.evolution.reflection;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.leavesfly.tinyclaw.config.ReflectionConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMResponse;
 import io.leavesfly.tinyclaw.providers.Message;
-import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.time.Instant;
 import java.util.*;
@@ -39,7 +39,7 @@ public class ReflectionEngine {
     private final ToolCallLogStore logStore;
     private final PatternMiner patternMiner;
     private final ToolHealthAggregator aggregator;
-    private final ToolRegistry toolRegistry;
+    private final ToolDefinitionLookup toolDefinitions;
 
     /** 所有历史提案（线程安全） */
     private final CopyOnWriteArrayList<RepairProposal> proposals = new CopyOnWriteArrayList<>();
@@ -49,14 +49,14 @@ public class ReflectionEngine {
 
     public ReflectionEngine(LLMProvider provider, String model, ReflectionConfig config,
                             ToolCallLogStore logStore, PatternMiner patternMiner,
-                            ToolHealthAggregator aggregator, ToolRegistry toolRegistry) {
+                            ToolHealthAggregator aggregator, ToolDefinitionLookup toolDefinitions) {
         this.provider = provider;
         this.model = resolveModel(model, config);
         this.config = config;
         this.logStore = logStore;
         this.patternMiner = patternMiner;
         this.aggregator = aggregator;
-        this.toolRegistry = toolRegistry;
+        this.toolDefinitions = toolDefinitions;
     }
 
     /**
@@ -229,13 +229,12 @@ public class ReflectionEngine {
     }
 
     private String getToolDefinition(String toolName) {
-        return toolRegistry.get(toolName)
-                .map(tool -> String.format("Name: %s\nDescription: %s\nParameters: %s",
-                        tool.name(), tool.description(), tool.parameters()))
-                .orElseGet(() -> {
-                    logger.warn("Tool definition not found during reflection", Map.of("tool", toolName));
-                    return String.format("Name: %s\nDescription: [definition unavailable — tool may have been unregistered]\nParameters: {}", toolName);
-                });
+        String definition = toolDefinitions != null ? toolDefinitions.describe(toolName) : null;
+        if (definition != null) {
+            return definition;
+        }
+        logger.warn("Tool definition not found during reflection", Map.of("tool", toolName));
+        return String.format("Name: %s\nDescription: [definition unavailable — tool may have been unregistered]\nParameters: {}", toolName);
     }
 
     // ==================== LLM 输出解析 ====================

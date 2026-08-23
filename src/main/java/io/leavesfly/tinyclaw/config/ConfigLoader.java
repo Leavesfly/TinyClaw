@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.cdimascio.dotenv.Dotenv;
+import io.leavesfly.tinyclaw.util.JsonFileStore;
 
 import java.io.File;
 import java.io.IOException;
@@ -117,7 +118,8 @@ public class ConfigLoader {
         ensureParentDirectory(configFile);
         
         String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(config);
-        Files.writeString(configFile.toPath(), json);
+        // 原子写：config.json 被写截断会让整个安装无法启动
+        JsonFileStore.writeAtomic(configFile.toPath(), json);
     }
     
     /**

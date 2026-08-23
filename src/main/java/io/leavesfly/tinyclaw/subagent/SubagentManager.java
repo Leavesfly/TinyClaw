@@ -1,6 +1,7 @@
-package io.leavesfly.tinyclaw.tools;
+package io.leavesfly.tinyclaw.subagent;
 
-import io.leavesfly.tinyclaw.agent.ReActExecutor;
+import io.leavesfly.tinyclaw.tools.ToolRegistry;
+import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
@@ -8,8 +9,6 @@ import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
 import io.leavesfly.tinyclaw.session.SessionManager;
-import io.leavesfly.tinyclaw.subagent.SubagentDefinition;
-import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
 
 import java.nio.file.Paths;
 import java.time.LocalDate;
@@ -374,11 +373,22 @@ public class SubagentManager {
             String result;
 
             if (callback != null) {
-                // 使用流式执行，将子代理的输出通过回调传递
-                result = reActExecutor.executeStream(messages, sessionKey, chunk -> {
-                    // 将子代理的内容包装为 subagentContent 事件
-                    callback.onEvent(StreamEvent.subagentContent(task.getId(), chunk));
-                });
+                // 使用流式执行：子代理的事件保持结构化转发。
+                // 思考内容以 SUBAGENT_THINKING 透出；若降级为普通 chunk 回调，
+                // ReActExecutor 内部的 wrap() 会把 THINKING 事件 format() 成文本，
+                // 导致思维链逐 token 碎片化混入子代理正文
+                String taskId = task.getId();
+                LLMProvider.EnhancedStreamCallback subagentCallback = event -> {
+                    if (event.getType() == StreamEvent.EventType.CONTENT) {
+                        callback.onEvent(StreamEvent.subagentContent(taskId, event.getContent()));
+                    } else if (event.getType() == StreamEvent.EventType.THINKING) {
+                        callback.onEvent(StreamEvent.subagentThinking(taskId, event.getContent()));
+                    } else {
+                        // 工具调用等过程事件仍以可读文本行混入子代理输出
+                        callback.onEvent(StreamEvent.subagentContent(taskId, event.format()));
+                    }
+                };
+                result = reActExecutor.executeStream(messages, sessionKey, subagentCallback);
             } else {
                 result = reActExecutor.execute(messages, sessionKey);
             }

@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.evolution.reflection;
 
+import io.leavesfly.tinyclaw.config.ReflectionConfig;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 
 import java.time.Instant;

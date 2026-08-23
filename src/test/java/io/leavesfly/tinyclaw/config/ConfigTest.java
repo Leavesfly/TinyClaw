@@ -96,7 +96,7 @@ class ConfigTest {
     @Test
     @DisplayName("HeartbeatSettings: 默认值符合 OpenClaw 对齐约定")
     void heartbeatSettings_Defaults_AreCorrect() {
-        AgentConfig.HeartbeatSettings settings = new AgentConfig.HeartbeatSettings();
+        HeartbeatSettings settings = new HeartbeatSettings();
 
         assertFalse(settings.isEnabled());
         assertEquals(1800, settings.getIntervalSeconds());
@@ -115,7 +115,7 @@ class ConfigTest {
     @Test
     @DisplayName("HeartbeatSettings.effectiveTimeoutSeconds: 0 取 min(interval, 600)")
     void heartbeatSettings_EffectiveTimeout() {
-        AgentConfig.HeartbeatSettings settings = new AgentConfig.HeartbeatSettings();
+        HeartbeatSettings settings = new HeartbeatSettings();
 
         // 默认 interval=1800 → 超时上限 600
         assertEquals(600, settings.effectiveTimeoutSeconds());
@@ -132,16 +132,16 @@ class ConfigTest {
     @Test
     @DisplayName("HeartbeatSettings.mergedOver: per-agent entry 叠加基础配置")
     void heartbeatSettings_MergedOver() {
-        AgentConfig.HeartbeatSettings base = new AgentConfig.HeartbeatSettings();
+        HeartbeatSettings base = new HeartbeatSettings();
         base.setPrompt("基础指令");
         base.setModel("small-model");
         base.setIntervalSeconds(900);
 
-        AgentConfig.HeartbeatSettings entry = new AgentConfig.HeartbeatSettings();
+        HeartbeatSettings entry = new HeartbeatSettings();
         entry.setIntervalSeconds(300);
         // prompt/model 未设置 → 回填 base
 
-        AgentConfig.HeartbeatSettings merged = entry.mergedOver(base);
+        HeartbeatSettings merged = entry.mergedOver(base);
         assertEquals(300, merged.getIntervalSeconds());
         assertEquals("基础指令", merged.getPrompt());
         assertEquals("small-model", merged.getModel());
@@ -157,7 +157,7 @@ class ConfigTest {
         Path configPath = tempDir.resolve("hb-config.json");
         Config original = Config.defaultConfig();
 
-        AgentConfig.HeartbeatSettings hb = original.getAgent().getHeartbeat();
+        HeartbeatSettings hb = original.getAgent().getHeartbeat();
         hb.setEnabled(true);
         hb.setIntervalSeconds(600);
         hb.setTimeoutSeconds(60);
@@ -168,11 +168,11 @@ class ConfigTest {
         hb.setTarget("last");
         hb.setShowOk(true);
         hb.setShowAlerts(false);
-        hb.setActiveHours(new AgentConfig.ActiveHours("09:00", "18:00", "Asia/Shanghai"));
+        hb.setActiveHours(new ActiveHours("09:00", "18:00", "Asia/Shanghai"));
 
         ConfigLoader.save(configPath.toString(), original);
         Config loaded = ConfigLoader.load(configPath.toString());
-        AgentConfig.HeartbeatSettings back = loaded.getAgent().getHeartbeat();
+        HeartbeatSettings back = loaded.getAgent().getHeartbeat();
 
         assertNotNull(back);
         assertTrue(back.isEnabled());

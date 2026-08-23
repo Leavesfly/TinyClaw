@@ -104,16 +104,16 @@ class OllamaThinkingModeTest {
     void parserShouldEmitThinkingEvents() throws Exception {
         String sse = """
                 data: {"choices":[{"delta":{"reasoning":"先比较整数部分"}}]}
-
+    
                 data: {"choices":[{"delta":{"reasoning":"，都是 9"}}]}
-
+    
                 data: {"choices":[{"delta":{"content":"9.8 更大"}}]}
-
+    
                 data: [DONE]
-
+    
                 """;
         Buffer source = new Buffer().writeUtf8(sse);
-
+    
         List<String> thinkingChunks = new ArrayList<>();
         StringBuilder content = new StringBuilder();
         LLMProvider.EnhancedStreamCallback callback = event -> {
@@ -123,15 +123,51 @@ class OllamaThinkingModeTest {
                 content.append(event.getContent());
             }
         };
-
+    
         StreamResponseParser parser = new StreamResponseParser();
         LLMResponse response = parser.parseStreamResponse(source, callback);
-
-        assertEquals(2, thinkingChunks.size(), "应透出 2 个 THINKING 事件");
+    
+        // 行缓冲后，无换行的 token 级 chunk 会聚合到流结束一次性透出（避免碎片化事件）
+        assertEquals(1, thinkingChunks.size(), "无换行的思维链应聚合为 1 个 THINKING 事件");
         assertEquals("先比较整数部分，都是 9", String.join("", thinkingChunks));
         assertEquals("9.8 更大", content.toString(), "正文不应混入思维链内容");
         assertEquals("9.8 更大", response.getContent(), "最终响应的 content 不含思维链");
         System.out.println("【解析测试通过】THINKING 事件: " + thinkingChunks + ", 正文: " + content);
+    }
+    
+    /**
+     * 解析测试：模拟 token 粒度且含换行的 reasoning 流，
+     * 验证 THINKING 事件按行聚合透出（而非逐 token 碎片）。
+     */
+    @Test
+    void parserShouldAggregateThinkingByLine() throws Exception {
+        String sse = """
+                data: {"choices":[{"delta":{"reasoning":"先比较整数"}}]}
+    
+                data: {"choices":[{"delta":{"reasoning":"部分。\\n再比较"}}]}
+    
+                data: {"choices":[{"delta":{"reasoning":"小数部分。\\n"}}]}
+    
+                data: {"choices":[{"delta":{"content":"9.8 更大"}}]}
+    
+                data: [DONE]
+    
+                """;
+        Buffer source = new Buffer().writeUtf8(sse);
+    
+        List<String> thinkingChunks = new ArrayList<>();
+        LLMProvider.EnhancedStreamCallback callback = event -> {
+            if (event.getType() == StreamEvent.EventType.THINKING) {
+                thinkingChunks.add(event.getContent());
+            }
+        };
+    
+        StreamResponseParser parser = new StreamResponseParser();
+        parser.parseStreamResponse(source, callback);
+    
+        assertEquals(2, thinkingChunks.size(), "应按行透出 2 个 THINKING 事件，而非逐 token 碎片");
+        assertEquals("先比较整数部分。\n", thinkingChunks.get(0), "第一行应含行尾换行");
+        assertEquals("再比较小数部分。\n", thinkingChunks.get(1), "第二行应含行尾换行");
     }
 
     private static boolean isOllamaRunning() {

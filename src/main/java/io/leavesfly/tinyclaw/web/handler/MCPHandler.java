@@ -31,59 +31,47 @@ import java.util.*;
  * - DELETE /api/mcp/{name} 删除指定 MCP 服务器配置
  * - POST /api/mcp/{name}/test 测试连接并获取工具列表
  */
-public class MCPHandler {
+public class MCPHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
 
-    private final Config config;
-    private final SecurityMiddleware security;
-
     public MCPHandler(Config config, SecurityMiddleware security) {
-        this.config = config;
-        this.security = security;
+        super(config, security);
     }
 
-    public void handle(HttpExchange exchange) throws IOException {
-        if (!security.preCheck(exchange)) return;
-
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
-        String corsOrigin = config.getGateway().getCorsOrigin();
-
-        try {
-            if (WebUtils.API_MCP.equals(path)) {
-                switch (method) {
-                    case WebUtils.HTTP_METHOD_GET -> handleGetConfig(exchange, corsOrigin);
-                    case WebUtils.HTTP_METHOD_PUT -> handleUpdateEnabled(exchange, corsOrigin);
-                    case WebUtils.HTTP_METHOD_POST -> handleAddServer(exchange, corsOrigin);
-                    default -> WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
-                }
-            } else if (path.startsWith(WebUtils.API_MCP + WebUtils.PATH_SEPARATOR)) {
-                String subPath = path.substring(WebUtils.API_MCP.length() + 1);
-                // 检查是否为 /api/mcp/{name}/test
-                if (subPath.endsWith("/test")) {
-                    String serverName = URLDecoder.decode(
-                            subPath.substring(0, subPath.length() - "/test".length()), StandardCharsets.UTF_8);
-                    if (WebUtils.HTTP_METHOD_POST.equals(method)) {
-                        handleTestConnection(exchange, serverName, corsOrigin);
-                    } else {
-                        WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
-                    }
+    @Override
+    protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
+            throws IOException {
+        if (WebUtils.API_MCP.equals(path)) {
+            switch (method) {
+                case WebUtils.HTTP_METHOD_GET -> handleGetConfig(exchange, corsOrigin);
+                case WebUtils.HTTP_METHOD_PUT -> handleUpdateEnabled(exchange, corsOrigin);
+                case WebUtils.HTTP_METHOD_POST -> handleAddServer(exchange, corsOrigin);
+                default -> WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
+            }
+        } else if (path.startsWith(WebUtils.API_MCP + WebUtils.PATH_SEPARATOR)) {
+            String subPath = path.substring(WebUtils.API_MCP.length() + 1);
+            // 检查是否为 /api/mcp/{name}/test
+            if (subPath.endsWith("/test")) {
+                String serverName = URLDecoder.decode(
+                        subPath.substring(0, subPath.length() - "/test".length()), StandardCharsets.UTF_8);
+                if (WebUtils.HTTP_METHOD_POST.equals(method)) {
+                    handleTestConnection(exchange, serverName, corsOrigin);
                 } else {
-                    String serverName = URLDecoder.decode(subPath, StandardCharsets.UTF_8);
-                    switch (method) {
-                        case WebUtils.HTTP_METHOD_PUT -> handleUpdateServer(exchange, serverName, corsOrigin);
-                        case WebUtils.HTTP_METHOD_DELETE -> handleDeleteServer(exchange, serverName, corsOrigin);
-                        default -> WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
-                    }
+                    WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
                 }
             } else {
-                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Not found"), corsOrigin);
+                String serverName = URLDecoder.decode(subPath, StandardCharsets.UTF_8);
+                switch (method) {
+                    case WebUtils.HTTP_METHOD_PUT -> handleUpdateServer(exchange, serverName, corsOrigin);
+                    case WebUtils.HTTP_METHOD_DELETE -> handleDeleteServer(exchange, serverName, corsOrigin);
+                    default -> WebUtils.sendJson(exchange, 405, WebUtils.errorJson("Method not allowed"), corsOrigin);
+                }
             }
-        } catch (Exception e) {
-            logger.error("MCP API error", Map.of("error", e.getMessage()));
-            WebUtils.sendJson(exchange, 500, WebUtils.errorJson(e.getMessage()), corsOrigin);
+        } else {
+            return false;
         }
+        return true;
     }
 
     /**

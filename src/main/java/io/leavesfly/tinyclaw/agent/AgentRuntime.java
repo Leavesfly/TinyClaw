@@ -1,5 +1,8 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.config.EvolutionConfig;
+import io.leavesfly.tinyclaw.config.ReflectionConfig;
+import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.collaboration.AgentOrchestrator;
 
 import io.leavesfly.tinyclaw.bus.InboundMessage;
@@ -565,8 +568,8 @@ public class AgentRuntime {
 
         logIncoming("cli", sessionKey, content);
 
-        // 将相对路径转换为绝对路径，确保 HTTPProvider 能读取到图片文件
-        List<String> absoluteImagePaths = resolveImagePaths(images);
+        // 解析并校验图片路径（转绝对路径供 HTTPProvider 读取，并剔除越界路径）
+        List<String> absoluteImagePaths = contextBuilder.resolveImagePaths(images);
 
         InboundMessage message = new InboundMessage("cli", "user", "direct", content);
         message.setMedia(absoluteImagePaths);  // 设置图片列表
@@ -594,19 +597,38 @@ public class AgentRuntime {
     }
 
     /**
-     * 中断当前正在执行的 LLM 任务。
+     * 中断正在执行的 LLM 任务。
      * 设置 ReActExecutor 的中断标志位，使其在下一次迭代时提前退出。
+     *
+     * <p>传入 sessionKey 时只中断该会话，避免误伤其他通道正在运行的任务；
+     * 为 null 时退回全局中断（CLI 等单会话场景）。</p>
+     *
+     * @param sessionKey 目标会话标识符，null 表示中断全部
+     * @return 是否成功发送中断信号
+     */
+    public boolean abortCurrentTask(String sessionKey) {
+        ProviderComponents comps = providerManager.getComponents();
+        if (comps == null || comps.reActExecutor == null) {
+            return false;
+        }
+        if (sessionKey == null) {
+            comps.reActExecutor.abort();
+            logger.info("Abort signal sent to all active executions");
+            return true;
+        }
+        boolean matched = comps.reActExecutor.abortSession(sessionKey);
+        logger.info("Abort signal sent to session", Map.of(
+                "session", sessionKey, "matched", matched));
+        return matched;
+    }
+
+    /**
+     * 中断当前所有正在执行的 LLM 任务。
      *
      * @return 是否成功发送中断信号（true 表示有活跃的执行器可以中断）
      */
     public boolean abortCurrentTask() {
-        ProviderComponents comps = providerManager.getComponents();
-        if (comps != null && comps.reActExecutor != null) {
-            comps.reActExecutor.abort();
-            logger.info("Abort signal sent to ReActExecutor");
-            return true;
-        }
-        return false;
+        return abortCurrentTask(null);
     }
 
     /**
@@ -617,6 +639,21 @@ public class AgentRuntime {
     public boolean isTaskRunning() {
         ProviderComponents comps = providerManager.getComponents();
         return comps != null && comps.reActExecutor != null && comps.reActExecutor.isRunning();
+    }
+
+    /**
+     * 查询指定会话是否有 LLM 任务正在运行。
+     *
+     * @param sessionKey 会话标识符，null 时退回全局查询
+     * @return 如果有任务正在运行返回 true
+     */
+    public boolean isTaskRunning(String sessionKey) {
+        if (sessionKey == null) {
+            return isTaskRunning();
+        }
+        ProviderComponents comps = providerManager.getComponents();
+        return comps != null && comps.reActExecutor != null
+                && comps.reActExecutor.isSessionRunning(sessionKey);
     }
 
     /**
@@ -677,29 +714,6 @@ public class AgentRuntime {
 
     // ==================== 通用工具方法 ====================
 
-    /**
-     * 将图片路径列表中的相对路径转换为绝对路径。
-     *
-     * 上传的图片存储为相对路径（如 "uploads/xxx.jpg"），
-     * HTTPProvider 需要绝对路径才能读取文件并转换为 Base64。
-     *
-     * @param images 原始图片路径列表（可能包含相对路径或已是绝对路径）
-     * @return 转换后的绝对路径列表，null 输入返回 null
-     */
-    private List<String> resolveImagePaths(List<String> images) {
-        if (images == null || images.isEmpty()) {
-            return images;
-        }
-        return images.stream()
-                .map(path -> {
-                    if (path == null || path.startsWith("/") || path.startsWith("data:")) {
-                        return path;
-                    }
-                    return Paths.get(workspace, path).toAbsolutePath().toString();
-                })
-                .collect(java.util.stream.Collectors.toList());
-    }
-
     private static String ensureNonBlank(String value, String fallback) {
         return StringUtils.isBlank(value) ? fallback : value;
     }
@@ -716,11 +730,6 @@ public class AgentRuntime {
         if (callback != null) {
             callback.onChunk(message);
         }
-    }
-
-    private void logIncoming(InboundMessage msg) {
-        logIncoming(msg.getChannel(), msg.getSessionKey(), msg.getContent(),
-                msg.getChatId(), msg.getSenderId());
     }
 
     private void logIncoming(String channel, String sessionKey, String content) {

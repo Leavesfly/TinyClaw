@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
 import io.leavesfly.tinyclaw.bus.OutboundMessage;
@@ -10,7 +11,7 @@ import io.leavesfly.tinyclaw.hooks.HookContext;
 import io.leavesfly.tinyclaw.hooks.HookDecision;
 import io.leavesfly.tinyclaw.hooks.HookDispatcher;
 import io.leavesfly.tinyclaw.hooks.HookEvent;
-import io.leavesfly.tinyclaw.heartbeat.LastContact;
+import io.leavesfly.tinyclaw.bus.LastContact;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
@@ -354,12 +355,15 @@ class MessageRouter {
     /**
      * 构建上下文消息列表。使用上下文消息（而非完整转录），
      * 已被 summary 压缩的早期消息不再重复送入模型。
+     *
+     * <p>senderId 一并传入，使长期记忆只注入当前发言人与当前聊天可见的那部分。</p>
      */
     List<Message> buildContext(String sessionKey, InboundMessage msg) {
         return contextBuilder.buildMessages(
                 sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
-                msg.getContent(), msg.getChannel(), msg.getChatId(), msg.isLightContext());
+                msg.getContent(), null, msg.getChannel(), msg.getChatId(),
+                msg.getSenderId(), msg.isLightContext());
     }
 
     /**
@@ -369,7 +373,8 @@ class MessageRouter {
         return contextBuilder.buildMessages(
                 sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
-                msg.getContent(), images, msg.getChannel(), msg.getChatId());
+                msg.getContent(), images, msg.getChannel(), msg.getChatId(),
+                msg.getSenderId(), msg.isLightContext());
     }
 
     /**

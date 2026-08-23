@@ -39,8 +39,17 @@ public class HTTPProvider implements LLMProvider {
     
     // 超时配置
     private static final int CONNECT_TIMEOUT_SECONDS = 30;     // 连接超时
-    private static final int READ_TIMEOUT_SECONDS = 120;       // 读取超时
+    private static final int READ_TIMEOUT_SECONDS = 120;       // 非流式读取超时
     private static final int WRITE_TIMEOUT_SECONDS = 30;       // 写入超时
+    
+    /**
+     * 流式读取超时（秒）。
+     * 
+     * <p>OkHttp 的 readTimeout 在流式下是「两个字节之间的最大间隔」。推理型模型（如
+     * 本地 Ollama 上的大参数量模型）在吐出首个 token 前可能静默数分钟，用 120s
+     * 会把正常的长时思考误判为超时并中断请求。流式场景因此单独放宽。</p>
+     */
+    private static final int STREAM_READ_TIMEOUT_SECONDS = 600;
     
     // 其他常量
     private static final int MAX_ERROR_RESPONSE_LENGTH = 500;  // 错误响应最大长度
@@ -50,7 +59,8 @@ public class HTTPProvider implements LLMProvider {
     private final String apiKey;              // API 密鑰
     private final String apiBase;             // API 基础 URL
     private final String name;               // Provider 名称
-    private final OkHttpClient httpClient;    // HTTP 客户端
+    private final OkHttpClient httpClient;    // HTTP 客户端（非流式）
+    private final OkHttpClient streamHttpClient;  // HTTP 客户端（流式，读超时更宽）
     private final LLMRequestBuilder requestBuilder;       // 请求构建器
     private final StreamResponseParser responseParser;    // 响应解析器
     
@@ -79,6 +89,10 @@ public class HTTPProvider implements LLMProvider {
                 .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .connectionPool(new ConnectionPool(5, 5, TimeUnit.MINUTES))
+                .build();
+        // 复用连接池与调度器，仅放宽读超时，避免多开一套线程与连接资源
+        this.streamHttpClient = this.httpClient.newBuilder()
+                .readTimeout(STREAM_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .build();
         this.requestBuilder = new LLMRequestBuilder(objectMapper);
         this.responseParser = new StreamResponseParser(objectMapper);
@@ -118,11 +132,14 @@ public class HTTPProvider implements LLMProvider {
         
         // 构建并执行 HTTP 请求
         Request request = buildHttpRequest(requestJson);
-        try (Response response = httpClient.newCall(request).execute()) {
+        try (Response response = streamHttpClient.newCall(request).execute()) {
             validateResponse(response, model);
+            if (response.body() == null) {
+                throw new LLMException("流式响应体为空 (model=" + model + ")");
+            }
             return responseParser.parseStreamResponse(response.body().source(), callback);
         } catch (IOException e) {
-            throw new LLMException("执行请求失败", e);
+            throw wrapRequestFailure("stream", model, e);
         }
     }
     
@@ -162,8 +179,33 @@ public class HTTPProvider implements LLMProvider {
             validateResponse(response, responseBody, model);
             return responseParser.parseResponse(responseBody);
         } catch (IOException e) {
-            throw new LLMException("执行请求失败", e);
+            throw wrapRequestFailure("non-stream", model, e);
         }
+    }
+    
+    /**
+     * 包装网络层请求失败异常，记录定位所需的完整上下文。
+     *
+     * <p>原始实现仅包装为 {@code LLMException("执行请求失败")}，上层只打 getMessage()
+     * 时会丢失底层网络根因（如 SocketTimeoutException: timeout），无法定位是哪个
+     * provider/模型/地址出了问题。此处日志携带全部定位字段，异常消息附带根因。</p>
+     *
+     * @param mode  请求模式（stream / non-stream）
+     * @param model 本次请求的模型名称
+     * @param cause 网络层异常
+     * @return 携带根因的 LLMException
+     */
+    private LLMException wrapRequestFailure(String mode, String model, IOException cause) {
+        String rootCause = LLMException.rootCauseMessage(cause);
+        logger.error("LLM request IO failure", Map.of(
+                "mode", mode,
+                "provider", name,
+                "model", model,
+                "api_base", apiBase,
+                "error_type", cause.getClass().getName(),
+                "root_cause", rootCause
+        ));
+        return new LLMException("执行请求失败: " + rootCause, cause);
     }
     
     /**
@@ -236,7 +278,7 @@ public class HTTPProvider implements LLMProvider {
                 "response", errorPreview
         ));
 
-        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + errorBody);
+        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + errorPreview);
     }
 
     /**
@@ -261,7 +303,9 @@ public class HTTPProvider implements LLMProvider {
                 "response", errorPreview
         ));
 
-        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + responseBody);
+        // 仅带截断后的预览：异常消息会经 SSE 途径回显给前端，
+        // 完整错误体可能包含被回显的请求内容且体积不可控
+        throw new IOException("LLM API error (model=" + model + ", status=" + response.code() + "): " + errorPreview);
     }
     
     @Override

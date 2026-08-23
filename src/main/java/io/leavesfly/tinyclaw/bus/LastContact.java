@@ -1,4 +1,4 @@
-package io.leavesfly.tinyclaw.heartbeat;
+package io.leavesfly.tinyclaw.bus;
 
 /**
  * 最近一次入站联系人记录（对齐 OpenClaw 的 target:"last" 投递语义）。

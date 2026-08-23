@@ -1,6 +1,6 @@
 ## TinyClaw 技术架构文档
 
-> 版本：0.1.0 ｜ 最后更新：2026-03-24
+> 版本：0.1.0 ｜ 最后更新：2026-08-22
 
 ---
 
@@ -16,7 +16,7 @@
 - **工具优先**：围绕工具调用（function calling）设计，Agent 通过工具执行文件操作、Shell 命令、网络访问、定时任务、子代理、多 Agent 协同等复杂动作。
 - **安全优先**：内置 **SecurityGuard**，对文件操作和命令执行实施工作空间沙箱与命令黑名单，适合长期运行与生产环境。
 - **自我进化**：内置反馈收集、Prompt 自动优化和记忆进化机制，Agent 能持续改进自身表现。
-- **可观测与可演示**：提供 Web 控制台（含 17 个 REST API）、结构化日志体系以及 Demo 命令，方便现场演示和日常运维。
+- **可观测与可演示**：提供 Web 控制台（含 18 个 REST API Handler）、结构化日志体系以及 Demo 命令，方便现场演示和日常运维。
 
 ### 1.2 技术栈概览
 
@@ -53,7 +53,7 @@
       ┌─────────────┐  ┌─────────┐  ┌────────────────┐
       │ Agent 引擎   │  │ 网关服务 │  │ Web 控制台      │
       │ AgentRuntime    │  │ Gateway  │  │ WebConsoleServer│
-      │ MessageRouter│  │ Bootstrap│  │ + 16 Handlers  │
+      │ MessageRouter│  │ Bootstrap│  │ + 18 Handlers  │
       │ ProviderMgr  │  └────┬────┘  └────┬───────────┘
       └──────┬───────┘       │            │
              │               │            │
@@ -101,11 +101,35 @@
 | 层次 | 包路径 | 职责 |
 |------|--------|------|
 | **入口层** | `cli/`, `TinyClaw.java` | 命令行解析、命令分发、网关/Agent 启动 |
-| **Agent 引擎层** | `agent/` | 推理循环、消息路由、Provider 管理、上下文构建、会话摘要 |
+| **装配层** | `bootstrap/` | 组合根：集中构建对象图，保证有状态单例全局唯一 |
+| **Agent 引擎层** | `agent/` | 生命周期、消息路由、Provider 管理、上下文构建、会话摘要 |
+| **推理层** | `react/` | ReAct 循环（LLM 调用 + 工具迭代），被 agent / collaboration / subagent 共用 |
 | **通信层** | `bus/`, `channels/`, `providers/` | 消息总线、7 种通道适配、LLM HTTP 调用与流式输出 |
-| **工具与 MCP 层** | `tools/`, `mcp/` | 15 个内置工具、MCP 协议客户端（SSE / Stdio / Streamable HTTP） |
-| **高级能力层** | `agent/collaboration/`, `agent/evolution/`, `skills/` | 多 Agent 协同编排（7 种模式）、Prompt 自动优化（3 种策略）、记忆进化、技能管理 |
+| **工具与 MCP 层** | `tools/`, `mcp/`, `subagent/` | 内置工具、MCP 客户端（SSE / Stdio / Streamable HTTP）、子代理 |
+| **高级能力层** | `collaboration/`, `evolution/`, `memory/`, `skills/`, `plugins/`, `hooks/` | 多 Agent 协同编排、Prompt 自动优化、工具级自我调试（Reflection 2.0）、记忆进化、技能与插件、生命周期 Hook |
 | **基础设施层** | `config/`, `session/`, `security/`, `logger/`, `cron/`, `heartbeat/`, `voice/`, `util/`, `web/` | 配置管理、会话持久化、安全沙箱、结构化日志、定时任务、心跳、语音转写、Web 控制台 |
+
+### 2.3 包依赖约束
+
+包依赖关系保持**无循环**（无双向依赖、无传递环），依赖方向自上而下单向：
+
+```text
+cli → bootstrap → agent → react → tools / providers / session / hooks
+                   ↘ collaboration ↗
+                   ↘ subagent      ↗
+```
+
+几条关键约束（修改时请勿破坏）：
+
+- **`config/` 不依赖业务包**：只允许向下用 `util/`。所有配置类（包括 `EvolutionConfig` /
+  `ReflectionConfig` / `HeartbeatSettings` 等）都放在 `config/`，而不是各自的业务包里。
+- **`react/` 不得依赖 `agent/`**：ReActExecutor 是被多方复用的底层循环，比 AgentRuntime 更底层。
+- **`tools/` 只放真正的 Tool 实现与注册表**：需要回调上层引擎的工具放在它服务的包里
+  （`CollaborateTool` → `collaboration/`、`SpawnTool` → `subagent/`、`MCPTool` → `mcp/`）。
+- **跨层反向引用用窄接口倒置**：如 `ReflectionEngine` 依赖 `ToolDefinitionLookup` 而非
+  `ToolRegistry`，适配在装配层（`ProviderManager`）完成。
+- **`util/` 是叶包**：只允许依赖 `logger/`。内部状态落盘统一走 `util/JsonFileStore`，
+  业务包不再各自实现原子写；但工具/命令向用户文件的写入不走它（见下文「文件持久化保证」）。
 
 ---
 
@@ -131,10 +155,12 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 | `AgentRuntime` | 生命周期管理、消息消费主循环、直连模式入口 |
 | `MessageRouter` | 消息路由（用户消息 / 系统消息 / 指令消息）、流式输出选择 |
 | `ProviderManager` | LLM Provider 初始化、热重载、模型路由、组件构建 |
-| `ProviderComponents` | Provider 派生组件容器（ReActExecutor / Summarizer / Evolver / Orchestrator 等） |
-| `ReActExecutor` | LLM 调用与工具迭代循环 |
+| `ProviderComponents` | Provider 派生组件容器（Summarizer / Evolver / Orchestrator / Reflection 等） |
 | `ContextBuilder` | 系统提示组装（分段式架构） |
 | `SessionSummarizer` | 会话摘要与上下文压缩 |
+
+> `ReActExecutor`（LLM 调用与工具迭代循环）位于独立的 `react/` 包。它被 AgentRuntime、
+> 协同的 `RoleAgent` 和子代理的 `SubagentManager` 共同复用，因此层级低于 `agent/`。
 
 #### AgentRuntime — 生命周期与消息消费
 
@@ -201,7 +227,7 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 
 ### 3.4 消息通道层 — `channels/`
 
-**核心接口**：`Channel`、`BaseChannel`、`ChannelManager`、`WebhookServer`
+**核心接口**：`Channel`、`BaseChannel`、`ChannelManager`、`WebhookServer`、`Reconnector`
 
 - `Channel` 定义统一能力：`name()` / `start()` / `stop()` / `send(OutboundMessage)` / `isAllowed(senderId)` / `supportsStreaming()`
 - `BaseChannel` 封装通用逻辑（白名单校验、日志等）
@@ -213,6 +239,33 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 - 已实现 7 种通道：Telegram、Discord、Feishu（飞书）、DingTalk（钉钉）、WhatsApp、QQ、MaixCam
 - `WebhookServer`：内置轻量 HTTP 服务器，为飞书、钉钉等通道提供 Webhook 回调入口
 - 语音消息由各通道通过 `voice/Transcriber`（当前实现为 `AliyunTranscriber`）转换为文本
+
+#### 长连接重连约束
+
+按接收方式，通道分为三类，只有长连接类需要重连：
+
+| 类型 | 通道 | 断线恢复方式 |
+|------|------|------------|
+| WebSocket 长连接 | 钉钉 Stream、飞书 WebSocket、Discord Gateway | 统一使用 `Reconnector` |
+| 长轮询 | Telegram | 轮询循环内 catch + 固定间隔重试，自愈 |
+| Webhook 被动接收 | WhatsApp、QQ、MaixCam、飞书/钉钉的 webhook 模式 | 无长连接，不适用 |
+
+`Reconnector` 把重连策略收敛为唯一实现，关键约束：
+
+| 约束 | 做法 | 防的问题 |
+|------|------|----------|
+| 断线必重连 | `onClosed` 与 `onFailure` 都调 `schedule()` | 对端主动关连（令牌轮换、LB 漂移、空闲超时）只触发 `onClosed`，只监听 `onFailure` 等于在最常见场景下不重连 |
+| 退避不溢出 | 逐次翻倍并在触及上限时立即收敛 | 无限重连下 `initial << (attempt-1)` 会溢出成负数，退化为不带间隔的忙重连 |
+| 不自行放弃 | 指数退避到 60s 后无限重试 | 固定次数上限下，一次稍长的网络抖动就让通道永久静默，只能重启进程 |
+| 在途去重 | `pending` CAS，同一次断线只排一条重连链 | 多个回调各排一次导致重连链分叉增长 |
+| 退避在“真正可用”后才重置 | `onConnected()` 在 `onOpen`（钉钉/飞书）或 `READY`（Discord）调用 | socket 接通不等于会话建立，过早重置会把退避持续清零 |
+| 不可恢复错误不重试 | 调用方判定后调 `disable(reason)` | Discord 的 4004/4013/4014 等关闭码重连永不会成功，持续重试会冲击对端 |
+
+**启动失败不进入重连**：三个通道的首次连接失败都直接抛 `ChannelException`。启动阶段失败绝大多数
+是配置错误，应当当场报错而不是默默退避重试。
+
+**Discord 不做 RESUME**：未保存 `session_id`，重连采用重新 IDENTIFY 开新 session，代价是丢失
+断线期间的消息。新 session 序列号从头开始，因此重连前必须清空 `lastSequence`。
 
 ### 3.5 LLM 提供商 — `providers/`
 
@@ -236,27 +289,28 @@ Agent 引擎是 TinyClaw 的核心，经过重构后采用**职责分离**设计
 - `ToolContextAware`：扩展接口，允许工具感知执行上下文
 - `ToolRegistry`：线程安全的工具注册表，提供 `register` / `unregister` / `execute` / `getDefinitions` / `getSummaries`，记录调用时长与结果长度
 
-**内置工具（15 个）**：
+**内置工具**：
 
-| 工具 | 说明 | 安全特性 |
-|------|------|----------|
-| `read_file` | 读取文件内容 | ✓ 工作空间沙箱 |
-| `write_file` | 写入文件（创建或覆盖） | ✓ 工作空间沙箱 |
-| `append_file` | 追加内容到文件 | ✓ 工作空间沙箱 |
-| `edit_file` | 基于 diff 的精确文件编辑 | ✓ 工作空间沙箱 |
-| `list_dir` | 列出目录内容 | ✓ 工作空间沙箱 |
-| `exec` | 执行 Shell 命令 | ✓ 命令黑名单 + 工作目录限制 |
-| `web_search` | 网络搜索（Brave Search API） | - |
-| `web_fetch` | 抓取网页内容 | - |
-| `message` | 向指定通道发送消息 | - |
-| `cron` | 创建/管理定时任务 | - |
-| `spawn` | 生成子代理执行独立任务 | - |
-| `collaborate` | 启动多 Agent 协同（7 种模式） | - |
-| `social_network` | 与其他 Agent 通信（ClawdChat.ai） | - |
-| `skills` | 管理和查询技能插件 | - |
-| `token_usage` | 查询 Token 用量统计 | - |
+| 工具 | 实现类所在包 | 说明 | 安全特性 |
+|------|--------------|------|----------|
+| `read_file` | `tools/` | 读取文件内容 | ✓ 工作空间沙箱 |
+| `write_file` | `tools/` | 写入文件（创建或覆盖） | ✓ 工作空间沙箱 |
+| `edit_file` | `tools/` | 基于 diff 的精确文件编辑 | ✓ 工作空间沙箱 |
+| `list_dir` | `tools/` | 列出目录内容 | ✓ 工作空间沙箱 |
+| `exec` | `tools/` | 执行 Shell 命令 | ✓ 命令黑名单 + 工作目录限制 |
+| `web_search` | `tools/` | 网络搜索（Brave Search API） | 仅在配置了 API Key 时注册 |
+| `web_fetch` | `tools/` | 抓取网页内容 | ✓ SSRF 防护 |
+| `message` | `tools/` | 向指定通道发送消息 | - |
+| `cron` | `tools/` | 创建/管理定时任务 | 共用全局单一 CronService |
+| `skills` | `tools/` | 管理和查询技能插件 | ✓ 技能名路径穿越校验 |
+| `token_usage` | `tools/` | 查询 Token 用量统计 | - |
+| `social_network` | `tools/` | 与其他 Agent 通信（ClawdChat.ai） | 仅在启用时注册 |
+| `spawn` | `subagent/` | 生成子代理执行独立任务 | - |
+| `collaborate` | `collaboration/` | 启动多 Agent 协同 | - |
 
-此外，`MCPTool` 作为 MCP 协议的桥接工具，将外部 MCP 服务器的工具动态注册到 ToolRegistry 中。
+此外，`mcp/MCPTool` 作为 MCP 协议的桥接工具，将外部 MCP 服务器的工具动态注册到 ToolRegistry 中。
+
+> 注：工具的注册统一在组合根 `bootstrap/RuntimeAssembly` 完成，而不是在 CLI 命令里。
 
 ### 3.7 MCP 协议集成 — `mcp/`
 
@@ -277,7 +331,7 @@ TinyClaw 实现了完整的 **MCP（Model Context Protocol）** 客户端，支�
 - 支持自动重连（`reconnect`）和优雅关闭（`shutdown`）
 - 通过 `MCPMessage` 封装 JSON-RPC 2.0 请求/响应
 
-### 3.8 多 Agent 协同编排 — `agent/collaboration/`
+### 3.8 多 Agent 协同编排 — `collaboration/`
 
 这是 TinyClaw 的高级能力之一，支持多个 Agent 角色协同完成复杂任务。
 
@@ -289,31 +343,35 @@ CollaborateTool (工具入口)
        ▼
 AgentOrchestrator (编排器)
        │
-       ├── CollaborationConfig (协同配置)
+       ├── CollaborationConfig (协同配置：Mode + Style)
        ├── SharedContext (共享上下文)
-       ├── AgentExecutor (Agent 执行器)
+       ├── RoleAgent (角色 Agent，内部复用 ReActExecutor)
        │
        ▼
-CollaborationStrategy (策略接口)
+strategyRegistry: Map<Mode, CollaborationStrategy>
        │
-       ├── DiscussionStrategy   → debate / roleplay / consensus
-       ├── TeamWorkStrategy     → team（并行/串行子任务）
-       ├── HierarchyStrategy    → hierarchy（层级汇报）
-       ├── WorkflowStrategy     → workflow（工作流引擎）
-       └── DynamicRoutingStrategy → dynamic（动态路由）
+       ├── DiscussionStrategy → DISCUSS
+       ├── TasksStrategy      → TASKS
+       └── WorkflowStrategy   → WORKFLOW
 ```
 
-#### 7 种协同模式
+#### 3 种模式 × 风格
 
-| 模式 | 策略类 | 说明 |
-|------|--------|------|
-| `debate` | `DiscussionStrategy` | 正反方观点对决，适合利弊权衡 |
-| `roleplay` | `DiscussionStrategy` | 多角色对话模拟、场景演练 |
-| `consensus` | `DiscussionStrategy` | 多方讨论后投票达成共识 |
-| `team` | `TeamWorkStrategy` | 任务分解为子任务并行/串行执行 |
-| `hierarchy` | `HierarchyStrategy` | 层级汇报式决策，逐层汇总 |
-| `workflow` | `WorkflowStrategy` | 多步骤工作流，支持 LLM 动态生成 |
-| `dynamic` | `DynamicRoutingStrategy` | Router Agent 动态选择下一个发言者 |
+协同能力经重构后收敛为 **3 个正交模式（Mode）+ 子风格（Style）** 的二级结构，
+而不是平铺的多个策略类——风格只影响提示词与终止条件，不需要各开一个策略实现：
+
+| Mode | Style | 策略类 | 说明 |
+|------|-------|--------|------|
+| `DISCUSS` | `DEBATE` | `DiscussionStrategy` | 正反方观点对决，可设裁判 |
+| `DISCUSS` | `ROLEPLAY` | `DiscussionStrategy` | 多角色对话模拟，支持主动结束 |
+| `DISCUSS` | `CONSENSUS` | `DiscussionStrategy` | 讨论后投票，达到阈值即结束 |
+| `DISCUSS` | `DYNAMIC` | `DiscussionStrategy` | Router Agent 动态选择下一个发言者 |
+| `TASKS` | `PARALLEL` | `TasksStrategy` | 任务按依赖图并行/串行执行 |
+| `TASKS` | `HIERARCHY` | `TasksStrategy` | 金字塔式逐层汇报决策 |
+| `WORKFLOW` | — | `WorkflowStrategy` | 基于 DAG 的流程编排，支持 LLM 动态生成 |
+
+策略通过 `AgentOrchestrator.registerStrategy(Mode, CollaborationStrategy)` 可在运行时替换；
+公共行为（轮次控制、超时、记录）上提到 `AbstractCollaborationStrategy`。
 
 #### 工作流引擎 — `collaboration/workflow/`
 
@@ -332,7 +390,7 @@ CollaborationStrategy (策略接口)
 - **结论回流**：协同结论自动回流到调用方的主会话历史
 - **反馈集成**：协同结果可驱动 Agent 自我进化
 
-### 3.9 自我进化引擎 — `agent/evolution/`
+### 3.9 自我进化引擎 — `evolution/` + `memory/`
 
 TinyClaw 内置了完整的自我进化系统，使 Agent 能基于反馈持续改进。
 
@@ -417,12 +475,36 @@ Prompt 变体存储结构：
 
 ### 3.15 Web 控制台 — `web/`
 
-**核心类**：`WebConsoleServer`、`SecurityMiddleware`、`WebUtils`
+**核心类**：`WebConsoleServer`、`SecurityMiddleware`、`WebUtils`、`handler/BaseHandler`
 
 - `WebConsoleServer`：内置轻量 HTTP 服务器，提供 Web UI 和 REST API
 - `SecurityMiddleware`：Web 安全中间件（认证、CORS 等）
 
-**17 个 REST API Handler**：
+#### Handler 层约束
+
+所有 JSON API Handler 继承 `BaseHandler`，由基类的模板方法统一承担鉴权、404、500 与错误日志，
+子类只实现 `route(exchange, path, method, corsOrigin)` 这一段纯业务分发：
+
+| 约束 | 做法 | 防的问题 |
+|------|------|----------|
+| 鉴权是默认行为 | `handle` 声明为 `final`，内部无条件先调 `authorize()` | 新增 Handler 忘记调 `security.preCheck` 就等于裸奔，且无任何编译或运行期提示 |
+| 例外必须显式登记 | 覆盖 `authorize()` 的类需登记进 `BaseHandlerTest.ALLOWED_AUTHORIZE_OVERRIDES` | 悄悄绕过标准鉴权的端点混进代码库 |
+| 路由未命中统一 404 | `route` 返回 `false` 时由基类回 `sendNotFound` | 各处手写 404 文案不一致 |
+| 异常统一 500 | 基类 catch 全部异常，记 `apiName + path` 后回 JSON | 异常穿透到 HttpServer 导致连接重置、栈信息回显给调用方 |
+
+**`route` 的契约**：处理了请求返回 `true`，路径不认识返回 `false`。方法体内不允许出现裸 `return;`
+—— 那会被基类当作"未命中"，在已经写过响应之后再补一个 404。
+
+**两个已登记的鉴权例外**：
+
+- `AuthHandler`：登录端点，要求已认证就永远登不进去，故仅处理 CORS 预检；同时覆盖 `errorMessage()`
+  以免向未登录调用方回显异常细节
+- `FilesHandler`：`<img src>` 一类浏览器直接请求无法携带 `Authorization` header，改用 `?token=` 查询参数；
+  且有意不叠加限流（一个页面常一次性拉十几张图）
+
+`StaticHandler` 不继承 `BaseHandler`：它不持有 `Config`/`SecurityMiddleware`，返回的也不是 JSON。
+
+**18 个 REST API Handler**：
 
 | Handler | 职责 |
 |---------|------|
@@ -442,6 +524,7 @@ Prompt 变体存储结构：
 | `MCPHandler` | MCP 服务器管理 |
 | `FeedbackHandler` | 用户反馈收集 |
 | `TokenStatsHandler` | Token 用量统计 |
+| `ReflectionHandler` | Reflection 2.0 工具健康与修复提案 |
 | `StaticHandler` | 静态资源服务 |
 
 ### 3.16 日志系统 — `logger/`
@@ -592,6 +675,25 @@ Prompt 变体存储结构：
 │   └── collaboration/       # 协同记录
 ```
 
+### 文件持久化保证
+
+所有落盘都经过 `util/JsonFileStore`，不直接调用 `Files.writeString` 覆盖写：
+
+| 保证 | 做法 | 防的问题 |
+|------|------|----------|
+| 原子替换 | 唯一临时文件 → fsync → `ATOMIC_MOVE` → fsync 父目录 | 写入中途退出留下半截 JSON，整份数据不可读 |
+| 并发安全 | 临时文件名含随机段 | 多写入方踩同一个 `.tmp`，互相截断或删掉对方待重命名的文件 |
+| 完整写入 | 循环写至 buffer 耗尽 | `FileChannel.write` 短写导致内容截断 |
+| 权限收敛 | 先以 600 创建再写 | 会话/记忆等敏感内容存在 644 可读窗口 |
+| 损坏不销毁 | 解析失败把原文件移入同级 `corrupt/` | 上层拿到空值后覆盖写，原始数据被静默销毁 |
+
+追加型日志（JSONL）走 `appendAndSync`：追加本身无破坏性，但仍 fsync 保证已返回的写入在掉电后存在。
+
+**适用边界**：以上只适用于 Agent 自己的内部状态（会话、记忆、定时任务、进化产物、
+配置、协同记录、心跳状态、token 计费）。`WriteFileTool` / `EditFileTool` / `SkillsTool` /
+`OnboardCommand` 等向**用户文件**写入的路径仍用普通写：原子 rename 会换掉 inode，
+破坏硬链接、符号链接目标和文件监听器，对“按指示改这个文件”的语义反而是倒退。
+
 ### 5.2 配置模型
 
 | 配置类 | 职责 |
@@ -614,127 +716,123 @@ Prompt 变体存储结构：
 src/main/java/io/leavesfly/tinyclaw/
 ├── TinyClaw.java                    # 应用入口，命令注册与分发
 ├── TinyClawException.java           # 统一异常基类
-├── agent/                           # Agent 核心引擎
-│   ├── AgentRuntime.java               #   生命周期管理与消息消费主循环
+├── bootstrap/                       # 组合根（装配层）
+│   └── RuntimeAssembly.java         #   集中构建对象图：总线 / AgentRuntime / CronService / 内置工具
+├── agent/                           # Agent 引擎（编排与生命周期）
+│   ├── AgentRuntime.java            #   生命周期管理与消息消费主循环
 │   ├── MessageRouter.java           #   消息路由（用户/系统/指令）
 │   ├── ProviderManager.java         #   LLM Provider 管理与热重载
 │   ├── ProviderComponents.java      #   Provider 派生组件容器
-│   ├── ReActExecutor.java             #   LLM 调用与工具迭代循环
 │   ├── ContextBuilder.java          #   分段式上下文构建
 │   ├── SessionSummarizer.java       #   会话摘要与上下文压缩
 │   ├── AgentConstants.java          #   Agent 相关常量
-│   ├── context/                     #   上下文分段模块
-│   │   ├── ContextSection.java      #     Section 接口
-│   │   ├── SectionContext.java      #     Section 上下文数据
-│   │   ├── IdentitySection.java     #     身份段
-│   │   ├── BootstrapSection.java    #     基础行为段
-│   │   ├── ToolsSection.java        #     工具摘要段
-│   │   ├── SkillsSection.java       #     技能摘要段
-│   │   └── MemorySection.java       #     记忆段
-│   ├── evolution/                   #   自我进化引擎
-│   │   ├── PromptOptimizer.java     #     Prompt 自动优化（3 种策略）
-│   │   ├── FeedbackManager.java     #     反馈收集与管理
-│   │   ├── MemoryEvolver.java       #     记忆进化
-│   │   ├── MemoryStore.java         #     长期记忆存储
-│   │   ├── MemoryEntry.java         #     记忆条目
-│   │   ├── EvolutionConfig.java     #     进化配置
-│   │   ├── EvaluationFeedback.java  #     评估反馈模型
-│   │   ├── FeedbackType.java        #     反馈类型枚举
-│   │   └── OptimizationResult.java  #     优化结果
-│   └── collaboration/               #   多 Agent 协同编排
-│       ├── AgentOrchestrator.java   #     协同编排器
-│       ├── CollaborationConfig.java #     协同配置（7 种模式）
-│       ├── SharedContext.java       #     共享上下文
-│       ├── AgentExecutor.java       #     Agent 执行器
-│       ├── AgentRole.java           #     角色定义
-│       ├── AgentMessage.java        #     Agent 间消息
-│       ├── Artifact.java            #     协同产物
-│       ├── TeamTask.java            #     团队任务
-│       ├── CollaborationRecord.java #     协同记录
-│       ├── HierarchyConfig.java     #     层级配置
-│       ├── ApprovalCallback.java    #     审批回调
-│       ├── ExecutionContext.java     #     执行上下文
-│       ├── CollaborationExecutorPool.java # 协同线程池
-│       ├── strategy/                #     协同策略
-│       │   ├── CollaborationStrategy.java  # 策略接口
-│       │   ├── DiscussionStrategy.java     # 讨论策略
-│       │   ├── TeamWorkStrategy.java       # 团队策略
-│       │   ├── HierarchyStrategy.java      # 层级策略
-│       │   ├── WorkflowStrategy.java       # 工作流策略
-│       │   └── DynamicRoutingStrategy.java # 动态路由策略
-│       └── workflow/                #     工作流引擎
-│           ├── WorkflowEngine.java  #       执行引擎
-│           ├── WorkflowDefinition.java #    工作流定义
-│           ├── WorkflowNode.java    #       节点（6 种类型）
-│           ├── WorkflowContext.java #       执行上下文
-│           ├── WorkflowGenerator.java #     LLM 动态生成
-│           ├── NodeResult.java      #       节点结果
-│           ├── NodeExecutor.java    #       节点执行器接口
-│           └── executor/            #       节点执行器实现
+│   └── context/                     #   上下文分段模块
+│       ├── ContextSection.java      #     Section 接口
+│       ├── SectionContext.java      #     Section 上下文数据
+│       ├── IdentitySection.java     #     身份段
+│       ├── BootstrapSection.java    #     基础行为段
+│       ├── ToolsSection.java        #     工具摘要段
+│       ├── SkillsSection.java       #     技能摘要段
+│       └── MemorySection.java       #     记忆段
+├── react/                           # ReAct 推理循环（被 agent / collaboration / subagent 共用）
+│   └── ReActExecutor.java           #   LLM 调用与工具迭代循环
+├── collaboration/                   # 多 Agent 协同编排
+│   ├── AgentOrchestrator.java       #   协同编排器
+│   ├── CollaborateTool.java         #   collaborate 工具入口
+│   ├── RoleAgent.java               #   角色 Agent（内部复用 ReActExecutor）
+│   ├── SharedContext.java           #   共享上下文
+│   ├── AgentRole / AgentMessage / TeamTask / CollaborationRecord / ApprovalCallback
+│   ├── CollaborationConfig / HierarchyConfig / ExecutionContext
+│   ├── CollaborationExecutorPool.java  # 协同线程池
+│   ├── strategy/                    #   协同策略（Abstract / Discussion / Tasks / Workflow）
+│   └── workflow/                    #   工作流引擎（Engine / Definition / Node / Context / Generator +
+│                                    #   NodeExecutor + executor/ 6 种节点执行器）
+├── evolution/                       # 自我进化引擎
+│   ├── PromptOptimizer.java         #   Prompt 自动优化（3 种策略）
+│   ├── FeedbackManager.java         #   反馈收集与管理
+│   ├── VariantManager.java          #   Prompt 变体管理
+│   ├── EvaluationFeedback / FeedbackType / OptimizationResult
+│   ├── strategy/                    #   优化策略（OptimizationStrategy / SelfReflection / Context）
+│   └── reflection/                  #   Reflection 2.0：工具级自我调试
+│       ├── ReflectionEngine.java    #     反思引擎（依赖 ToolDefinitionLookup 而非 ToolRegistry）
+│       ├── ToolDefinitionLookup.java#     工具定义查询窄接口（避免反向依赖 tools）
+│       ├── ToolCallRecorder / ToolCallLogStore / ToolCallEvent
+│       ├── FailureDetector / PatternMiner / ErrorClassifier / ArgsFingerprinter
+│       ├── ToolHealthAggregator / ToolHealthStat
+│       └── RepairProposal / RepairApplier
+├── memory/                          # 长期记忆
+│   ├── MemoryStore.java             #   记忆存储（MEMORIES.json + MEMORY.md + topics/）
+│   ├── MemoryEvolver.java           #   记忆进化
+│   └── MemoryEntry.java             #   记忆条目
+├── subagent/                        # 子代理
+│   ├── SubagentManager.java         #   子代理执行管理（复用 ReActExecutor）
+│   ├── SpawnTool.java               #   spawn 工具入口
+│   ├── SubagentsLoader.java         #   动态子代理定义加载（workspace/agents/）
+│   └── SubagentDefinition.java      #   子代理定义模型
+├── hooks/                           # 生命周期 Hook
+│   ├── HookDispatcher / HookRegistry / HookConfigLoader / HookMatcher
+│   ├── HookEvent / HookContext / HookDecision / HookEntry
+│   └── HookHandler / CommandHookHandler
+├── plugins/                         # 插件系统（兼容 Claude Code / OpenClaw）
+│   ├── PluginManager / PluginDiscovery / PluginInstaller / PluginRegistry
+│   ├── PluginManifest / ManifestParser / VariableResolver
+│   ├── MarketplaceManager / MarketplaceParser / MarketplaceManifest
+│   └── AgentComponentAdapter / McpComponentAdapter / HookComponentAdapter
 ├── bus/                             # 消息总线
 │   ├── MessageBus.java              #   发布/订阅消息中心
-│   ├── InboundMessage.java          #   入站消息模型
-│   ├── OutboundMessage.java         #   出站消息模型
-│   └── BusClosedException.java      #   总线关闭异常
+│   ├── InboundMessage / OutboundMessage
+│   ├── LastContact.java             #   最近入站联系人（心跳 target=last 投递依据）
+│   └── BusClosedException.java
 ├── channels/                        # 消息通道适配器（7 种）
-│   ├── Channel.java / BaseChannel.java / ChannelManager.java
-│   ├── WebhookServer.java / ChannelException.java
-│   └── TelegramChannel / DiscordChannel / FeishuChannel /
-│       DingTalkChannel / WhatsAppChannel / QQChannel / MaixCamChannel
-├── cli/                             # 命令行接口（8 个命令）
-│   ├── CliCommand.java / OnboardCommand / AgentCommand /
-│   │   GatewayCommand / GatewayBootstrap / StatusCommand /
-│   │   CronCommand / SkillsCommand / McpCommand / DemoCommand
-├── config/                          # 配置模型与加载（11 个类）
-│   ├── Config / ConfigLoader / AgentConfig / ProvidersConfig /
-│   │   ModelsConfig / ChannelsConfig / ToolsConfig / GatewayConfig /
-│   │   MCPServersConfig / SocialNetworkConfig / ConfigException
+│   ├── Channel / BaseChannel / ChannelManager / ChannelException
+│   ├── WebhookServer / SharedHttpClient / TokenManager / ActiveSessionRegistry
+│   └── Telegram / Discord / Feishu / DingTalk / WhatsApp / QQ / MaixCam Channel
+├── cli/                             # 命令行接口
+│   ├── CliCommand.java              #   基类：参数解析 / 配置加载 / Provider 创建
+│   ├── GatewayBootstrap.java        #   网关服务编排（从 RuntimeAssembly 取用组件）
+│   └── Onboard / Agent / Gateway / Status / Cron / Skills / Mcp / Plugins / Heartbeat / Demo Command
+├── config/                          # 配置模型与加载（叶包，不依赖业务包）
+│   ├── Config / ConfigLoader / ConfigException
+│   ├── AgentConfig                  #   Agent 核心参数
+│   ├── EvolutionConfig / ReflectionConfig      # 进化与反思配置
+│   ├── CollaborationSettings / HeartbeatSettings / ActiveHours / RoleTemplate
+│   └── ProvidersConfig / ModelsConfig / ChannelsConfig / ToolsConfig /
+│       GatewayConfig / MCPServersConfig / SocialNetworkConfig / PluginsConfig
 ├── cron/                            # 定时任务引擎
-│   ├── CronService / CronJob / CronSchedule / CronJobState /
-│   │   CronPayload / CronStore
+│   └── CronService / CronJob / CronSchedule / CronJobState / CronPayload / CronStore
 ├── heartbeat/                       # 心跳运行器
-│   ├── HeartbeatRunner.java
-│   └── LastContact.java
-├── logger/                          # 结构化日志
-│   └── TinyClawLogger.java
+│   └── HeartbeatRunner.java
 ├── mcp/                             # MCP 协议集成
-│   ├── MCPManager / MCPClient / SSEMCPClient /
-│   │   StdioMCPClient / StreamableHttpMCPClient /
-│   │   MCPMessage / MCPServerInfo
+│   ├── MCPManager / MCPClient / MCPTool / MCPMessage / MCPServerInfo
+│   └── SSEMCPClient / StdioMCPClient / StreamableHttpMCPClient
 ├── providers/                       # LLM 调用抽象
-│   ├── LLMProvider / HTTPProvider / Message / ToolCall /
-│   │   ToolDefinition / LLMResponse / StreamEvent / LLMException
+│   ├── LLMProvider / HTTPProvider / LLMRequestBuilder / StreamResponseParser
+│   └── Message / ToolCall / ToolDefinition / LLMResponse / StreamEvent / LLMException
+├── tools/                           # Agent 工具集与注册表
+│   ├── Tool / ToolRegistry / StreamAwareTool / ToolContextAware / ToolException
+│   ├── ReadFile / WriteFile / EditFile / ListDir / Exec Tool
+│   ├── WebSearch / WebFetch / Message / Cron / Skills / SocialNetwork Tool
+│   └── TokenUsageTool / TokenUsageStore
+├── session/                         # 会话管理
+│   └── SessionManager / Session / SessionStore / JsonlSessionStore / SessionMeta / ToolCallRecord
+├── skills/                          # 技能系统
+│   └── SkillsLoader / SkillRegistry / SkillsSearcher / SkillsInstaller / SkillInfo
 ├── security/                        # 安全沙箱
 │   └── SecurityGuard.java
-├── session/                         # 会话管理
-│   ├── SessionManager / Session / ToolCallRecord
-├── skills/                          # 技能系统
-│   ├── SkillsLoader / SkillRegistry / SkillsSearcher /
-│   │   SkillsInstaller / SkillInfo
-├── tools/                           # Agent 工具集（23 个类）
-│   ├── Tool / ToolRegistry / StreamAwareTool / ToolContextAware /
-│   │   ToolException / SubagentManager / MCPTool /
-│   │   TokenUsageTool / TokenUsageStore / CollaborateTool /
-│   │   ReadFileTool / WriteFileTool / AppendFileTool / EditFileTool /
-│   │   ListDirTool / ExecTool / WebSearchTool / WebFetchTool /
-│   │   MessageTool / CronTool / SpawnTool / SkillsTool /
-│   │   SocialNetworkTool
+├── logger/                          # 结构化日志
+│   └── TinyClawLogger.java
 ├── util/                            # 工具类
-│   ├── StringUtils.java / SSLUtils.java
+│   └── StringUtils / SSLUtils / MediaPaths / JsonFileStore
 ├── voice/                           # 语音转写
-│   ├── Transcriber.java / AliyunTranscriber.java
+│   └── Transcriber / AliyunTranscriber
 └── web/                             # Web 控制台
-    ├── WebConsoleServer.java / SecurityMiddleware.java / WebUtils.java
-    └── handler/                     # 17 个 REST API Handler
-        ├── AuthHandler / ChatHandler / SessionsHandler /
-        │   ConfigHandler / ModelsHandler / ProvidersHandler /
-        │   ChannelsHandler / SkillsHandler / CronHandler /
-        │   HeartbeatHandler / FilesHandler / UploadHandler /
-        │   WorkspaceHandler / MCPHandler / FeedbackHandler /
-        │   TokenStatsHandler / StaticHandler
+    ├── WebConsoleServer / SecurityMiddleware / WebUtils
+    └── handler/                     # 18 个 REST API Handler
+        ├── Auth / Chat / Sessions / Config / Models / Providers / Channels /
+        │   Skills / Cron / Heartbeat / Files / Upload / Workspace / MCP /
+        │   Feedback / TokenStats / Reflection / Static Handler
 ```
 
----
 
 ## 七、扩展指南
 
@@ -747,17 +845,21 @@ src/main/java/io/leavesfly/tinyclaw/
 
 ### 7.2 添加新的工具
 
-1. 创建 `XxxTool implements Tool`
-2. 实现 `name()` / `description()` / `parameters()` / `execute(args)`
-3. 在 `AgentRuntime` 或 `ToolRegistry` 中注册
-4. 如需流式输出支持，额外实现 `StreamAwareTool`
+1. 创建 `XxxTool implements Tool`，实现 `name()` / `description()` / `parameters()` / `execute(args)`
+2. 在 `bootstrap/RuntimeAssembly#registerBuiltinTools` 中注册——这是唯一的内置工具注册点，
+   不要在 CLI 命令或 `GatewayBootstrap` 里另建一份（有状态组件重复构建曾导致定时任务丢失）
+3. 如需流式输出支持，额外实现 `StreamAwareTool`；如需感知会话上下文，实现 `ToolContextAware`
+4. **放置位置**：纯叶子工具放 `tools/`；需要回调上层引擎（如 ReActExecutor、Orchestrator）的
+   工具放到它服务的那个包里，避免 `tools/` 反向依赖上层形成包级循环
 
 ### 7.3 添加新的协同策略
 
-1. 创建 `XxxStrategy implements CollaborationStrategy`
-2. 实现 `execute(SharedContext, List<AgentExecutor>, CollaborationConfig)`
-3. 在 `AgentOrchestrator.initStrategies()` 中注册
-4. 在 `CollaborationConfig.Mode` 中添加新模式
+优先考虑能否用现有 Mode 的**新 Style** 表达（只需改提示词与终止条件），而不是新增一个策略类。
+确实需要新模式时：
+
+1. 创建 `XxxStrategy extends AbstractCollaborationStrategy`（复用轮次控制/超时/记录等公共行为）
+2. 在 `CollaborationConfig.Mode` 中添加新模式
+3. 在 `AgentOrchestrator` 的策略注册表中登记，或运行时调用 `registerStrategy(Mode, strategy)`
 
 ### 7.4 添加新的 LLM 提供商
 
