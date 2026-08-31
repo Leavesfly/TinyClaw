@@ -115,6 +115,13 @@
                     <div class="chat-container">
                         <div class="chat-sidebar">
                             <button class="btn btn-primary btn-block" id="newChatBtn">+ New Chat</button>
+                            <div class="chat-search">
+                                <span class="chat-search-icon">⌕</span>
+                                <input type="text" class="chat-search-input" id="chatSearchInput"
+                                       placeholder="搜索历史消息" autocomplete="off">
+                                <button class="chat-search-clear" id="chatSearchClear" title="清除搜索" style="display: none;">×</button>
+                            </div>
+                            <div class="chat-search-results" id="chatSearchResults" style="display: none;"></div>
                             <div class="chat-history" id="chatHistory"></div>
                         </div>
                         <div class="chat-main">
@@ -193,12 +200,14 @@
                                     <th class="col-name">Name</th>
                                     <th class="col-session-id">SessionID</th>
                                     <th class="col-user-id">UserID</th>
+                                    <th class="col-owner">Owner</th>
+                                    <th class="col-visibility">Visibility</th>
                                     <th class="col-action">Action</th>
                                 </tr>
                             </thead>
                             <tbody id="sessionsTableBody">
                                 <tr>
-                                    <td colspan="6" class="empty-state">No sessions yet</td>
+                                    <td colspan="8" class="empty-state">No sessions yet</td>
                                 </tr>
                             </tbody>
                         </table>

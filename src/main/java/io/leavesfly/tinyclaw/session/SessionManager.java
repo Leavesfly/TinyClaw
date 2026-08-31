@@ -6,8 +6,11 @@ import io.leavesfly.tinyclaw.providers.Message;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -31,7 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>{@link #getContextMessages}：送入 LLM 的上下文，已压缩的早期消息不包含在内。</li>
  * </ul>
  */
-public class SessionManager {
+public class SessionManager implements SessionProgressSink {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("session");
 
@@ -43,6 +46,13 @@ public class SessionManager {
     private static final long MIN_IDLE_BEFORE_EVICT_MS = 5 * 60 * 1000L;
     /** 两次淘汰扫描的最小间隔 */
     private static final long SWEEP_INTERVAL_MS = 30 * 1000L;
+
+    /** 搜索未指定上限时的默认结果数 */
+    private static final int DEFAULT_SEARCH_LIMIT = 30;
+    /** 搜索结果硬上限：避免调用方传个巨大值把整个目录扫完并全部载入内存 */
+    private static final int MAX_SEARCH_LIMIT = 200;
+    /** 搜索片段在命中位置两侧各保留的字符数 */
+    private static final int SNIPPET_CONTEXT_CHARS = 40;
 
     private final Map<String, Session> cache = new ConcurrentHashMap<>();
     private final Map<String, Long> lastAccess = new ConcurrentHashMap<>();
@@ -166,6 +176,87 @@ public class SessionManager {
         if (session != null) {
             session.setSummary(summary);
         }
+    }
+
+    // ==================== 身份与可见性 ====================
+
+    /**
+     * 为会话认领归属并设定默认可见性，已有归属时不做任何改动。
+     *
+     * <p>可见性只在认领那一刻设定：后续用户可能手动把会话改成共享，
+     * 每条消息都重新写一遍默认值会把这个修改静默改回去。</p>
+     *
+     * @param owner      归属人标识，建议用 {@code MemoryScope.ofUser} 的编码
+     * @param visibility 首次认领时采用的可见性
+     * @return 实际完成认领返回 true
+     */
+    public boolean claimOwner(String sessionKey, String owner, SessionVisibility visibility) {
+        Session session = getExisting(sessionKey);
+        if (session == null || !session.claimOwner(owner)) {
+            return false;
+        }
+        session.setVisibility(visibility);
+        return true;
+    }
+
+    /**
+     * 读取会话归属人，不存在或未认领返回 null
+     */
+    public String getOwner(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getOwner() : null;
+    }
+
+    /**
+     * 修改会话可见性，会话不存在时返回 false
+     */
+    public boolean setVisibility(String sessionKey, SessionVisibility visibility) {
+        Session session = getExisting(sessionKey);
+        if (session == null) {
+            return false;
+        }
+        session.setVisibility(visibility);
+        save(sessionKey);
+        return true;
+    }
+
+    /**
+     * 添加可见成员，实际新增时落盘并返回 true
+     */
+    public boolean addMember(String sessionKey, String member) {
+        Session session = getExisting(sessionKey);
+        if (session == null || !session.addMember(member)) {
+            return false;
+        }
+        save(sessionKey);
+        return true;
+    }
+
+    // ==================== 进度卡 ====================
+
+    /**
+     * 更新会话进度卡。传 null 表示任务结束，清除进度。
+     *
+     * <p>进度本身不进转录，这里仍调 {@code store.persist} 是为了把进度推进会话索引，
+     * 让列表接口也能看到“哪些会话在跑”。无待落盘增量时 persist 不会产生文件写入，
+     * 只会刷新索引（索引刷盘自带节流）。</p>
+     */
+    @Override
+    public void setProgress(String sessionKey, SessionProgress progress) {
+        Session session = getExisting(sessionKey);
+        if (session == null) {
+            return;
+        }
+        session.setProgress(progress);
+        store.persist(session);
+    }
+
+    /**
+     * 读取当前进度卡，无进行中任务时返回 null
+     */
+    public SessionProgress getProgress(String sessionKey) {
+        Session session = getExisting(sessionKey);
+        return session != null ? session.getProgress() : null;
     }
 
     /**
@@ -299,6 +390,15 @@ public class SessionManager {
      * 只读元信息索引，不会加载任何会话正文。
      */
     public List<SessionMeta> listMeta() {
+        return listMeta(null);
+    }
+
+    /**
+     * 列出指定访问者可见的会话元信息。
+     *
+     * @param viewer 访问者标识；为空表示不过滤（保持无身份调用方的原有行为）
+     */
+    public List<SessionMeta> listMeta(String viewer) {
         Map<String, SessionMeta> merged = new ConcurrentHashMap<>();
         for (SessionMeta meta : store.listMeta()) {
             if (meta.getKey() != null) {
@@ -309,9 +409,104 @@ public class SessionManager {
         cache.forEach((key, session) -> merged.put(key, SessionMeta.from(session)));
 
         List<SessionMeta> metas = new ArrayList<>(merged.values());
+        metas.removeIf(meta -> !meta.isVisibleTo(viewer));
         metas.sort(Comparator.comparing(
                 SessionMeta::getUpdated, Comparator.nullsLast(Comparator.reverseOrder())));
         return metas;
+    }
+
+    // ==================== 全文检索 ====================
+
+    /**
+     * 搜索历史消息，返回命中的会话与消息下标。
+     *
+     * <p>先扫存储，再把内存中尚未落盘的消息补上：刚说完的话也能被搜到。
+     * 已落盘的那部分会在两边都命中，按 (sessionKey, messageIndex) 去重。</p>
+     *
+     * @param query 查询词，大小写不敏感的精确子串（不做分词）
+     * @param limit 结果上限；非正数时采用 {@link #DEFAULT_SEARCH_LIMIT}
+     * @param viewer 访问者标识；为空表示不过滤
+     */
+    public List<SessionSearchHit> search(String query, int limit, String viewer) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        int bounded = limit > 0 ? Math.min(limit, MAX_SEARCH_LIMIT) : DEFAULT_SEARCH_LIMIT;
+        String needle = query.toLowerCase(Locale.ROOT);
+
+        List<SessionSearchHit> hits = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+
+        for (SessionSearchHit hit : store.search(query, bounded)) {
+            if (!isVisible(hit.sessionKey(), viewer)) {
+                continue;
+            }
+            if (seen.add(hit.sessionKey() + "#" + hit.messageIndex())) {
+                hits.add(hit);
+            }
+        }
+
+        // 内存中的会话可能含未落盘增量，补扫一遍
+        for (Session session : cache.values()) {
+            if (hits.size() >= bounded) {
+                break;
+            }
+            if (!session.isVisibleTo(viewer)) {
+                continue;
+            }
+            searchInMemory(session, needle, bounded, seen, hits);
+        }
+
+        return hits;
+    }
+
+    private void searchInMemory(Session session, String needle, int limit,
+                                Set<String> seen, List<SessionSearchHit> hits) {
+        List<Message> history = session.getHistory();
+        String title = SessionMeta.from(session).getTitle();
+        for (int i = 0; i < history.size() && hits.size() < limit; i++) {
+            String content = history.get(i).getContent();
+            if (content == null) {
+                continue;
+            }
+            int matchAt = content.toLowerCase(Locale.ROOT).indexOf(needle);
+            if (matchAt < 0) {
+                continue;
+            }
+            if (!seen.add(session.getKey() + "#" + i)) {
+                continue;
+            }
+            hits.add(new SessionSearchHit(session.getKey(), i, history.get(i).getRole(),
+                    snippet(content, matchAt, needle.length()), title));
+        }
+    }
+
+    private String snippet(String content, int matchAt, int matchLength) {
+        int from = Math.max(0, matchAt - SNIPPET_CONTEXT_CHARS);
+        int to = Math.min(content.length(), matchAt + matchLength + SNIPPET_CONTEXT_CHARS);
+        String core = content.substring(from, to).replaceAll("\\s+", " ").strip();
+        return (from > 0 ? "…" : "") + core + (to < content.length() ? "…" : "");
+    }
+
+    /**
+     * 判定存储层命中的会话对访问者是否可见。
+     *
+     * <p>只看索引元信息，不为判可见性而加载会话正文——否则一次搜索会把
+     * 所有命中会话都拉进缓存，把有界缓存冲掉。</p>
+     */
+    private boolean isVisible(String sessionKey, String viewer) {
+        if (viewer == null || viewer.isBlank()) {
+            return true;
+        }
+        Session cached = cache.get(sessionKey);
+        if (cached != null) {
+            return cached.isVisibleTo(viewer);
+        }
+        return store.listMeta().stream()
+                .filter(meta -> sessionKey.equals(meta.getKey()))
+                .findFirst()
+                .map(meta -> meta.isVisibleTo(viewer))
+                .orElse(true);
     }
 
     // ==================== 删除与生命周期 ====================

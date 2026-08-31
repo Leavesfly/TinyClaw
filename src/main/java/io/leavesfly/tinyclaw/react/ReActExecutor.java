@@ -776,6 +776,8 @@ public class ReActExecutor {
         tools.get(toolName).ifPresent(tool -> {
             if (tool instanceof ToolContextAware contextAware) {
                 contextAware.setChannelContext(channel, chatId);
+                // sessionKey 原值单独传：/new 产生的 channel:chatId:timestamp 无法由上面两段还原
+                contextAware.setSessionContext(sessionKey);
             }
             if (tool instanceof StreamAwareTool streamAware) {
                 streamAware.setStreamCallback(streamCallback);

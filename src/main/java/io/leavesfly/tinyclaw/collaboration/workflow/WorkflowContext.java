@@ -2,6 +2,7 @@ package io.leavesfly.tinyclaw.collaboration.workflow;
 
 import io.leavesfly.tinyclaw.collaboration.SharedContext;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,6 +44,54 @@ public class WorkflowContext {
         this.startTime = System.currentTimeMillis();
     }
     
+    /**
+     * 从检查点恢复状态。
+     *
+     * <p>只恢复已<b>完成</b>的节点：快照里可能残留 RUNNING 状态的节点，而进程退出后
+     * 它并没有真的在跑。把它当已完成恢复会跳过一个从未产出结果的节点，
+     * 后续节点就会读到空输入。</p>
+     *
+     * <p>变量按“不覆盖已有值”合并：当前定义里的初始变量代表本次调用方的意图，
+     * 优先级高于上一轮的快照。</p>
+     *
+     * @return 实际恢复的已完成节点数
+     */
+    public int restoreFrom(WorkflowCheckpoint checkpoint) {
+        if (checkpoint == null) {
+            return 0;
+        }
+        checkpoint.getVariables().forEach((key, value) ->
+                variables.putIfAbsent(key, value != null ? value : ""));
+
+        int restored = 0;
+        for (Map.Entry<String, NodeResult> entry : checkpoint.getNodeResults().entrySet()) {
+            NodeResult result = entry.getValue();
+            if (result == null || !result.isFinished()) {
+                continue;
+            }
+            nodeResults.put(entry.getKey(), result);
+            executedNodeCount.incrementAndGet();
+            restored++;
+        }
+        return restored;
+    }
+
+    /**
+     * 对当前状态取快照。
+     *
+     * <p>只包含已完成的节点，与 {@link #restoreFrom} 的取舍保持一致；
+     * 写入未完成节点只会让快照变大而不会被使用。</p>
+     */
+    public WorkflowCheckpoint snapshot(String runId, String workflowName) {
+        Map<String, NodeResult> finished = new LinkedHashMap<>();
+        nodeResults.forEach((nodeId, result) -> {
+            if (result != null && result.isFinished()) {
+                finished.put(nodeId, result);
+            }
+        });
+        return new WorkflowCheckpoint(runId, workflowName, variables, finished);
+    }
+
     /**
      * 设置变量（ConcurrentHashMap 不支持 null 值，null 以空字符串替代）
      */

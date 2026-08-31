@@ -41,6 +41,20 @@ public interface SessionStore {
     boolean exists(String key);
 
     /**
+     * 全文检索会话消息。
+     *
+     * <p>默认不支持，返回空列表——检索能力与存储形式强相关，
+     * 不应强迫每个存储实现都提供（如纯内存实现就没有可扫的文件）。</p>
+     *
+     * @param query 查询词，大小写不敏感的精确子串
+     * @param limit 结果上限，必须有界
+     * @return 命中列表；不支持时返回空列表
+     */
+    default List<SessionSearchHit> search(String query, int limit) {
+        return List.of();
+    }
+
+    /**
      * 刷盘尚未持久化的索引数据（进程退出前调用）
      */
     void flush();

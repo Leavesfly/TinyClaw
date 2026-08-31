@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.config;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -9,7 +10,14 @@ import io.leavesfly.tinyclaw.util.JsonFileStore;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
 import java.util.function.IntConsumer;
@@ -54,7 +62,11 @@ public class ConfigLoader {
     private static final String CONFIG_FILE = "config.json";   // 配置文件名
     private static final String HOME_PREFIX = "~";             // 用户主目录前缀
     private static final char PATH_SEPARATOR = '/';            // 路径分隔符
-    
+
+    /** 迁移写回前的备份文件名后缀格式 */
+    private static final DateTimeFormatter BACKUP_STAMP =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
     private static Dotenv dotenv = null;  // .env 文件加载器
     
     /**
@@ -77,6 +89,9 @@ public class ConfigLoader {
      * 2. 如果配置文件不存在，使用默认配置
      * 3. 应用环境变量覆盖
      * 
+     * <p>结构版本落后时会在内存中完成迁移，但<b>不写回磁盘</b>。需要持久化迁移结果的
+     * 启动路径请用 {@link #loadAndMigrate(String)}。</p>
+     * 
      * @param path 配置文件路径
      * @return 配置对象
      * @throws IOException 读取配置文件失败
@@ -85,6 +100,89 @@ public class ConfigLoader {
         Config config = loadFromFile(path);
         applyEnvironmentOverrides(config);
         return config;
+    }
+
+    /**
+     * 加载配置，并在结构版本落后时把迁移结果写回磁盘。
+     *
+     * <p>供 gateway / agent 等启动路径使用：配置在被任何组件读到之前就已经是当前版本，
+     * 避免每个消费方各自兼容历史结构。稳态（版本已最新）下不产生任何写盘。</p>
+     *
+     * <p>写回的是<b>迁移后的原始 JSON</b> 而不是序列化后的 {@link Config}：用户手工添加的、
+     * 当前模型还不认识的键必须原样保留，而 Jackson 反序列化时已经把它们丢掉了。</p>
+     *
+     * @param path 配置文件路径
+     * @return 加载结果，含迁移详情与是否实际写盘
+     * @throws IOException 读取或写入配置文件失败
+     */
+    public static LoadResult loadAndMigrate(String path) throws IOException {
+        File configFile = new File(path);
+        if (!configFile.exists()) {
+            Config config = Config.defaultConfig();
+            applyEnvironmentOverrides(config);
+            return new LoadResult(config, ConfigMigrator.Result.upToDate(), false);
+        }
+
+        Map<String, Object> raw = readRaw(path);
+        ConfigMigrator.Result migration = ConfigMigrator.migrate(raw);
+
+        boolean persisted = false;
+        if (migration.rewritten()) {
+            backup(configFile.toPath());
+            JsonFileStore.writeAtomic(configFile.toPath(),
+                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(raw));
+            persisted = true;
+        }
+
+        Config config = objectMapper.convertValue(raw, Config.class);
+        applyEnvironmentOverrides(config);
+        return new LoadResult(config, migration, persisted);
+    }
+
+    /**
+     * 读取配置文件的原始 JSON 结构，不做迁移、不反序列化为 {@link Config}。
+     *
+     * <p>诊断场景需要看到迁移之前的真实内容，包括当前模型不认识的键。</p>
+     *
+     * @throws IOException 文件不存在或不是合法 JSON 对象
+     */
+    public static Map<String, Object> readRaw(String path) throws IOException {
+        String content = Files.readString(new File(path).toPath());
+        Map<String, Object> raw = objectMapper.readValue(content,
+                new TypeReference<LinkedHashMap<String, Object>>() {
+                });
+        return raw != null ? raw : new LinkedHashMap<>();
+    }
+
+    /**
+     * 加载配置的结果。
+     *
+     * @param config    最终配置对象（已应用环境变量覆盖）
+     * @param migration 迁移详情；配置文件不存在时为「已是最新」
+     * @param persisted 迁移结果是否已写回磁盘
+     */
+    public record LoadResult(Config config, ConfigMigrator.Result migration, boolean persisted) {
+
+        /** 本次加载实际执行了哪些迁移，用于向用户交代改了什么 */
+        public List<String> appliedMigrations() {
+            return migration.applied();
+        }
+    }
+
+    /**
+     * 迁移写回前留一份带时间戳的备份。
+     *
+     * <p>迁移是单向的，没有反向迁移可用；用户降级安装或对迁移结果有疑问时，备份是唯一的退路。
+     * 备份失败不阻断迁移——写盘目录不可写的情况下配置本身也写不进去，会在后续步骤报错。</p>
+     */
+    private static void backup(Path configPath) {
+        Path backupPath = configPath.resolveSibling(
+                configPath.getFileName() + ".bak-" + LocalDateTime.now().format(BACKUP_STAMP));
+        try {
+            Files.copy(configPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            System.err.println("⚠️  配置备份失败（迁移继续）: " + e.getMessage());
+        }
     }
     
     /**
@@ -100,8 +198,9 @@ public class ConfigLoader {
             return Config.defaultConfig();
         }
         
-        String content = Files.readString(configFile.toPath());
-        return objectMapper.readValue(content, Config.class);
+        Map<String, Object> raw = readRaw(path);
+        ConfigMigrator.migrate(raw);
+        return objectMapper.convertValue(raw, Config.class);
     }
     
     /**

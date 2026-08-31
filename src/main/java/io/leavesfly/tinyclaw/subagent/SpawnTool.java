@@ -5,6 +5,8 @@ import io.leavesfly.tinyclaw.tools.Tool;
 import io.leavesfly.tinyclaw.tools.ToolContextAware;
 import io.leavesfly.tinyclaw.tools.ToolException;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
+import io.leavesfly.tinyclaw.session.SessionProgress;
+import io.leavesfly.tinyclaw.session.SessionProgressSink;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,14 +24,26 @@ import java.util.Map;
  * 
  * 支持通过 agent 参数指定专职子代理（workspace/agents/&lt;name&gt;/AGENT.md 动态定义），
  * 可用子代理清单会动态注入工具描述和参数 enum，供主 Agent 的 LLM 感知与选择。
+ *
+ * <p><b>只有主 Agent 能派生子代理</b>：本类是注册表里的单实例，{@code streamCallback} 与
+ * {@code sessionKey} 由调用方在每次调用前覆写、执行完不还原，{@link #execute} 的 finally
+ * 还会清除进度卡。加之同步派生在调用方线程内联执行，子代理再派生即无界栈递归。因此
+ * 嵌套执行体（子代理、协同角色）的工具集里统一剔除本工具，见 {@code SubagentManager}。</p>
  */
 public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
+    
+    /** 工具名。嵌套执行体据此把本工具从自己的工具集中剔除，故对外暴露为常量。 */
+    public static final String NAME = "spawn";
     
     private final SubagentManager manager;
     private String originChannel = "cli";
     private String originChatId = "direct";
     /** 流式回调（用于输出子代理执行过程） */
     private volatile LLMProvider.EnhancedStreamCallback streamCallback;
+    /** 当前会话，仅用于进度上报；与 originChannel/originChatId 不同源，不能互相拼接 */
+    private volatile String sessionKey;
+    /** 进度上报出口，默认不上报 */
+    private volatile SessionProgressSink progressSink = SessionProgressSink.NOOP;
     
     public SpawnTool(SubagentManager manager) {
         this.manager = manager;
@@ -37,7 +51,7 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     
     @Override
     public String name() {
-        return "spawn";
+        return NAME;
     }
     
     @Override
@@ -119,6 +133,18 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
     public void setChannelContext(String channel, String chatId) {
         setContext(channel, chatId);
     }
+
+    @Override
+    public void setSessionContext(String sessionKey) {
+        this.sessionKey = sessionKey;
+    }
+
+    /**
+     * 注入进度上报出口。传 null 等于不上报。
+     */
+    public void setProgressSink(SessionProgressSink progressSink) {
+        this.progressSink = progressSink != null ? progressSink : SessionProgressSink.NOOP;
+    }
     
     /**
      * 设置流式回调，用于输出子代理的执行过程。
@@ -147,12 +173,32 @@ public class SpawnTool implements Tool, ToolContextAware, StreamAwareTool {
         boolean async = Boolean.TRUE.equals(args.get("async"));
         
         if (async) {
-            // 异步模式：后台运行，立即返回确认信息
+            // 异步模式：后台运行，立即返回确认信息。
+            // 不上报进度：本调用立即返回，后台任务的结束时机这里无法得知，
+            // 报了就没人负责清除，会留下一个永不结束的进度卡
             return manager.spawn(task, label, agent, originChannel, originChatId);
         }
         
         // 同步模式（默认）：阻塞等待子代理完成，返回实际结果
         // 如果有流式回调，使用流式版本输出子代理的执行过程
-        return manager.spawnAndWaitStream(task, label, agent, streamCallback);
+        reportProgress(label != null && !label.isEmpty() ? label : "子代理执行中", task);
+        try {
+            return manager.spawnAndWaitStream(task, label, agent, streamCallback);
+        } finally {
+            clearProgress();
+        }
+    }
+
+    private void reportProgress(String phase, String detail) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return;
+        }
+        progressSink.setProgress(sessionKey, SessionProgress.of(phase, detail));
+    }
+
+    private void clearProgress() {
+        if (sessionKey != null && !sessionKey.isBlank()) {
+            progressSink.clearProgress(sessionKey);
+        }
     }
 }

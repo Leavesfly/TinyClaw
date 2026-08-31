@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.subagent;
 
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
+import io.leavesfly.tinyclaw.collaboration.CollaborateTool;
 import io.leavesfly.tinyclaw.react.ReActExecutor;
 import io.leavesfly.tinyclaw.bus.InboundMessage;
 import io.leavesfly.tinyclaw.bus.MessageBus;
@@ -51,6 +52,22 @@ public class SubagentManager {
 
     /** 等待队列容量，超出后拒绝新任务 */
     private static final int SUBAGENT_QUEUE_CAPACITY = 16;
+
+    /**
+     * 子代理一律拿不到的工具：协同只能由主 Agent 发起，子代理不得再派生。
+     *
+     * <p>{@code collaborate}：不设这道闸，协同角色仍能借 {@code spawn} 绕回来——角色派生
+     * 子代理、子代理再调 {@code collaborate}，等于让单例的编排器、策略与协同线程池自我嵌套。</p>
+     *
+     * <p>{@code spawn}：同步派生在调用方线程内联执行（见 {@link #spawnAndWaitStream}），子代理
+     * 再派生就是深度无界的栈递归，每层各带一轮 {@code maxIterations} 的 LLM 循环；SpawnTool
+     * 同样是单实例，内层会覆写外层的流式回调与 sessionKey，其 finally 里的 clearProgress
+     * 还会抹掉外层的进度卡。</p>
+     *
+     * <p>两者都不能只在子代理声明了工具白名单时才剔除：未声明时子代理拿到的是完整工具集，
+     * 那才是默认情形，等于没设防。</p>
+     */
+    private static final List<String> DENIED_TOOLS = List.of(CollaborateTool.NAME, SpawnTool.NAME);
 
     private final Map<String, SubagentTask> tasks = new ConcurrentHashMap<>();
     private final LLMProvider provider;
@@ -242,6 +259,9 @@ public class SubagentManager {
     /**
      * 为子代理构建 ReActExecutor：按定义覆盖模型、工具白名单和最大迭代次数，
      * 未定义的部分继承主 Agent 配置。
+     *
+     * <p>两条子代理执行路径（流式与同步）都经由此处取工具集，是收口 {@link #DENIED_TOOLS}
+     * 的唯一位置。</p>
      */
     private ReActExecutor buildExecutor(SubagentDefinition def, SessionManager subagentSessions) {
         String effectiveModel = def != null && def.getModel() != null ? def.getModel() : model;
@@ -249,11 +269,11 @@ public class SubagentManager {
                 ? def.getMaxIterations() : maxIterations;
         ToolRegistry effectiveTools = tools;
         if (def != null && def.getTools() != null && !def.getTools().isEmpty()) {
-            // 按白名单收窄工具权限，并排除 spawn 自身防止递归派生
-            List<String> allowed = new ArrayList<>(def.getTools());
-            allowed.remove("spawn");
-            effectiveTools = tools.filter(allowed);
+            // 按定义的白名单收窄工具权限
+            effectiveTools = tools.filter(def.getTools());
         }
+        // 协同只能由主 Agent 发起、子代理不得再派生：白名单里显式写了也不放行
+        effectiveTools = effectiveTools.exclude(DENIED_TOOLS);
         return new ReActExecutor(provider, effectiveTools, subagentSessions,
                 effectiveModel, provider.getName(), effectiveMaxIterations);
     }
@@ -374,18 +394,23 @@ public class SubagentManager {
 
             if (callback != null) {
                 // 使用流式执行：子代理的事件保持结构化转发。
-                // 思考内容以 SUBAGENT_THINKING 透出；若降级为普通 chunk 回调，
-                // ReActExecutor 内部的 wrap() 会把 THINKING 事件 format() 成文本，
-                // 导致思维链逐 token 碎片化混入子代理正文
+                // 思考内容以 SUBAGENT_THINKING 透出、工具调用带 taskId 归属原样透出；
+                // 若降级为普通 chunk 回调，ReActExecutor 内部的 wrap() 会把这些事件 format()
+                // 成文本，导致思维链与工具调用逐段碎片化混入子代理正文。
+                // 思考与正文按「语义族」归并：子代理内部再嵌一层执行体（协同角色/更深的子代理）
+                // 时，它的思考会以 COLLABORATE_AGENT_THINKING / SUBAGENT_THINKING 到达，
+                // 只认 THINKING 就会让这些内容落进兜底分支被 format() 成 💭 文本行混进正文
                 String taskId = task.getId();
                 LLMProvider.EnhancedStreamCallback subagentCallback = event -> {
-                    if (event.getType() == StreamEvent.EventType.CONTENT) {
-                        callback.onEvent(StreamEvent.subagentContent(taskId, event.getContent()));
-                    } else if (event.getType() == StreamEvent.EventType.THINKING) {
-                        callback.onEvent(StreamEvent.subagentThinking(taskId, event.getContent()));
-                    } else {
-                        // 工具调用等过程事件仍以可读文本行混入子代理输出
-                        callback.onEvent(StreamEvent.subagentContent(taskId, event.format()));
+                    switch (event.getType()) {
+                        case CONTENT, SUBAGENT_CONTENT, COLLABORATE_AGENT, COLLABORATE_AGENT_CHUNK ->
+                                callback.onEvent(StreamEvent.subagentContent(taskId, event.getContent()));
+                        case THINKING, SUBAGENT_THINKING, COLLABORATE_AGENT_THINKING ->
+                                callback.onEvent(StreamEvent.subagentThinking(taskId, event.getContent()));
+                        // 工具调用保持结构化，只标注归属任务，前端在子代理卡片内渲染工具卡片
+                        case TOOL_START, TOOL_END -> callback.onEvent(event.withScope("taskId", taskId));
+                        // 剩下的都是起止标记，以可读文本行混入子代理输出
+                        default -> callback.onEvent(StreamEvent.subagentContent(taskId, event.format()));
                     }
                 };
                 result = reActExecutor.executeStream(messages, sessionKey, subagentCallback);

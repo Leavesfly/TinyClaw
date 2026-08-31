@@ -4,6 +4,9 @@ import io.leavesfly.tinyclaw.tools.StreamAwareTool;
 import io.leavesfly.tinyclaw.tools.Tool;
 import io.leavesfly.tinyclaw.tools.ToolException;
 import io.leavesfly.tinyclaw.collaboration.workflow.WorkflowGenerator;
+import io.leavesfly.tinyclaw.session.SessionProgress;
+import io.leavesfly.tinyclaw.session.SessionProgressSink;
+import io.leavesfly.tinyclaw.tools.ToolContextAware;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 
@@ -13,10 +16,18 @@ import java.util.*;
 /**
  * 多Agent协同工具
  * 允许主Agent启动多Agent协同完成复杂任务
+ *
+ * <p><b>只有主 Agent 能发起协同</b>：本类是注册表里的单实例，其 {@link AgentOrchestrator}、
+ * 各策略实例与协同线程池同样是单例，且执行期状态（流式回调、sessionKey）由调用方在每次
+ * 调用前覆写。嵌套发起会让同一套可变状态自我覆盖，因此嵌套执行体（协同角色、子代理）的
+ * 工具集里统一剔除本工具，见 {@code RoleAgent} 与 {@code SubagentManager}。</p>
  */
-public class CollaborateTool implements Tool, StreamAwareTool {
+public class CollaborateTool implements Tool, StreamAwareTool, ToolContextAware {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("tools");
+    
+    /** 工具名。嵌套执行体据此把本工具从自己的工具集中剔除，故对外暴露为常量。 */
+    public static final String NAME = "collaborate";
     
     /** 协同编排器 */
     private AgentOrchestrator orchestrator;
@@ -29,6 +40,12 @@ public class CollaborateTool implements Tool, StreamAwareTool {
     
     /** 流式回调（用于输出协同过程） */
     private volatile LLMProvider.EnhancedStreamCallback streamCallback;
+
+    /** 进度上报出口，默认不上报 */
+    private volatile SessionProgressSink progressSink = SessionProgressSink.NOOP;
+
+    /** 当前会话，由 {@link #setSessionContext} 注入，仅用于进度上报 */
+    private volatile String sessionKey;
 
     /**
      * 插件注册的 agent 命名索引（roleName -&gt; 角色）。
@@ -77,10 +94,31 @@ public class CollaborateTool implements Tool, StreamAwareTool {
     public void setStreamCallback(LLMProvider.EnhancedStreamCallback callback) {
         this.streamCallback = callback;
     }
+
+    /**
+     * 注入进度上报出口。传 null 等于不上报。
+     */
+    public void setProgressSink(SessionProgressSink progressSink) {
+        this.progressSink = progressSink != null ? progressSink : SessionProgressSink.NOOP;
+    }
+
+    /**
+     * 协同不需要知道投递目标，因此通道上下文无用。实现 {@link ToolContextAware}
+     * 只为拿到 {@link #setSessionContext} 给的 sessionKey。
+     */
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        // 有意空实现
+    }
+
+    @Override
+    public void setSessionContext(String sessionKey) {
+        this.sessionKey = sessionKey;
+    }
     
     @Override
     public String name() {
-        return "collaborate";
+        return NAME;
     }
     
     @Override
@@ -175,6 +213,9 @@ public class CollaborateTool implements Tool, StreamAwareTool {
         ));
 
         try {
+            // 协同往往跑几十秒到几分钟，先把阶段报上去，使前端刷新后仍能看到“正在协同”
+            reportProgress("协同准备", modeStr + " 模式：" + topic);
+
             // 构建配置
             CollaborationConfig config = buildConfig(modeStr, topic, maxRounds, styleStr, rolesData);
 
@@ -192,11 +233,13 @@ public class CollaborateTool implements Tool, StreamAwareTool {
                 if (provider == null) {
                     throw new ToolException("workflow模式需要配置LLM Provider");
                 }
+                reportProgress("生成执行计划", topic);
                 WorkflowGenerator generator = new WorkflowGenerator(provider, model);
                 config.setWorkflow(generator.generate(topic, rolesData));
             }
 
             // 执行协同
+            reportProgress("协同执行中", modeStr + " 模式：" + topic);
             String result = streamCallback != null
                     ? orchestrator.orchestrateWithStream(config, topic, streamCallback)
                     : orchestrator.orchestrate(config, topic);
@@ -209,6 +252,27 @@ public class CollaborateTool implements Tool, StreamAwareTool {
         } catch (Exception e) {
             logger.error("协同执行失败", Map.of("error", e.getMessage()));
             throw new ToolException("协同执行失败: " + e.getMessage());
+        } finally {
+            // 写在 finally：异常退出时也必须清除，否则会留下一个永不结束的进度卡
+            clearProgress();
+        }
+    }
+
+    /**
+     * 上报协同阶段。无会话上下文（如子代理内部调用）时自然不做事。
+     *
+     * <p>不传步数：协同轮次与任务数在执行中才确定，编一个假总数比不确定进度更误导人。</p>
+     */
+    private void reportProgress(String phase, String detail) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return;
+        }
+        progressSink.setProgress(sessionKey, SessionProgress.of(phase, detail));
+    }
+
+    private void clearProgress() {
+        if (sessionKey != null && !sessionKey.isBlank()) {
+            progressSink.clearProgress(sessionKey);
         }
     }
 

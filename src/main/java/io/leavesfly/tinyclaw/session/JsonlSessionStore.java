@@ -22,7 +22,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -69,16 +71,20 @@ public class JsonlSessionStore implements SessionStore {
     private static final String MIGRATED_SUFFIX = ".json.migrated";
     private static final String INDEX_FILE = "_index.json";
 
-    /** 行类型：文件头 / 消息 / 工具调用记录 / 上下文压缩 */
+    /** 行类型：文件头 / 消息 / 工具调用记录 / 上下文压缩 / 身份与可见性 */
     private static final String T_HEADER = "header";
     private static final String T_MSG = "msg";
     private static final String T_TOOL = "tool";
     private static final String T_COMPACT = "compact";
+    private static final String T_META = "meta";
 
     /** 索引刷盘节流间隔：索引可重建，无需每次写入都落盘 */
     private static final long INDEX_FLUSH_INTERVAL_MS = 2000;
     /** 文件名中可读前缀的最大长度，避免超出文件系统单段 255 字节限制 */
     private static final int MAX_READABLE_NAME_LENGTH = 80;
+
+    /** 搜索结果片段在命中位置两侧各保留的字符数 */
+    private static final int SNIPPET_CONTEXT_CHARS = 40;
 
 
     private final Path root;
@@ -93,6 +99,27 @@ public class JsonlSessionStore implements SessionStore {
         Files.createDirectories(root);
         if (!loadIndex()) {
             rebuildIndex();
+        }
+        discardStaleProgress();
+    }
+
+    /**
+     * 丢弃索引里遗留的进度卡。
+     *
+     * <p>进度卡描述的是“正在跑”的任务。进程重启后这些任务已经不存在，把上次的进度
+     * 读回来只会在界面上留下一个永远不会前进的进度条，比没有进度更误导人。</p>
+     */
+    private void discardStaleProgress() {
+        boolean cleared = false;
+        for (SessionMeta meta : index.values()) {
+            if (meta.getProgress() != null) {
+                meta.setProgress(null);
+                cleared = true;
+            }
+        }
+        if (cleared) {
+            indexDirty = true;
+            flush();
         }
     }
 
@@ -130,6 +157,9 @@ public class JsonlSessionStore implements SessionStore {
         int contextStartIndex = 0;
         Instant created = null;
         Instant lastActivity = null;
+        String owner = null;
+        SessionVisibility visibility = null;
+        Set<String> members = null;
         boolean recognized = false;
         int malformed = 0;
 
@@ -183,6 +213,14 @@ public class JsonlSessionStore implements SessionStore {
                             lastActivity = ts;
                         }
                     }
+                    case T_META -> {
+                        recognized = true;
+                        // 整行覆盖而非逐字段合并：写入时就是一个完整身份快照，
+                        // 按字段合并会让“移除成员”这类变更永远生效不了
+                        owner = node.path("owner").asText(null);
+                        visibility = readVisibility(node.path("visibility").asText(null));
+                        members = readMembers(node.get("members"));
+                    }
                     default -> {
                         // 未知行类型：来自更新版本的记录，忽略但不视为损坏
                     }
@@ -210,6 +248,15 @@ public class JsonlSessionStore implements SessionStore {
             session.setSummary(summary);
         }
         session.setContextStartIndex(contextStartIndex);
+        if (owner != null && !owner.isBlank()) {
+            session.setOwner(owner);
+        }
+        if (visibility != null) {
+            session.setVisibility(visibility);
+        }
+        if (members != null && !members.isEmpty()) {
+            session.setMembers(members);
+        }
         session.setUpdated(lastActivity != null ? lastActivity : fileTime(path));
         session.markFullyPersisted();
 
@@ -286,6 +333,9 @@ public class JsonlSessionStore implements SessionStore {
                 if (delta.compactionChanged()) {
                     buffer.append(compactLine(delta.summary(), delta.contextStartIndex()));
                 }
+                if (delta.identityChanged()) {
+                    buffer.append(metaLine(delta.identity()));
+                }
                 JsonFileStore.appendAndSync(path, buffer.toString());
             });
             touchIndex(session);
@@ -310,6 +360,11 @@ public class JsonlSessionStore implements SessionStore {
         String summary = session.getSummary();
         if ((summary != null && !summary.isEmpty()) || session.getContextStartIndex() > 0) {
             buffer.append(compactLine(summary, session.getContextStartIndex()));
+        }
+        Session.Identity identity = new Session.Identity(
+                session.getOwner(), session.getVisibility(), session.getMembers());
+        if (!identity.isEmpty()) {
+            buffer.append(metaLine(identity));
         }
 
         JsonFileStore.writeAtomic(sessionPath(session.getKey()), buffer.toString());
@@ -346,6 +401,23 @@ public class JsonlSessionStore implements SessionStore {
         node.put("t", T_COMPACT);
         node.put("summary", summary);
         node.put("contextStartIndex", contextStartIndex);
+        node.set("ts", MAPPER.valueToTree(Instant.now()));
+        return MAPPER.writeValueAsString(node) + "\n";
+    }
+
+    /**
+     * 身份行：写完整快照，读取时最后一行胜。
+     *
+     * <p>身份变更频率极低（基本只在会话首次认领时发生一次），因此追加全量快照
+     * 不会造成可观察的写放大，而它换来的好处是读取逻辑只需“取最后一行”。</p>
+     */
+    private String metaLine(Session.Identity identity) throws IOException {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("t", T_META);
+        node.put("owner", identity.owner());
+        node.put("visibility", identity.visibility() != null
+                ? identity.visibility().name() : SessionVisibility.PRIVATE.name());
+        node.set("members", MAPPER.valueToTree(identity.members()));
         node.set("ts", MAPPER.valueToTree(Instant.now()));
         return MAPPER.writeValueAsString(node) + "\n";
     }
@@ -392,6 +464,98 @@ public class JsonlSessionStore implements SessionStore {
         return index.containsKey(key)
                 || Files.exists(sessionPath(key))
                 || Files.exists(root.resolve(readableName(key) + LEGACY_SUFFIX));
+    }
+
+    // ==================== 全文检索 ====================
+
+    /**
+     * 按子串扫描转录文件。
+     *
+     * <h2>为何不建倒排索引</h2>
+     * <p>倒排索引需要分词，而中文分词在无依赖的前提下只能做到很粗；更重要的是索引需要
+     * 与转录保持同步，而一个会不同步的索引比没有索引更难排查。个人部署的会话量级（
+     * 千数量级消息）下直接扫文件完全够用，且永远不会与真实数据不一致。</p>
+     *
+     * <h2>扫描顺序</h2>
+     * <p>按索引的最后更新时间倒序逐个会话扫，凑够 {@code limit} 就停：
+     * 用户搜的绝大多数是最近的对话，先扫活跃会话能让常见查询在读几个文件后就返回。</p>
+     */
+    @Override
+    public List<SessionSearchHit> search(String query, int limit) {
+        if (query == null || query.isBlank() || limit <= 0) {
+            return List.of();
+        }
+        String needle = query.toLowerCase(Locale.ROOT);
+        List<SessionSearchHit> hits = new ArrayList<>();
+
+        for (SessionMeta meta : listMeta()) {
+            if (hits.size() >= limit) {
+                break;
+            }
+            searchOne(meta, needle, limit, hits);
+        }
+        return hits;
+    }
+
+    /**
+     * 扫单个会话的转录文件。
+     *
+     * <p>直接逐行读 JSONL 而不走 {@link #load}：搜索只需要 msg 行的文本，
+     * 把会话完整反序列化成对象会把整个 sessions 目录都拉进内存，
+     * 也会意外把会话写进 {@code index}。</p>
+     *
+     * <p>行上的 {@code i} 字段就是写入时记下的绝对下标，因此无需自己计数
+     * ——自己计数会在中间行损坏时与真实下标错位。</p>
+     */
+    private void searchOne(SessionMeta meta, String needle, int limit, List<SessionSearchHit> hits) {
+        Path path = sessionPath(meta.getKey());
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
+            for (String line : (Iterable<String>) lines::iterator) {
+                if (hits.size() >= limit) {
+                    return;
+                }
+                if (line.isBlank() || !line.toLowerCase(Locale.ROOT).contains(needle)) {
+                    // 先在原始行上做一次廉价筛选，避开大量不可能命中的行的 JSON 解析
+                    continue;
+                }
+                JsonNode node;
+                try {
+                    node = MAPPER.readTree(line);
+                } catch (Exception e) {
+                    continue;
+                }
+                if (!T_MSG.equals(node.path("t").asText(""))) {
+                    continue;
+                }
+                JsonNode data = node.path("data");
+                String content = data.path("content").asText("");
+                int matchAt = content.toLowerCase(Locale.ROOT).indexOf(needle);
+                if (matchAt < 0) {
+                    // 行里命中但不在 content（如命中了工具参数或字段名），不算可展示的命中
+                    continue;
+                }
+                hits.add(new SessionSearchHit(meta.getKey(),
+                        node.path("i").asInt(-1),
+                        data.path("role").asText(""),
+                        snippet(content, matchAt, needle.length()),
+                        meta.getTitle()));
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to scan session for search: " + meta.getKey());
+        }
+    }
+
+    /**
+     * 截取命中位置前后的上下文片段，两端有裁剪时加省略号
+     */
+    private String snippet(String content, int matchAt, int matchLength) {
+        int from = Math.max(0, matchAt - SNIPPET_CONTEXT_CHARS);
+        int to = Math.min(content.length(), matchAt + matchLength + SNIPPET_CONTEXT_CHARS);
+        String core = content.substring(from, to).replaceAll("\\s+", " ").strip();
+        return (from > 0 ? "…" : "") + core + (to < content.length() ? "…" : "");
     }
 
     private void touchIndex(Session session) {
@@ -549,6 +713,35 @@ public class JsonlSessionStore implements SessionStore {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 解析可见性枚举。未知取值退回 PRIVATE：读不懂时选择更保守的一侧，
+     * 而不是把一个本应私有的会话当成共享会话。
+     */
+    private SessionVisibility readVisibility(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return SessionVisibility.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return SessionVisibility.PRIVATE;
+        }
+    }
+
+    private Set<String> readMembers(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return Set.of();
+        }
+        Set<String> members = new LinkedHashSet<>();
+        node.forEach(item -> {
+            String value = item.asText(null);
+            if (value != null && !value.isBlank()) {
+                members.add(value);
+            }
+        });
+        return members;
     }
 
     private Instant fileTime(Path path) {

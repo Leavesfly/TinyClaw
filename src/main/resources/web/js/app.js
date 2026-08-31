@@ -276,6 +276,9 @@ class TinyClawConsole {
 
         newChatBtn.addEventListener('click', () => this.createNewChatSession());
 
+        // 侧栏历史消息搜索
+        this.bindChatSearch();
+
         // 图片上传按钮
         uploadBtn.addEventListener('click', () => imageUpload.click());
         imageUpload.addEventListener('change', (e) => this.handleImageSelect(e));
@@ -572,13 +575,20 @@ class TinyClawConsole {
                     // 合并：用双换行分隔，保持段落感；思考过程同样拼接保留
                     last.content = [last.content, cleanContent].filter(Boolean).join('\n\n');
                     last.thinking = [last.thinking, msg.thinking].filter(Boolean).join('\n\n');
+                    // 合并后的气泡覆盖一段下标区间，搜索跳转按区间匹配才能定位到正确气泡
+                    if (typeof msg.index === 'number') {
+                        last.indexEnd = msg.index;
+                    }
                 } else {
                     mergedMessages.push({
                         role: msg.role,
                         content: cleanContent,
                         images: msg.images || [],
                         thinking: msg.thinking || '',
-                        toolCallRecords: msg.toolCallRecords || []
+                        toolCallRecords: msg.toolCallRecords || [],
+                        // 绝对下标由后端给出，前端不推算（见 SessionsHandler 中的说明）
+                        index: typeof msg.index === 'number' ? msg.index : null,
+                        indexEnd: typeof msg.index === 'number' ? msg.index : null
                     });
                 }
             }
@@ -602,6 +612,14 @@ class TinyClawConsole {
                     continue;
                 }
                 this.addMessage(msg.content, msg.role, msg.images, false);
+                // 把绝对下标写到气泡上，供搜索结果跳转定位
+                if (msg.index !== null && msg.index !== undefined) {
+                    const renderedEl = messagesDiv.lastElementChild;
+                    if (renderedEl) {
+                        renderedEl.dataset.msgIndex = String(msg.index);
+                        renderedEl.dataset.msgIndexEnd = String(msg.indexEnd ?? msg.index);
+                    }
+                }
                 // 思考过程卡片（历史回放）：插在正文前，与流式渲染顺序一致，默认折叠
                 if (msg.role === 'assistant' && msg.thinking) {
                     const thinkingMsgEl = messagesDiv.lastElementChild;
@@ -623,6 +641,13 @@ class TinyClawConsole {
             }
             // 历史回放完成后滚到顶部，让用户从头阅读完整会话
             messagesDiv.scrollTop = 0;
+
+            // 若本次加载来自搜索结果点击，渲染完成后再定位（DOM 此刻才就绪）
+            if (this.pendingScrollToIndex !== null && this.pendingScrollToIndex !== undefined) {
+                const target = this.pendingScrollToIndex;
+                this.pendingScrollToIndex = null;
+                this.scrollToMessageIndex(target);
+            }
             
             // 检查后端是否有任务正在运行（刷新页面后恢复运行状态）
             this.checkAndRestoreRunningState();
@@ -661,6 +686,9 @@ class TinyClawConsole {
                     stopBtn.addEventListener('click', () => this.stopRunningTask(stopBtn));
                 }
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                // 立即拉一次进度，把“SSE 断开”这种技术描述换成用户看得懂的阶段
+                this.fetchSessionProgress(this.chatSessionId)
+                    .then(progress => this.renderProgressIntoBanner(progress));
                 // 轮询等待任务完成
                 this.pollTaskCompletion();
             }
@@ -746,6 +774,9 @@ class TinyClawConsole {
                     this.loadChatHistory();
                     return;
                 }
+                // 任务仍在跑：同步刷一次阶段，让长任务的进展可见
+                this.fetchSessionProgress(this.chatSessionId)
+                    .then(progress => this.renderProgressIntoBanner(progress));
                 // 继续轮询
                 setTimeout(poll, pollInterval);
             } catch (error) {
@@ -905,6 +936,234 @@ class TinyClawConsole {
     }
 
     /**
+     * 待定位的消息下标：搜索结果点击后先记下来，等历史渲染完再用
+     */
+    pendingScrollToIndex = null;
+
+    /** 搜索输入防抖定时器 */
+    searchDebounceTimer = null;
+
+    // ==================== 会话搜索 ====================
+
+    /**
+     * 绑定侧栏搜索框。
+     *
+     * <p>用 300ms 防抖而不是逐字请求：后端搜索是扫转录文件，逐字发会把一次输入
+     * 变成十几次全目录扫描。</p>
+     */
+    bindChatSearch() {
+        const input = document.getElementById('chatSearchInput');
+        const clearBtn = document.getElementById('chatSearchClear');
+        if (!input) return;
+
+        input.addEventListener('input', () => {
+            const query = input.value.trim();
+            clearBtn.style.display = query ? 'block' : 'none';
+            clearTimeout(this.searchDebounceTimer);
+            if (!query) {
+                this.exitSearchMode();
+                return;
+            }
+            this.searchDebounceTimer = setTimeout(() => this.searchMessages(query), 300);
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                input.value = '';
+                clearBtn.style.display = 'none';
+                this.exitSearchMode();
+            }
+        });
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                input.value = '';
+                clearBtn.style.display = 'none';
+                this.exitSearchMode();
+                input.focus();
+            });
+        }
+    }
+
+    /**
+     * 执行搜索并用结果列表替掉历史列表
+     */
+    async searchMessages(query) {
+        const resultsDiv = document.getElementById('chatSearchResults');
+        const historyDiv = document.getElementById('chatHistory');
+        if (!resultsDiv || !historyDiv) return;
+
+        resultsDiv.style.display = 'block';
+        historyDiv.style.display = 'none';
+        resultsDiv.innerHTML = '<div class="chat-search-hint">搜索中…</div>';
+
+        try {
+            const response = await this.authFetch(
+                `/api/sessions/search?q=${encodeURIComponent(query)}&limit=30`);
+            if (!response.ok) {
+                resultsDiv.innerHTML = '<div class="chat-search-hint">搜索失败</div>';
+                return;
+            }
+            const hits = await response.json();
+            this.renderSearchResults(hits, query);
+        } catch (error) {
+            console.error('Search failed:', error);
+            resultsDiv.innerHTML = '<div class="chat-search-hint">搜索失败</div>';
+        }
+    }
+
+    renderSearchResults(hits, query) {
+        const resultsDiv = document.getElementById('chatSearchResults');
+        if (!hits || hits.length === 0) {
+            resultsDiv.innerHTML = '<div class="chat-search-hint">无匹配结果</div>';
+            return;
+        }
+
+        const header = `<div class="chat-search-count">${hits.length} 条匹配</div>`;
+        const items = hits.map(hit => {
+            const title = this.extractChatTitle(hit.sessionKey, hit.title);
+            const roleLabel = hit.role === 'user' ? '我' : hit.role === 'assistant' ? 'AI' : hit.role;
+            return `
+                <div class="chat-search-item" data-session="${this.escapeHtml(hit.sessionKey)}"
+                     data-index="${hit.messageIndex}">
+                    <div class="chat-search-item-head">
+                        <span class="chat-search-role chat-search-role-${this.escapeHtml(hit.role)}">${this.escapeHtml(roleLabel)}</span>
+                        <span class="chat-search-session">${this.escapeHtml(title)}</span>
+                    </div>
+                    <div class="chat-search-snippet">${this.highlightQuery(hit.snippet, query)}</div>
+                </div>`;
+        }).join('');
+
+        resultsDiv.innerHTML = header + items;
+        resultsDiv.querySelectorAll('.chat-search-item').forEach(item => {
+            item.addEventListener('click', () => {
+                this.openSearchHit(item.dataset.session, parseInt(item.dataset.index, 10));
+            });
+        });
+    }
+
+    /**
+     * 在片段里高亮匹配词。
+     *
+     * <p>先 escape 再插标签，顶上去看似多余——但反过来先插标签再 escape 会把
+     * 高亮标签也转义成文本，而不 escape 则把会话内容直接当 HTML 执行。</p>
+     */
+    highlightQuery(snippet, query) {
+        const safe = this.escapeHtml(snippet || '');
+        if (!query) return safe;
+        const safeQuery = this.escapeHtml(query);
+        // 转义正则元字符，否则用户输入的 ( 或 [ 会让 RegExp 抛异常
+        const escaped = safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        try {
+            return safe.replace(new RegExp(escaped, 'gi'), m => `<mark>${m}</mark>`);
+        } catch (e) {
+            return safe;
+        }
+    }
+
+    /**
+     * 打开搜索命中：切会话并定位到那条消息。
+     *
+     * <p>定位不在这里做：loadChatHistory 是异步的，此刻 DOM 还是旧会话的。
+     * 把目标下标存起来，由渲染完成处回调。</p>
+     */
+    openSearchHit(sessionKey, messageIndex) {
+        this.pendingScrollToIndex = Number.isInteger(messageIndex) ? messageIndex : null;
+        if (sessionKey === this.chatSessionId) {
+            // 同一会话：不重新加载，直接定位
+            const target = this.pendingScrollToIndex;
+            this.pendingScrollToIndex = null;
+            this.scrollToMessageIndex(target);
+            return;
+        }
+        this.switchChatSession(sessionKey);
+    }
+
+    /**
+     * 滚动到指定绝对下标的消息并瞬时高亮。
+     *
+     * <p>按区间匹配：连续的 assistant 消息会被合并成一个气泡，它覆盖
+     * [msgIndex, msgIndexEnd] 这段下标；只比较起点会在命中合并的后半段时找不到。</p>
+     */
+    scrollToMessageIndex(messageIndex) {
+        if (messageIndex === null || messageIndex === undefined) return;
+        const messagesDiv = document.getElementById('chatMessages');
+        if (!messagesDiv) return;
+
+        const target = [...messagesDiv.querySelectorAll('[data-msg-index]')].find(el => {
+            const start = parseInt(el.dataset.msgIndex, 10);
+            const end = parseInt(el.dataset.msgIndexEnd ?? el.dataset.msgIndex, 10);
+            return messageIndex >= start && messageIndex <= end;
+        });
+        if (!target) return;
+
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('message-search-hit');
+        setTimeout(() => target.classList.remove('message-search-hit'), 2400);
+    }
+
+    /**
+     * 退出搜索模式，恢复历史列表
+     */
+    exitSearchMode() {
+        const resultsDiv = document.getElementById('chatSearchResults');
+        const historyDiv = document.getElementById('chatHistory');
+        if (resultsDiv) {
+            resultsDiv.style.display = 'none';
+            resultsDiv.innerHTML = '';
+        }
+        if (historyDiv) {
+            historyDiv.style.display = '';
+        }
+    }
+
+    // ==================== 进度卡 ====================
+
+    /**
+     * 拉取会话进度卡，无进行中任务时返回 null。
+     */
+    async fetchSessionProgress(sessionKey) {
+        if (!sessionKey) return null;
+        try {
+            const response = await this.authFetch(
+                `/api/sessions/${encodeURIComponent(sessionKey)}/progress`);
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data.running ? data.progress : null;
+        } catch (error) {
+            // 进度是锥上添花，拉不到就保持原有文案，不影响任务轮询
+            return null;
+        }
+    }
+
+    /**
+     * 把进度卡渲染进运行中横幅。
+     *
+     * <p>只改文案部分，不重建整个横幅：重建会把已绑定事件的停止按钮一起换掉，
+     * 用户就再也停不了任务了。</p>
+     */
+    renderProgressIntoBanner(progress) {
+        const banner = document.getElementById('runningTaskBanner');
+        if (!banner) return;
+        const textEl = banner.querySelector('.running-task-text');
+        if (!textEl) return;
+
+        if (!progress || !progress.phase) {
+            textEl.textContent = '有任务正在后台运行中。任务完成后界面自动恢复。';
+            return;
+        }
+
+        const stepText = progress.hasKnownTotal
+            ? ` (${progress.completedSteps}/${progress.totalSteps})`
+            : '';
+        const detail = progress.detail
+            ? `<span class="running-task-detail">${this.escapeHtml(progress.detail)}</span>`
+            : '';
+        textEl.innerHTML =
+            `<span class="running-task-phase">${this.escapeHtml(progress.phase)}${stepText}</span>${detail}`;
+    }
+
+    /**
      * 加载左侧历史聊天会话列表，按天分组折叠显示
      */
     async loadChatSessions() {
@@ -952,9 +1211,18 @@ class TinyClawConsole {
                             ${groupSessions.map(s => {
                                 const isActive = s.key === this.chatSessionId;
                                 const title = this.extractChatTitle(s.key, s.firstMessage);
+                                // 后端在会话索引里带上了进度，侧栏据此直接标出“哪个会话在跑”
+                                const runningBadge = s.progress
+                                    ? `<span class="history-running" title="${this.escapeHtml(s.progress.phase || '运行中')}"></span>`
+                                    : '';
+                                const sharedBadge = s.visibility === 'SHARED'
+                                    ? '<span class="history-shared" title="共享会话">◍</span>'
+                                    : '';
                                 return `
                                     <div class="chat-history-item ${isActive ? 'active' : ''}" data-session="${this.escapeHtml(s.key)}">
+                                        ${runningBadge}
                                         <span class="history-title">${this.escapeHtml(title)}</span>
+                                        ${sharedBadge}
                                         <button class="history-delete" onclick="event.stopPropagation(); app.deleteChatSession('${this.escapeHtml(s.key)}')" title="Delete">×</button>
                                     </div>
                                 `;
@@ -1141,13 +1409,20 @@ class TinyClawConsole {
         // 渲染状态：跟踪当前正在流式输出的文本内容 div 和工具调用卡片
         let currentTextContent = '';
         let currentTextDiv = null;
-        // toolCardMap: toolName -> { card, statusEl, bodyEl, resultEl, spinnerEl }
+        // toolCardMap: 归属前缀+toolName -> { card, statusEl, resultSectionEl, resultEl }
         const toolCardMap = {};
         // subagentCardMap: taskId -> { card, bodyEl, statusEl, contentBuffer }
         const subagentCardMap = {};
         // 当前思维链折叠卡片（THINKING 事件流式追加目标）
         let currentThinkingDiv = null;
         let currentThinkingContent = '';
+        // 本轮已固化的思考卡片：迟到的 THINKING 事件并回这里，而不是在正文后新建卡片。
+        // 工具调用是轮次边界，跨过它之后的思考属于新的推理阶段，需另开卡片，故在 TOOL_START 清空。
+        let lastRoundThinkingDiv = null;
+        // 当前协同 Agent 的发言块索引：turn -> { agent, block, contentEl, contentBuffer, thinkingDiv, thinkingBuffer }
+        // 按发言轮次（turn）而非「当前块」建索引：并行协同时多个 Agent 的事件交错到达，
+        // 只认「当前块」会把同一次发言拆成多块；顺序型多轮发言则因 turn 不同天然分块
+        const collabBlockMap = {};
 
         /**
          * 获取或创建当前文本输出区域（用于流式追加 CONTENT 事件）。
@@ -1192,14 +1467,26 @@ class TinyClawConsole {
             currentThinkingDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
             // 思考结束后默认折叠，用户可点击展开查看
             currentThinkingDiv.classList.remove('expanded');
+            // 记住这张卡片：本轮内若还有迟到的思考增量，应并回它而不是新建
+            lastRoundThinkingDiv = currentThinkingDiv;
             currentThinkingDiv = null;
             currentThinkingContent = '';
         };
 
         /**
          * 处理 THINKING 事件：创建/复用思维链折叠卡片，流式追加推理内容。
+         *
+         * <p>正文已开始后才到达的思考增量（如 provider 把无换行的推理尾巴压到流结束才发出），
+         * 并回本轮已固化的那张卡片。若新建，卡片会落在正文之后，呈现为「回答完了又开始思考」。</p>
          */
         const handleThinking = (event) => {
+            if (!currentThinkingDiv && lastRoundThinkingDiv) {
+                // 复用本轮已固化的卡片：从现有正文重新播种累积量，
+                // 否则下面的 textContent 赋值会把先前的推理内容整段抹掉
+                currentThinkingDiv = lastRoundThinkingDiv;
+                currentThinkingContent =
+                    currentThinkingDiv.querySelector('.thinking-body').textContent || '';
+            }
             if (!currentThinkingDiv) {
                 finalizeCurrentText();
                 currentThinkingDiv = document.createElement('div');
@@ -1217,11 +1504,49 @@ class TinyClawConsole {
         };
 
         /**
+         * 解析工具卡片的归属容器。
+         *
+         * <p>嵌套执行的工具调用带归属字段（子代理 taskId / 协同角色 agent），卡片需进入
+         * 各自的卡片或发言块；并先封闭当前的思考与正文段，保证卡片按时序接在它们之后。
+         * 无归属字段的事件属于主 Agent，落回顶层消息容器。</p>
+         *
+         * @returns {{container: HTMLElement, keyPrefix: string}}
+         */
+        const resolveToolHost = (event) => {
+            const subagentInfo = event.taskId ? subagentCardMap[event.taskId] : null;
+            if (subagentInfo) {
+                finalizeSubagentThinking(subagentInfo);
+                finalizeSubagentContent(subagentInfo);
+                return { container: subagentInfo.bodyEl, keyPrefix: toolCardKeyPrefix(event) };
+            }
+            if (event.agent) {
+                const info = getOrCreateCollabBlock(event);
+                finalizeCollabThinking(info);
+                finalizeCollabContent(info);
+                return { container: info.block, keyPrefix: toolCardKeyPrefix(event) };
+            }
+            finalizeThinking();
+            finalizeCurrentText();
+            // 工具调用是轮次边界：之后的思考属于新推理阶段，不应再并回上一轮的卡片
+            lastRoundThinkingDiv = null;
+            return { container: contentDiv, keyPrefix: '' };
+        };
+
+        /**
+         * 工具卡片索引的归属前缀：主 Agent 与各嵌套执行可能同时调用同名工具，
+         * 单用工具名作键会让卡片互相覆盖。
+         */
+        const toolCardKeyPrefix = (event) => {
+            if (event.taskId) return 'subagent:' + event.taskId + ':';
+            if (event.agent) return 'collab:' + collabBlockKey(event) + ':';
+            return '';
+        };
+
+        /**
          * 处理 TOOL_START 事件：创建工具调用卡片，显示工具名和运行状态。
          */
         const handleToolStart = (event) => {
-            finalizeThinking();
-            finalizeCurrentText();
+            const host = resolveToolHost(event);
 
             const toolName = event.tool || 'unknown';
             const args = event.args || {};
@@ -1239,8 +1564,8 @@ class TinyClawConsole {
                 : '';
             card.innerHTML = `<div class="tool-call-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">🔧</span><span class="tool-call-name">${this.escapeHtml(toolName)}</span><span class="tool-call-status running"><span class="tool-call-spinner"></span>运行中</span><span class="tool-call-toggle">▼</span></div><div class="tool-call-body">${argsSection}<div class="tool-call-section tool-call-result-section" style="display:none"><div class="tool-call-section-label">结果</div><div class="tool-call-result"></div></div></div>`;
 
-            contentDiv.appendChild(card);
-            toolCardMap[toolName] = {
+            host.container.appendChild(card);
+            toolCardMap[host.keyPrefix + toolName] = {
                 card,
                 statusEl: card.querySelector('.tool-call-status'),
                 resultSectionEl: card.querySelector('.tool-call-result-section'),
@@ -1255,7 +1580,9 @@ class TinyClawConsole {
             const toolName = event.tool || 'unknown';
             const success = event.success !== false;
             const result = event.result || '';
-            const cardInfo = toolCardMap[toolName];
+            // 与 TOOL_START 同构的归属前缀，定位到同一张卡片
+            const cardKey = toolCardKeyPrefix(event) + toolName;
+            const cardInfo = toolCardMap[cardKey];
 
             if (cardInfo) {
                 const { statusEl, resultSectionEl, resultEl } = cardInfo;
@@ -1272,9 +1599,13 @@ class TinyClawConsole {
                 if (!success) resultEl.classList.add('error-result');
                 resultSectionEl.style.display = '';
 
-                delete toolCardMap[toolName];
+                delete toolCardMap[cardKey];
             }
 
+            // 嵌套执行的工具不影响主 Agent 的文本区域状态
+            if (event.taskId || event.agent) {
+                return;
+            }
             // 工具调用结束后，下一段文本需要新建文本区域
             currentTextDiv = null;
             currentTextContent = '';
@@ -1315,11 +1646,24 @@ class TinyClawConsole {
          */
         const finalizeSubagentThinking = (cardInfo) => {
             if (!cardInfo.thinkingDiv) return;
+            const statusEl = cardInfo.thinkingDiv.querySelector('.thinking-status');
+            if (statusEl) statusEl.innerHTML = '✅ 完成';
             cardInfo.thinkingDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
             // 思考结束后默认折叠，用户可点击展开查看
             cardInfo.thinkingDiv.classList.remove('expanded');
             cardInfo.thinkingDiv = null;
             cardInfo.thinkingBuffer = '';
+        };
+
+        /**
+         * 封闭子代理当前的正文段：移除流式光标，下一段正文将新建容器，
+         * 使工具卡片与正文按时序交替排列。
+         */
+        const finalizeSubagentContent = (cardInfo) => {
+            if (!cardInfo.contentEl) return;
+            cardInfo.contentEl.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+            cardInfo.contentEl = null;
+            cardInfo.contentBuffer = '';
         };
 
         /**
@@ -1348,6 +1692,9 @@ class TinyClawConsole {
 
         /**
          * 处理 SUBAGENT_CONTENT 事件：将子代理输出追加到卡片内容区。
+         *
+         * <p>contentBuffer 是当前正文段的缓冲，不是整个子代理输出：思考卡片与工具卡片
+         * 会把正文切成多段，每段各自渲染，保持与卡片的时序。</p>
          */
         const handleSubagentContent = (event) => {
             const taskId = event.taskId || 'unknown';
@@ -1395,6 +1742,94 @@ class TinyClawConsole {
             }
             currentTextDiv = null;
             currentTextContent = '';
+        };
+
+        /**
+         * 固化指定协同发言块的思考折叠卡片：标记完成、移除流式光标并折叠。
+         */
+        const finalizeCollabThinking = (info) => {
+            if (!info || !info.thinkingDiv) return;
+            const statusEl = info.thinkingDiv.querySelector('.thinking-status');
+            if (statusEl) statusEl.innerHTML = '✅ 完成';
+            info.thinkingDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+            info.thinkingDiv.classList.remove('expanded');
+            info.thinkingDiv = null;
+            info.thinkingBuffer = '';
+        };
+
+        /**
+         * 封闭指定协同发言块的正文段：移除流式光标，下一段正文将新建容器。
+         */
+        const finalizeCollabContent = (info) => {
+            if (!info || !info.contentEl) return;
+            info.contentEl.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
+            info.contentEl = null;
+            info.contentBuffer = '';
+        };
+
+        /**
+         * 固化并释放所有协同发言块（协同结束或流结束时调用）。
+         * 并行发言下同时存在多个活跃块，不能只收尾一个，否则其余块的「思考中」转圈不会停。
+         */
+        const finalizeAllCollabBlocks = () => {
+            for (const key of Object.keys(collabBlockMap)) {
+                finalizeCollabThinking(collabBlockMap[key]);
+                finalizeCollabContent(collabBlockMap[key]);
+                delete collabBlockMap[key];
+            }
+        };
+
+        /**
+         * 协同发言块的索引键：优先用后端下发的 turn（一次发言），
+         * 缺失时退到角色名，至少保证同一角色的内容不会散开。
+         */
+        const collabBlockKey = (event) => event.turn || event.agent || 'Agent';
+
+        /**
+         * 获取或创建协同发言块（含 💬 角色名标题）。
+         * 每个 turn 一个块，事件交错到达也各归各块；块的位置按首个事件到达顺序确定。
+         */
+        const getOrCreateCollabBlock = (event) => {
+            const key = collabBlockKey(event);
+            const existing = collabBlockMap[key];
+            if (existing) {
+                return existing;
+            }
+            // 协同发言开始，先封闭主 Agent 的正文
+            finalizeCurrentText();
+            const agent = event.agent || 'Agent';
+            const block = document.createElement('div');
+            block.className = 'collab-agent-message';
+            block.innerHTML = `<div class="collab-agent-name">💬 ${this.escapeHtml(agent)}</div>`;
+            (this._currentCollabBody || contentDiv).appendChild(block);
+            collabBlockMap[key] = { agent, block, contentEl: null, contentBuffer: '', thinkingDiv: null, thinkingBuffer: '' };
+            return collabBlockMap[key];
+        };
+
+        /**
+         * 处理 COLLABORATE_AGENT_THINKING 事件：在该 Agent 的发言块内用折叠卡片展示推理过程。
+         *
+         * <p>思考卡片与正文容器交替追加在发言块末尾，保持「先思考后回答」的时序；
+         * 若把思考增量当作正文 chunk 渲染，会逐行碎片化夹在发言里。</p>
+         */
+        const handleCollabAgentThinking = (event) => {
+            const info = getOrCreateCollabBlock(event);
+            if (!info.thinkingDiv) {
+                // 新一轮思考开始：先封闭上一段正文，让思考卡片落在它之后
+                finalizeCollabContent(info);
+                const card = document.createElement('div');
+                card.className = 'thinking-card expanded';
+                card.innerHTML = `<div class="thinking-header" onclick="this.parentElement.classList.toggle('expanded')"><span class="tool-call-icon">💭</span><span class="thinking-name">思考过程</span><span class="thinking-status"><span class="tool-call-spinner"></span>思考中</span><span class="tool-call-toggle">▼</span></div><div class="thinking-body"></div>`;
+                info.block.appendChild(card);
+                info.thinkingDiv = card;
+                info.thinkingBuffer = '';
+            }
+            info.thinkingBuffer += event.content || '';
+            const bodyEl = info.thinkingDiv.querySelector('.thinking-body');
+            bodyEl.textContent = info.thinkingBuffer;
+            const cursor = document.createElement('span');
+            cursor.className = 'streaming-cursor';
+            bodyEl.appendChild(cursor);
         };
 
         /**
@@ -1471,6 +1906,7 @@ class TinyClawConsole {
                     // 将协同卡片的 body 作为后续 Agent 发言的容器
                     currentTextDiv = null;
                     currentTextContent = '';
+                    finalizeAllCollabBlocks();
                     // 保存协同卡片引用，供后续事件使用
                     this._currentCollabCard = collabCard;
                     this._currentCollabBody = collabCard.querySelector('.subagent-body');
@@ -1494,31 +1930,31 @@ class TinyClawConsole {
                     break;
                 }
                 case 'COLLABORATE_AGENT_CHUNK': {
-                    // 流式增量：逐 chunk 追加到当前 Agent 的发言区域
-                    const chunkAgent = event.agent || 'Agent';
-                    const chunkContent = event.content || '';
-                    const chunkCollabBody = this._currentCollabBody || contentDiv;
-                    if (!currentTextDiv || currentTextDiv.dataset.collabAgent !== chunkAgent) {
-                        // 新 Agent 开始发言，创建新的发言区域
-                        finalizeCurrentText();
-                        const agentBlock = document.createElement('div');
-                        agentBlock.className = 'collab-agent-message';
-                        agentBlock.innerHTML = `<div class="collab-agent-name">💬 ${this.escapeHtml(chunkAgent)}</div><div class="collab-agent-content"></div>`;
-                        chunkCollabBody.appendChild(agentBlock);
-                        currentTextDiv = agentBlock.querySelector('.collab-agent-content');
-                        currentTextDiv.dataset.collabAgent = chunkAgent;
-                        currentTextContent = '';
+                    // 流式增量：逐 chunk 追加到本次发言（turn）对应的区域
+                    const info = getOrCreateCollabBlock(event);
+                    // 正文开始意味着本轮思考结束，固化思考折叠卡片
+                    finalizeCollabThinking(info);
+                    if (!info.contentEl) {
+                        info.contentEl = document.createElement('div');
+                        info.contentEl.className = 'collab-agent-content';
+                        info.block.appendChild(info.contentEl);
+                        info.contentBuffer = '';
                     }
-                    currentTextContent += chunkContent;
+                    info.contentBuffer += event.content || '';
                     if (typeof marked !== 'undefined') {
-                        currentTextDiv.classList.add('markdown-body');
-                        currentTextDiv.innerHTML = marked.parse(currentTextContent) + '<span class="streaming-cursor"></span>';
+                        info.contentEl.classList.add('markdown-body');
+                        info.contentEl.innerHTML = marked.parse(info.contentBuffer) + '<span class="streaming-cursor"></span>';
                     } else {
-                        currentTextDiv.innerHTML = this.escapeHtml(currentTextContent).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
+                        info.contentEl.innerHTML = this.escapeHtml(info.contentBuffer).replace(/\n/g, '<br>') + '<span class="streaming-cursor"></span>';
                     }
                     break;
                 }
+                case 'COLLABORATE_AGENT_THINKING': {
+                    handleCollabAgentThinking(event);
+                    break;
+                }
                 case 'COLLABORATE_END': {
+                    finalizeAllCollabBlocks();
                     finalizeCurrentText();
                     // 更新协同卡片状态
                     if (this._currentCollabCard) {
@@ -1599,6 +2035,7 @@ class TinyClawConsole {
 
             // 流结束：将最后一段文本用 Markdown 渲染
             finalizeThinking();
+            finalizeAllCollabBlocks();
             finalizeCurrentText();
             // 移除所有残留的流式光标
             contentDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
@@ -1808,7 +2245,10 @@ class TinyClawConsole {
                 name: this.extractSessionName(s.key),
                 sessionId: s.key,
                 userId: this.extractUserId(s.key),
-                messageCount: s.messageCount
+                messageCount: s.messageCount,
+                owner: s.owner || '',
+                visibility: s.visibility || '',
+                progress: s.progress || null
             }));
             
             // 初始化过滤器
@@ -1892,7 +2332,7 @@ class TinyClawConsole {
         document.getElementById('nextPage').disabled = currentPage >= totalPages;
         
         if (pageSessions.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No sessions found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No sessions found</td></tr>';
             return;
         }
         
@@ -1902,9 +2342,11 @@ class TinyClawConsole {
                     <input type="checkbox" class="session-checkbox" value="${this.escapeHtml(s.sessionId)}">
                 </td>
                 <td class="col-id">${this.escapeHtml(s.id)}</td>
-                <td class="col-name">${this.escapeHtml(s.name)}</td>
+                <td class="col-name">${this.escapeHtml(s.name)}${this.renderProgressChip(s.progress)}</td>
                 <td class="col-session-id">${this.escapeHtml(s.sessionId)}</td>
                 <td class="col-user-id">${this.escapeHtml(s.userId)}</td>
+                <td class="col-owner">${this.renderOwnerCell(s.owner)}</td>
+                <td class="col-visibility">${this.renderVisibilityCell(s.visibility)}</td>
                 <td class="col-action">
                     <div class="action-buttons">
                         <button class="btn-edit" onclick="app.viewSessionDetail('${this.escapeHtml(s.sessionId)}')">Edit</button>
@@ -1913,6 +2355,44 @@ class TinyClawConsole {
                 </td>
             </tr>
         `).join('');
+    }
+
+    /**
+     * 渲染归属人单元格。
+     *
+     * <p>owner 形如 {@code u:<channel>:<senderId>}，展示时去掉 {@code u:} 前缀——
+     * 前缀是为了与聊天域区分命名空间，对看表格的人无意义。</p>
+     * <p>空 owner 是本特性上线前的历史会话，明示为 Legacy 而不是留白，
+     * 否则用户会以为是数据没加载出来。</p>
+     */
+    renderOwnerCell(owner) {
+        if (!owner) {
+            return '<span class="badge-legacy" title="本特性上线前的会话，对所有人可见">Legacy</span>';
+        }
+        const display = owner.startsWith('u:') ? owner.substring(2) : owner;
+        return `<span class="owner-tag" title="${this.escapeHtml(owner)}">${this.escapeHtml(display)}</span>`;
+    }
+
+    renderVisibilityCell(visibility) {
+        if (visibility === 'SHARED') {
+            return '<span class="badge-shared">Shared</span>';
+        }
+        if (visibility === 'PRIVATE') {
+            return '<span class="badge-private">Private</span>';
+        }
+        return '<span class="badge-legacy">—</span>';
+    }
+
+    /**
+     * 会话正在跑时在名称后面跟一个阶段小标
+     */
+    renderProgressChip(progress) {
+        if (!progress || !progress.phase) return '';
+        const steps = progress.hasKnownTotal
+            ? ` ${progress.completedSteps}/${progress.totalSteps}`
+            : '';
+        return `<span class="progress-chip" title="${this.escapeHtml(progress.detail || '')}">`
+            + `<span class="progress-chip-dot"></span>${this.escapeHtml(progress.phase)}${steps}</span>`;
     }
     
     bindSessionEvents() {

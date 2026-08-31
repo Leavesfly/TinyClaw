@@ -53,6 +53,14 @@ import java.util.Optional;
  */
 public class Config {
 
+    /**
+     * 配置结构版本。
+     * <p>
+     * 新建配置直接标记为当前版本；从文件加载时由 {@link ConfigMigrator} 在反序列化
+     * 之前写入原始 JSON，因此这里的默认值只对程序化构造的配置生效。
+     */
+    private int schemaVersion = ConfigMigrator.CURRENT_VERSION;
+
     private ModelsConfig models;                // 模型配置
     private AgentConfig agent;                  // Agent 配置
     private ChannelsConfig channels;            // 通道配置
@@ -81,6 +89,14 @@ public class Config {
     }
 
     // Getters and Setters
+    public int getSchemaVersion() {
+        return schemaVersion;
+    }
+
+    public void setSchemaVersion(int schemaVersion) {
+        this.schemaVersion = schemaVersion;
+    }
+
     public ModelsConfig getModels() {
         return models;
     }

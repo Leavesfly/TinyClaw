@@ -8,6 +8,8 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.session.SessionMeta;
+import io.leavesfly.tinyclaw.session.SessionProgress;
+import io.leavesfly.tinyclaw.session.SessionSearchHit;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
 import io.leavesfly.tinyclaw.collaboration.AgentMessage;
 import io.leavesfly.tinyclaw.collaboration.CollaborationRecord;
@@ -48,22 +50,33 @@ public class SessionsHandler extends BaseHandler {
     }
 
     /**
-     * 入口路由：预检通过后，按路径分发列表查询、历史记录获取或删除操作。
+     * 入口路由：预检通过后，按路径分发列表查询、检索、进度查询、历史记录获取或删除操作。
      * 路径中的 sessionKey 使用 URL 解码处理。
+     *
+     * <p><b>分支顺序有意义</b>：{@code /api/sessions/…} 的通用分支会把整段路径当作 sessionKey，
+     * 因此 {@code /search} 与 {@code /…/progress} 这两个子资源必须排在它前面，
+     * 否则会变成查一个名为 "search" 的会话。</p>
      */
     @Override
     protected boolean route(HttpExchange exchange, String path, String method, String corsOrigin)
             throws IOException {
         if (WebUtils.API_SESSIONS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
             // 只读元信息索引：列表查询不能把整个 sessions 目录的正文读进内存
+            String viewer = queryParam(exchange, "viewer");
             ArrayNode sessions = WebUtils.MAPPER.createArrayNode();
-            for (SessionMeta meta : sessionManager.listMeta()) {
+            for (SessionMeta meta : sessionManager.listMeta(viewer)) {
                 ObjectNode session = WebUtils.MAPPER.createObjectNode();
                 session.put("key", meta.getKey());
                 session.put("messageCount", meta.getMessageCount());
                 session.put("firstMessage", meta.getTitle() != null ? meta.getTitle() : "");
                 session.put("updated", meta.getUpdated() != null ? meta.getUpdated().toString() : "");
                 session.put("created", meta.getCreated() != null ? meta.getCreated().toString() : "");
+                session.put("owner", meta.getOwner() != null ? meta.getOwner() : "");
+                session.put("visibility", meta.getVisibility() != null
+                        ? meta.getVisibility().name() : "");
+                if (meta.getProgress() != null) {
+                    session.set("progress", progressNode(meta.getProgress()));
+                }
                 sessions.add(session);
             }
             WebUtils.sendJson(exchange, 200, sessions, corsOrigin);
@@ -81,6 +94,39 @@ public class SessionsHandler extends BaseHandler {
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("key", sessionKey);
             result.put("messageCount", 0);
+            WebUtils.sendJson(exchange, 200, result, corsOrigin);
+
+        } else if (isSearchPath(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            String query = queryParam(exchange, "q");
+            if (query == null || query.isBlank()) {
+                WebUtils.sendJson(exchange, 400, WebUtils.errorJson("q is required"), corsOrigin);
+                return true;
+            }
+            int limit = parseIntOrDefault(queryParam(exchange, "limit"), 0);
+            String viewer = queryParam(exchange, "viewer");
+
+            ArrayNode hits = WebUtils.MAPPER.createArrayNode();
+            for (SessionSearchHit hit : sessionManager.search(query, limit, viewer)) {
+                ObjectNode node = WebUtils.MAPPER.createObjectNode();
+                node.put("sessionKey", hit.sessionKey());
+                // 完整转录的绝对下标，与历史接口返回的消息顺序同一口径，前端可直接跳转
+                node.put("messageIndex", hit.messageIndex());
+                node.put("role", hit.role());
+                node.put("snippet", hit.snippet());
+                node.put("title", hit.title() != null ? hit.title() : "");
+                hits.add(node);
+            }
+            WebUtils.sendJson(exchange, 200, hits, corsOrigin);
+
+        } else if (isProgressPath(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
+            String key = progressSessionKey(path);
+            SessionProgress progress = sessionManager.getProgress(key);
+            ObjectNode result = WebUtils.MAPPER.createObjectNode();
+            result.put("sessionKey", key);
+            result.put("running", progress != null);
+            if (progress != null) {
+                result.set("progress", progressNode(progress));
+            }
             WebUtils.sendJson(exchange, 200, result, corsOrigin);
 
         } else if (path.startsWith(WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR)
@@ -113,6 +159,9 @@ public class SessionsHandler extends BaseHandler {
                 ObjectNode m = WebUtils.MAPPER.createObjectNode();
                 m.put("role", msg.getRole());
                 m.put("content", msg.getContent() != null ? msg.getContent() : "");
+                // 完整转录中的绝对下标，与搜索命中的 messageIndex 同一口径。
+                // 前端不得自己推算：摘要伪消息、过滤与气泡合并都会让数组下标与绝对下标错位
+                m.put("index", msgIdx);
                 // 思考过程（仅 assistant 消息可能有），供前端历史回放还原折叠卡片
                 if (msg.getThinking() != null && !msg.getThinking().isEmpty()) {
                     m.put("thinking", msg.getThinking());
@@ -160,6 +209,75 @@ public class SessionsHandler extends BaseHandler {
             return false;
         }
         return true;
+    }
+
+    // ==================== 路径与参数辅助 ====================
+
+    /** 检索子资源路径：{@code /api/sessions/search} */
+    private boolean isSearchPath(String path) {
+        return (WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR + "search").equals(path);
+    }
+
+    /** 进度子资源路径：{@code /api/sessions/{key}/progress} */
+    private boolean isProgressPath(String path) {
+        String prefix = WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR;
+        return path.startsWith(prefix)
+                && path.endsWith(WebUtils.PATH_SEPARATOR + "progress")
+                && path.length() > prefix.length() + "/progress".length();
+    }
+
+    private String progressSessionKey(String path) {
+        String prefix = WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR;
+        String middle = path.substring(prefix.length(),
+                path.length() - (WebUtils.PATH_SEPARATOR + "progress").length());
+        return URLDecoder.decode(middle, StandardCharsets.UTF_8);
+    }
+
+    private ObjectNode progressNode(SessionProgress progress) {
+        ObjectNode node = WebUtils.MAPPER.createObjectNode();
+        node.put("phase", progress.phase());
+        node.put("detail", progress.detail());
+        node.put("completedSteps", progress.completedSteps());
+        node.put("totalSteps", progress.totalSteps());
+        node.put("hasKnownTotal", progress.hasKnownTotal());
+        node.put("updatedAt", progress.updatedAt() != null
+                ? progress.updatedAt().toString() : "");
+        return node;
+    }
+
+    /**
+     * 读取查询参数，不存在返回 null。
+     *
+     * <p>参数值需要 URL 解码：会话搜索词与 viewer 标识都可能含空格、冒号与中文。</p>
+     */
+    private String queryParam(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isEmpty()) {
+            return null;
+        }
+        String prefix = name + "=";
+        for (String param : query.split("&")) {
+            if (param.startsWith(prefix)) {
+                return URLDecoder.decode(param.substring(prefix.length()), StandardCharsets.UTF_8);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 解析整数参数，非法值退回默认值。
+     *
+     * <p>不对非法 limit 报 400：它不影响语义正确性，掉回默认值比让用户看到一个错误更有用。</p>
+     */
+    private int parseIntOrDefault(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /**

@@ -20,6 +20,14 @@ public class SessionMeta {
     /** 首条用户消息的截断文本，作为会话标题预览 */
     private String title;
     private boolean hasSummary;
+    /** 会话归属人，null 表示尚未认领的历史会话 */
+    private String owner;
+    private SessionVisibility visibility = SessionVisibility.PRIVATE;
+    /**
+     * 当前进度卡，null 表示无进行中的长任务。
+     * <p>跟着索引一起落盘，使浏览器刷新后仍能续看。</p>
+     */
+    private SessionProgress progress;
 
     public SessionMeta() {
     }
@@ -45,8 +53,30 @@ public class SessionMeta {
                 .map(m -> truncateTitle(m.getContent()))
                 .orElse("");
         String summary = session.getSummary();
-        return new SessionMeta(session.getKey(), session.getCreated(), session.getUpdated(),
+        SessionMeta meta = new SessionMeta(session.getKey(), session.getCreated(), session.getUpdated(),
                 session.messageCount(), title, summary != null && !summary.isBlank());
+        meta.owner = session.getOwner();
+        meta.visibility = session.getVisibility();
+        meta.progress = session.getProgress();
+        return meta;
+    }
+
+    /**
+     * 对指定访问者是否可见。
+     *
+     * <p>与 {@link Session#isVisibleTo(String)} 保持同一套语义，但列表接口只能拿到元信息，
+     * 不能为了判可见性而把每个会话正文都加载一遍——那正是元信息索引要避开的开销。
+     * 代价是索引里不存 members，因此成员在列表阶段按 PRIVATE 会话处理；
+     * 成员仍可直接打开会话详情，那条路径读的是 {@link Session}。</p>
+     */
+    public boolean isVisibleTo(String viewer) {
+        if (viewer == null || viewer.isBlank()) {
+            return true;
+        }
+        if (owner == null || owner.isBlank()) {
+            return true;
+        }
+        return visibility == SessionVisibility.SHARED || owner.equals(viewer);
     }
 
     private static String truncateTitle(String content) {
@@ -100,5 +130,29 @@ public class SessionMeta {
 
     public void setHasSummary(boolean hasSummary) {
         this.hasSummary = hasSummary;
+    }
+
+    public String getOwner() {
+        return owner;
+    }
+
+    public void setOwner(String owner) {
+        this.owner = owner;
+    }
+
+    public SessionVisibility getVisibility() {
+        return visibility;
+    }
+
+    public void setVisibility(SessionVisibility visibility) {
+        this.visibility = visibility != null ? visibility : SessionVisibility.PRIVATE;
+    }
+
+    public SessionProgress getProgress() {
+        return progress;
+    }
+
+    public void setProgress(SessionProgress progress) {
+        this.progress = progress;
     }
 }

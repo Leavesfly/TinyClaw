@@ -274,7 +274,10 @@ LLM 调用示例（`tool_call`）：
 - `AgentOrchestrator.orchestrate(...)` 在调用者线程（通常是 ReActExecutor 的主线程）执行
 - 并行子任务通过 `CollaborationExecutorPool`（有界线程池）执行
 - 每个 `RoleAgent` 独立持有一份 `LLMProvider` 引用，但共享全局 OkHttpClient
-- 协同内部若再触发 `collaborate`，会被安全检查拦截（防递归爆炸）
+- **协同只能由主 Agent 发起**：`RoleAgent` 与子代理的工具集均通过 `ToolRegistry.exclude(...)`
+  剔除 `collaborate`，因此嵌套协同在工具可见性层面就不存在（而不是运行时拦截）。
+  编排器、各策略实例与协同线程池都是单例，嵌套会让流式回调、进度卡、策略内部状态
+  与线程池队列互相覆盖
 
 ---
 

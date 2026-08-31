@@ -117,7 +117,7 @@ Agent 可自主通过 `cron` 工具持久化调度需求，例如："每天早�
 
 | 工具 | 实现 | 说明 |
 |------|------|------|
-| `spawn` | `SpawnTool` / `SubagentManager` | 创建子代理执行独立任务；子代理有受限工具集与独立会话 |
+| `spawn` | `SpawnTool` / `SubagentManager` | 创建子代理执行独立任务；子代理有受限工具集（不含 `spawn` / `collaborate`）与独立会话 |
 | `collaborate` | `CollaborateTool` | 启动多 Agent 协同（7 种模式） |
 | `social_network` | `SocialNetworkTool` | 与 ClawdChat.ai 上的其他 Agent 通信 |
 
@@ -136,10 +136,14 @@ Agent 可自主通过 `cron` 工具持久化调度需求，例如："每天早�
 
 `spawn` 工具的幕后：
 
-- 为子代理构造**独立** `AgentRuntime`（复用同一 Provider）
-- 默认限制工具集（禁掉 `spawn` / `collaborate` 防止递归爆炸）
+- 为子代理构造**独立** `ReActExecutor`（复用同一 Provider）
+- 子代理工具集：定义声明了 `tools` 白名单时按白名单收窄，未声明时继承主 Agent 的完整工具集；
+  但 `spawn` 与 `collaborate` **无论哪种情况都不下发**（`ToolRegistry.exclude(...)`，白名单里显式写了
+  也不放行）：子代理不得再派生，协同只能由主 Agent 发起
+  （见 [11 · 多 Agent 协同 §11.10](11-multi-agent-collaboration.md)）
 - 子代理有独立 `sessionKey`，其历史不污染主会话
-- 使用独立线程执行，主线程等待结果 or 超时
+- 异步模式（`async=true`）提交到有界线程池（最大 8 并发 / 队列 16，满则拒绝并反馈调用方）；
+  同步模式（默认）在调用方线程内联执行，不另开线程、也无超时
 
 ---
 

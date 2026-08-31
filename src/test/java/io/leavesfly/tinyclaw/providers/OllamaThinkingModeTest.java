@@ -127,12 +127,68 @@ class OllamaThinkingModeTest {
         StreamResponseParser parser = new StreamResponseParser();
         LLMResponse response = parser.parseStreamResponse(source, callback);
     
-        // 行缓冲后，无换行的 token 级 chunk 会聚合到流结束一次性透出（避免碎片化事件）
+        // 无换行的 token 级 chunk 聚合成一个事件（避免碎片化），
+        // 冲刷时机是「首个正文 chunk 到达」而非流结束——见下方 ordering 测试
         assertEquals(1, thinkingChunks.size(), "无换行的思维链应聚合为 1 个 THINKING 事件");
         assertEquals("先比较整数部分，都是 9", String.join("", thinkingChunks));
         assertEquals("9.8 更大", content.toString(), "正文不应混入思维链内容");
         assertEquals("9.8 更大", response.getContent(), "最终响应的 content 不含思维链");
         System.out.println("【解析测试通过】THINKING 事件: " + thinkingChunks + ", 正文: " + content);
+    }
+
+    /**
+     * 解析测试：无换行的推理尾巴必须在<b>正文之前</b>透出。
+     *
+     * <p>回归的缺陷：思维链按行缓冲，不足软上限又不含换行的残余原先要等到流结束才冲刷，
+     * 而流结束在所有正文 chunk 之后。前端因此只能把思考卡片追加到正文后面，
+     * 界面上呈现为「回答已经结束了又冒出一个思考过程卡片」。</p>
+     *
+     * <p>本测试断言事件的相对顺序，而不只是内容——顺序才是那个缺陷的本质。</p>
+     */
+    @Test
+    void reasoningTailShouldFlushBeforeContent() throws Exception {
+        // 整段推理不含任何换行，且长度远低于 160 字符软上限：
+        // 这正是英文推理轨迹的常见形态，旧实现下必然留到流结束才发出
+        String sse = """
+                data: {"choices":[{"delta":{"reasoning_content":"The user asked a question. "}}]}
+
+                data: {"choices":[{"delta":{"reasoning_content":"Let me answer concisely."}}]}
+
+                data: {"choices":[{"delta":{"content":"答案是 "}}]}
+
+                data: {"choices":[{"delta":{"content":"42。"}}]}
+
+                data: [DONE]
+
+                """;
+        Buffer source = new Buffer().writeUtf8(sse);
+
+        // 按到达顺序记录事件类型，用于断言相位不倒置
+        List<String> order = new ArrayList<>();
+        StringBuilder thinking = new StringBuilder();
+        StringBuilder content = new StringBuilder();
+        LLMProvider.EnhancedStreamCallback callback = event -> {
+            if (event.getType() == StreamEvent.EventType.THINKING) {
+                order.add("THINKING");
+                thinking.append(event.getContent());
+            } else if (event.getType() == StreamEvent.EventType.CONTENT) {
+                order.add("CONTENT");
+                content.append(event.getContent());
+            }
+        };
+
+        new StreamResponseParser().parseStreamResponse(source, callback);
+
+        assertEquals("The user asked a question. Let me answer concisely.", thinking.toString(),
+                "推理内容应完整透出");
+        assertEquals("答案是 42。", content.toString(), "正文应完整且不含推理内容");
+
+        int firstContent = order.indexOf("CONTENT");
+        int lastThinking = order.lastIndexOf("THINKING");
+        assertTrue(firstContent >= 0 && lastThinking >= 0, "两类事件都应出现，实际: " + order);
+        assertTrue(lastThinking < firstContent,
+                "最后一个 THINKING 必须早于首个 CONTENT，否则前端会把思考卡片渲染到正文之后。实际顺序: " + order);
+        System.out.println("【顺序测试通过】事件顺序: " + order);
     }
     
     /**

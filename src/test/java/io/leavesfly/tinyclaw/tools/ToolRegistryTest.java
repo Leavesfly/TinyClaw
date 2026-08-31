@@ -230,6 +230,33 @@ class ToolRegistryTest {
         assertTrue(registry.list().isEmpty());
     }
 
+    // ==================== filter / exclude 派生注册表测试 ====================
+
+    @Test
+    @DisplayName("exclude: 剔除指定工具，其余保留且不影响原注册表")
+    void exclude_RemovesOnlyDeniedTools() {
+        registry.register(createMockTool("collaborate", "多 Agent 协同"));
+        registry.register(createMockTool("read_file", "读文件"));
+
+        ToolRegistry restricted = registry.exclude(List.of("collaborate"));
+
+        assertFalse(restricted.hasTool("collaborate"), "协同只能由主 Agent 发起，派生注册表不得包含 collaborate");
+        assertTrue(restricted.hasTool("read_file"));
+        // 派生不能反咬原注册表：主 Agent 自己还要用 collaborate
+        assertTrue(registry.hasTool("collaborate"));
+    }
+
+    @Test
+    @DisplayName("exclude: 未命中的名字与空名单都等价于完整副本")
+    void exclude_UnknownOrEmptyNames_KeepsAllTools() {
+        registry.register(createMockTool("read_file", "读文件"));
+        registry.register(createMockTool("exec", "执行命令"));
+
+        assertEquals(2, registry.exclude(List.of("not-registered")).count());
+        assertEquals(2, registry.exclude(List.of()).count());
+        assertEquals(2, registry.exclude(null).count());
+    }
+
     // ==================== 辅助方法 ====================
 
     private Tool createMockTool(String name, String description) {

@@ -43,10 +43,20 @@ public class NodeResult {
     /** 重试次数 */
     private int retryCount;
     
-    public NodeResult(String nodeId) {
-        this.nodeId = nodeId;
+    /**
+     * 无参构造器，供 Jackson 从检查点反序列化使用。
+     *
+     * <p>agentResults 先初始化为空集合：反序列化时若 JSON 中缺该字段，
+     * 不初始化就会让 {@code getAgentResults()} 的调用方拿到 null。</p>
+     */
+    public NodeResult() {
         this.status = Status.PENDING;
         this.agentResults = new HashMap<>();
+    }
+
+    public NodeResult(String nodeId) {
+        this();
+        this.nodeId = nodeId;
     }
     
     /**

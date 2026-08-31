@@ -90,6 +90,32 @@ public class ProvidersConfig {
     }
 
     /**
+     * 按名称查找 Provider 配置。
+     *
+     * <p>{@code models.definitions} 里的 provider 字段是字符串，而本类的 provider 是固定字段，
+     * 两边的转接在多个调用方都需要，收在这里避免每处各写一份 switch
+     * ——新增 provider 时分散的副本必然漏改。</p>
+     *
+     * @param name provider 名称；未知名称返回 null
+     */
+    @JsonIgnore
+    public ProviderConfig byName(String name) {
+        if (name == null) {
+            return null;
+        }
+        return switch (name) {
+            case "openrouter" -> openrouter;
+            case "openai" -> openai;
+            case "anthropic" -> anthropic;
+            case "zhipu" -> zhipu;
+            case "dashscope" -> dashscope;
+            case "gemini" -> gemini;
+            case "ollama" -> ollama;
+            default -> null;
+        };
+    }
+
+    /**
      * 获取所有 Provider，按优先级排序
      */
     @JsonIgnore

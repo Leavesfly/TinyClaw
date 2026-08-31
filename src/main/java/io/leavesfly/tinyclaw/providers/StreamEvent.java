@@ -3,6 +3,7 @@ package io.leavesfly.tinyclaw.providers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -18,6 +19,7 @@ import java.util.Map;
  * - SUBAGENT_END: 子代理执行结束
  * - COLLABORATE_START: 多 Agent 协同开始
  * - COLLABORATE_AGENT: 协同中的 Agent 发言
+ * - COLLABORATE_AGENT_THINKING: 协同中的 Agent 思考/推理过程（可选展示）
  * - COLLABORATE_END: 多 Agent 协同结束
  * - THINKING: 思考/推理过程（可选展示）
  */
@@ -46,6 +48,8 @@ public class StreamEvent {
         COLLABORATE_AGENT,
         /** 协同中的 Agent 发言增量（流式 chunk） */
         COLLABORATE_AGENT_CHUNK,
+        /** 协同中的 Agent 思考/推理过程 */
+        COLLABORATE_AGENT_THINKING,
         /** 多 Agent 协同结束 */
         COLLABORATE_END,
         /** 思考/推理过程 */
@@ -117,10 +121,28 @@ public class StreamEvent {
                 Map.of("agent", safe(agentName)));
     }
     
-    /** 创建协同 Agent 发言增量事件（流式 chunk） */
-    public static StreamEvent collaborateAgentChunk(String agentName, String chunk) {
+    /**
+     * 创建协同 Agent 发言增量事件（流式 chunk）
+     *
+     * @param agentName 角色名
+     * @param chunk     文本增量
+     * @param turn      发言轮次标识（同一次发言的所有事件共用，见 {@link #withScope}）
+     */
+    public static StreamEvent collaborateAgentChunk(String agentName, String chunk, String turn) {
         return new StreamEvent(EventType.COLLABORATE_AGENT_CHUNK, chunk,
-                Map.of("agent", safe(agentName)));
+                Map.of("agent", safe(agentName), "turn", safe(turn)));
+    }
+    
+    /**
+     * 创建协同 Agent 思考过程事件
+     *
+     * @param agentName 角色名
+     * @param content   推理内容增量
+     * @param turn      发言轮次标识
+     */
+    public static StreamEvent collaborateAgentThinking(String agentName, String content, String turn) {
+        return new StreamEvent(EventType.COLLABORATE_AGENT_THINKING, content,
+                Map.of("agent", safe(agentName), "turn", safe(turn)));
     }
     
     /** 创建协同结束事件 */
@@ -132,6 +154,27 @@ public class StreamEvent {
     /** 创建思考过程事件 */
     public static StreamEvent thinking(String content) {
         return new StreamEvent(EventType.THINKING, content, null);
+    }
+    
+    /**
+     * 为嵌套执行（子代理 / 协同角色）产生的过程事件补上归属标识。
+     *
+     * <p>事件类型与内容原样保留，仅在 metadata 追加归属字段（子代理用 {@code taskId}，
+     * 协同角色用 {@code agent} 与 {@code turn}）。工具调用这类结构化事件因此能原样上传，
+     * 前端据此把卡片渲染进对应的子代理卡片或本次发言块，而不是当作主 Agent 自己的
+     * 工具调用；也避开了降级成 {@code format()} 文本后碎片化混入正文的旧路径。</p>
+     *
+     * @param key   归属字段名（taskId / agent / turn）
+     * @param value 归属字段值
+     * @return 带归属标识的新事件（原事件不变）
+     */
+    public StreamEvent withScope(String key, String value) {
+        Map<String, Object> scoped = new HashMap<>();
+        if (metadata != null) {
+            scoped.putAll(metadata);
+        }
+        scoped.put(key, safe(value));
+        return new StreamEvent(type, content, scoped);
     }
     
     /**
@@ -225,6 +268,7 @@ public class StreamEvent {
                 yield "\n💬 [" + agent + "]: " + content + "\n";
             }
             case COLLABORATE_AGENT_CHUNK -> content;
+            case COLLABORATE_AGENT_THINKING -> "💭 " + ensureTrailingNewline(content);
             case COLLABORATE_END -> "\n🎯 协同完成\n";
             case THINKING -> "💭 " + ensureTrailingNewline(content);
         };
@@ -258,6 +302,7 @@ public class StreamEvent {
                 case THINKING -> node.put("content", content != null ? content : "");
                 case TOOL_START -> {
                     node.put("tool", content != null ? content : "");
+                    putScopeFields(node);
                     Map<String, Object> args = getMeta("args");
                     if (args != null && !args.isEmpty()) {
                         ObjectNode argsNode = MAPPER.createObjectNode();
@@ -282,6 +327,7 @@ public class StreamEvent {
                     node.put("tool", toolName != null ? toolName : "");
                     node.put("success", Boolean.TRUE.equals(success));
                     node.put("result", content != null ? content : "");
+                    putScopeFields(node);
                 }
                 case SUBAGENT_START -> {
                     String taskId = getMeta("taskId");
@@ -321,6 +367,13 @@ public class StreamEvent {
                     String agent = getMeta("agent");
                     node.put("agent", agent != null ? agent : "");
                     node.put("content", content != null ? content : "");
+                    putScopeFields(node);
+                }
+                case COLLABORATE_AGENT_THINKING -> {
+                    String agent = getMeta("agent");
+                    node.put("agent", agent != null ? agent : "");
+                    node.put("content", content != null ? content : "");
+                    putScopeFields(node);
                 }
                 case COLLABORATE_END -> {
                     String mode = getMeta("mode");
@@ -333,6 +386,26 @@ public class StreamEvent {
         } catch (Exception e) {
             // 序列化失败时降级为纯文本内容，保证流不中断
             return "{\"type\":\"CONTENT\",\"content\":" + escapeJsonString(content) + "}";
+        }
+    }
+
+    /**
+     * 输出嵌套归属字段（若有），供前端把卡片渲染进对应容器。
+     * {@code turn} 标识一次发言，使并行协同下交错到达的事件能各归各块。
+     * 主 Agent 自己的事件无这些字段，前端落回顶层消息容器。
+     */
+    private void putScopeFields(ObjectNode node) {
+        String taskId = getMeta("taskId");
+        if (taskId != null && !taskId.isEmpty()) {
+            node.put("taskId", taskId);
+        }
+        String agent = getMeta("agent");
+        if (agent != null && !agent.isEmpty()) {
+            node.put("agent", agent);
+        }
+        String turn = getMeta("turn");
+        if (turn != null && !turn.isEmpty()) {
+            node.put("turn", turn);
         }
     }
 

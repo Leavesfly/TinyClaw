@@ -13,9 +13,11 @@ import io.leavesfly.tinyclaw.hooks.HookDispatcher;
 import io.leavesfly.tinyclaw.hooks.HookEvent;
 import io.leavesfly.tinyclaw.bus.LastContact;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.memory.MemoryScope;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.session.SessionManager;
+import io.leavesfly.tinyclaw.session.SessionVisibility;
 import io.leavesfly.tinyclaw.util.StringUtils;
 
 import java.util.List;
@@ -190,6 +192,7 @@ class MessageRouter {
 
         List<Message> messages = buildContext(sessionKey, msg);
         sessions.addMessage(sessionKey, "user", effectiveContent);
+        claimSessionOwner(sessionKey, msg);
         sessions.save(sessionKey);
 
         ProviderComponents comps = providerManager.getComponents();
@@ -241,6 +244,30 @@ class MessageRouter {
             logger.info("SessionStart hook injected context", Map.of(
                     "session_key", sessionKey == null ? "" : sessionKey));
         }
+    }
+
+    /**
+     * 为会话认领归属人。
+     *
+     * <p>在第一条用户消息写入之后调用，此时会话一定已存在。{@code claimOwner} 幂等且不抢占，
+     * 因此群聊里后发言的人不会把会话归属抢过去。</p>
+     *
+     * <p>owner 编码直接用 {@link MemoryScope#ofUser}，与记忆层的用户域完全一致，
+     * 使两层身份可直接对等，而不是各自发明一套标识。</p>
+     *
+     * <p>默认可见性按 chatId 是否等于 senderId 分辨私聊与群聊：群聊会话天然是多人可见的，
+     * 默认设为私有会让同群其他人看不到自己参与过的会话。</p>
+     */
+    private void claimSessionOwner(String sessionKey, InboundMessage msg) {
+        String owner = MemoryScope.ofUser(msg.getChannel(), msg.getSenderId());
+        if (MemoryScope.GLOBAL.equals(owner)) {
+            // 拿不到发言人身份（如定时任务、心跳触发的消息）时不认领，
+            // 否则会把会话归到一个不存在的“全局用户”名下
+            return;
+        }
+        boolean group = msg.getChatId() != null && !msg.getChatId().equals(msg.getSenderId());
+        sessions.claimOwner(sessionKey, owner,
+                group ? SessionVisibility.SHARED : SessionVisibility.PRIVATE);
     }
 
     /**

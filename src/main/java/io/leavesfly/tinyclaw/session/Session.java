@@ -6,7 +6,9 @@ import io.leavesfly.tinyclaw.providers.Message;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -18,6 +20,11 @@ import java.util.concurrent.locks.ReentrantLock;
  * LLM 上下文的起点，早于该位置的消息已被 summary 覆盖，不再送入模型，但仍完整保留在
  * 存储中供历史回放。压缩上下文因此不再销毁历史，也不会让 {@link ToolCallRecord} 的
  * 绝对下标失效。</p>
+ *
+ * <h2>身份与可见性</h2>
+ * <p>{@link #owner} / {@link #visibility} / {@link #members} 把“这是谁的会话”显式落到会话上。
+ * owner 编码复用记忆层的 {@code u:<channel>:<senderId>} 格式，使两层的身份可直接对应。
+ * owner 为空的历史会话视为 legacy，对所有请求可见——过滤能力不得把已有数据静默隐藏。</p>
  *
  * <h2>线程安全</h2>
  * <p>Web HTTP 线程池、Agent 主循环、摘要守护线程会并发访问同一会话，故所有读写都在
@@ -43,6 +50,24 @@ public class Session {
      */
     private int contextStartIndex;
 
+    /** 会话归属人，形如 {@code u:<channel>:<senderId>}；null 表示尚未认领的历史会话 */
+    private String owner;
+
+    /** 可见性，默认仅归属人可见 */
+    private SessionVisibility visibility = SessionVisibility.PRIVATE;
+
+    /** 除 owner 之外的可见成员，用 LinkedHashSet 保留加入顺序便于展示 */
+    private Set<String> members = new LinkedHashSet<>();
+
+    /**
+     * 当前进度卡，null 表示无进行中的长任务。
+     *
+     * <p>不写转录（参见 {@link SessionProgress}），因此对 Jackson 屏蔽；
+     * 它经 {@link SessionMeta} 进入会话索引。</p>
+     */
+    @JsonIgnore
+    private SessionProgress progress;
+
     /** 会话内所有读写的互斥锁 */
     @JsonIgnore
     private final ReentrantLock lock = new ReentrantLock();
@@ -58,6 +83,10 @@ public class Session {
     /** summary / contextStartIndex 是否存在未落盘的变更 */
     @JsonIgnore
     private boolean compactionDirty;
+
+    /** owner / visibility / members 是否存在未落盘的变更 */
+    @JsonIgnore
+    private boolean identityDirty;
 
     /** 会话已被删除：阻止仍持有引用的异步任务把它写回磁盘（僵尸复活） */
     @JsonIgnore
@@ -180,6 +209,171 @@ public class Session {
         lock.lock();
         try {
             this.contextStartIndex = Math.max(0, contextStartIndex);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // ==================== 身份与可见性 ====================
+
+    public String getOwner() {
+        lock.lock();
+        try {
+            return owner;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 直接设置 owner。仅供反序列化与管理操作使用；
+     * 消息链路请用 {@link #claimOwner(String)}，它不会抢占已有归属。
+     */
+    public void setOwner(String owner) {
+        lock.lock();
+        try {
+            this.owner = owner;
+            this.identityDirty = true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 认领归属：仅当前无 owner 时写入。
+     *
+     * <p>每条消息都会调本方法，因此必须幂等且不覆盖：群聊里后发言的人不应当把会话
+     * 从创建者手里抢过去，否则会话归属会随最后一个发言者漂移。</p>
+     *
+     * @param candidate 候选归属人；空值被忽略
+     * @return 实际写入返回 true
+     */
+    public boolean claimOwner(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        lock.lock();
+        try {
+            if (owner != null && !owner.isBlank()) {
+                return false;
+            }
+            this.owner = candidate;
+            this.identityDirty = true;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public SessionVisibility getVisibility() {
+        lock.lock();
+        try {
+            return visibility;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void setVisibility(SessionVisibility visibility) {
+        lock.lock();
+        try {
+            SessionVisibility target = visibility != null ? visibility : SessionVisibility.PRIVATE;
+            if (target != this.visibility) {
+                this.visibility = target;
+                this.identityDirty = true;
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public Set<String> getMembers() {
+        lock.lock();
+        try {
+            return new LinkedHashSet<>(members);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void setMembers(Set<String> members) {
+        lock.lock();
+        try {
+            this.members = members != null ? new LinkedHashSet<>(members) : new LinkedHashSet<>();
+            this.identityDirty = true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 添加可见成员，实际新增时返回 true
+     */
+    public boolean addMember(String member) {
+        if (member == null || member.isBlank()) {
+            return false;
+        }
+        lock.lock();
+        try {
+            if (!members.add(member)) {
+                return false;
+            }
+            this.identityDirty = true;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 判定会话对指定访问者是否可见。
+     *
+     * <p>两个故意开放的口子：</p>
+     * <ul>
+     *   <li>{@code viewer} 为空 → 可见。调用方未声明身份就不过滤，Web 控制台当前只有单密码
+     *       鉴权、没有用户身份，若默认全部不可见会直接把控制台变成空列表。</li>
+     *   <li>{@code owner} 为空 → 可见。本特性上线前的历史会话都没有归属，
+     *       把它们当作不可见等于升级后历史会话集体消失。</li>
+     * </ul>
+     */
+    public boolean isVisibleTo(String viewer) {
+        if (viewer == null || viewer.isBlank()) {
+            return true;
+        }
+        lock.lock();
+        try {
+            if (owner == null || owner.isBlank()) {
+                return true;
+            }
+            return visibility == SessionVisibility.SHARED
+                    || owner.equals(viewer)
+                    || members.contains(viewer);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // ==================== 进度卡 ====================
+
+    @JsonIgnore
+    public SessionProgress getProgress() {
+        lock.lock();
+        try {
+            return progress;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 更新或清除进度卡。传 null 表示任务结束。
+     *
+     * <p>不标脏位：进度不进转录，也不应该因为进度变化而触发一次转录写盘。</p>
+     */
+    public void setProgress(SessionProgress progress) {
+        lock.lock();
+        try {
+            this.progress = progress;
         } finally {
             lock.unlock();
         }
@@ -406,16 +600,18 @@ public class Session {
                     ? new ArrayList<>(toolCallRecords.subList(persistedRecordCount, toolCallRecords.size()))
                     : List.of();
 
-            if (newMessages.isEmpty() && newRecords.isEmpty() && !compactionDirty) {
+            if (newMessages.isEmpty() && newRecords.isEmpty() && !compactionDirty && !identityDirty) {
                 return;
             }
 
             writer.write(new Delta(persistedMessageCount, newMessages, newRecords,
-                    compactionDirty, summary, contextStartIndex));
+                    compactionDirty, summary, contextStartIndex,
+                    identityDirty, new Identity(owner, visibility, new LinkedHashSet<>(members))));
 
             persistedMessageCount = messages.size();
             persistedRecordCount = toolCallRecords.size();
             compactionDirty = false;
+            identityDirty = false;
         } finally {
             lock.unlock();
         }
@@ -430,6 +626,7 @@ public class Session {
             persistedMessageCount = messages.size();
             persistedRecordCount = toolCallRecords.size();
             compactionDirty = false;
+            identityDirty = false;
         } finally {
             lock.unlock();
         }
@@ -442,6 +639,7 @@ public class Session {
         lock.lock();
         try {
             return compactionDirty
+                    || identityDirty
                     || messages.size() > persistedMessageCount
                     || toolCallRecords.size() > persistedRecordCount;
         } finally {
@@ -466,7 +664,23 @@ public class Session {
                  List<ToolCallRecord> newRecords,
                  boolean compactionChanged,
                  String summary,
-                 int contextStartIndex) {
+                 int contextStartIndex,
+                 boolean identityChanged,
+                 Identity identity) {
+    }
+
+    /**
+     * 身份快照，随增量一并交给存储层。
+     *
+     * <p>身份三个字段必须作为一个整体写入：存储层按“最后一行胜”读取，
+     * 分字段写会让只改了 visibility 的一行把 members 清空。</p>
+     */
+    record Identity(String owner, SessionVisibility visibility, Set<String> members) {
+
+        /** 是否已有归属或成员，均为空时无需写入 meta 行 */
+        boolean isEmpty() {
+            return (owner == null || owner.isBlank()) && members.isEmpty();
+        }
     }
 
     /**

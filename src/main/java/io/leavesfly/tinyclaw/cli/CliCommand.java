@@ -87,7 +87,10 @@ public abstract class CliCommand {
     }
 
     /**
-     * 加载配置文件，失败时打印友好提示
+     * 加载配置文件，失败时打印友好提示。
+     *
+     * <p>启动前先过一遍遗留结构迁移（版本已最新时不写盘），使得后续所有组件读到的都是
+     * 当前版本的配置，而不是让每个消费方自己兼容历史字段。</p>
      *
      * @return Config 对象，失败返回 null
      */
@@ -101,7 +104,13 @@ public abstract class CliCommand {
         }
 
         try {
-            return ConfigLoader.load(configPath);
+            ConfigLoader.LoadResult result = ConfigLoader.loadAndMigrate(configPath);
+            if (result.persisted()) {
+                System.out.println(LOGO + " 配置已自动迁移至 v" + result.migration().toVersion()
+                        + "（原文件已备份）");
+                result.appliedMigrations().forEach(applied -> System.out.println("  • " + applied));
+            }
+            return result.config();
         } catch (Exception e) {
             System.err.println();
             System.err.println(LOGO + " 配置文件加载失败");
@@ -109,8 +118,8 @@ public abstract class CliCommand {
             System.err.println("  原因: " + e.getMessage());
             System.err.println("  路径: " + configPath);
             System.err.println();
-            System.err.println("请检查配置文件格式是否正确，或重新运行:");
-            System.err.println("  tinyclaw onboard");
+            System.err.println("请检查配置文件格式是否正确，或运行:");
+            System.err.println("  tinyclaw doctor");
             System.err.println();
             return null;
         }
@@ -201,16 +210,7 @@ public abstract class CliCommand {
      * 根据 provider 名称从 ProvidersConfig 中查找对应的 ProviderConfig。
      */
     private ProvidersConfig.ProviderConfig resolveProviderConfig(ProvidersConfig providers, String providerName) {
-        return switch (providerName) {
-            case "openrouter" -> providers.getOpenrouter();
-            case "openai" -> providers.getOpenai();
-            case "anthropic" -> providers.getAnthropic();
-            case "zhipu" -> providers.getZhipu();
-            case "dashscope" -> providers.getDashscope();
-            case "gemini" -> providers.getGemini();
-            case "ollama" -> providers.getOllama();
-            default -> null;
-        };
+        return providers.byName(providerName);
     }
 
     /**

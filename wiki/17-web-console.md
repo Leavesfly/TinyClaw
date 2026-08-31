@@ -168,8 +168,19 @@ Authorization: Basic YWRtaW46dGlueWNsYXc=
 | `TOOL_START` | 工具调用开始（带 `tool`、`args`） |
 | `TOOL_END` | 工具调用结束（带 `tool`、`success`） |
 | `SUBAGENT_START` / `SUBAGENT_CONTENT` / `SUBAGENT_END` | 子代理（`spawn` 工具）生命周期 |
+| `SUBAGENT_THINKING` | 子代理的思考/推理过程（卡片内折叠展示） |
 | `COLLABORATE_START` / `COLLABORATE_AGENT` / `COLLABORATE_AGENT_CHUNK` / `COLLABORATE_END` | 多 Agent 协同生命周期 |
+| `COLLABORATE_AGENT_THINKING` | 协同 Agent 的思考/推理过程（发言块内折叠展示） |
 | `THINKING` | 可选的思考/推理过程 |
+
+协同发言类事件（`COLLABORATE_AGENT_CHUNK` / `COLLABORATE_AGENT_THINKING`）带 `agent` 与 `turn`：`turn` 标识
+一次发言（由 `RoleAgent.speakStream` 生成），前端按 `turn` 而非「当前块」建发言块索引。并行协同
+（Tasks 模式 / 并行工作流节点）下多个 Agent 的事件交错到达时各归各块，顺序型多轮发言则因 `turn`
+不同自然分块。
+
+嵌套执行的工具调用（子代理 / 协同角色内部的工具）仍用 `TOOL_START` / `TOOL_END`，但额外带归属字段
+`taskId`（子代理）或 `agent` + `turn`（协同角色），前端据此把工具卡片渲染进对应的子代理卡片或
+本次发言块内；无这些字段时属于主 Agent，渲染在顶层消息容器。
 
 ### 17.6.3 结束与错误标志
 

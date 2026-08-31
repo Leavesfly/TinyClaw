@@ -9,12 +9,24 @@ import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 单个Agent执行器
  * 封装Agent的执行能力，用于多Agent协同场景
  */
 public class RoleAgent {
+    
+    /**
+     * 协同角色一律拿不到的工具：协同只能由主 Agent 发起。
+     *
+     * <p>{@code collaborate} 在注册表里是单实例，其 orchestrator、各策略实例与公共线程池
+     * 也都是单例：角色在协同中再调它，等于让同一套可变状态自我嵌套——流式回调与
+     * sessionKey 被内层覆写且不会还原，内层结束时的 clearProgress 会抹掉外层的进度卡，
+     * 讨论策略进入时的 resetState 会清空外层的投票与共识，并行波次里还会出现外层线程
+     * 等待排在同一队列尾部的内层任务。协同要嵌套得先有独立的执行上下文，这里先断掉。</p>
+     */
+    private static final List<String> DENIED_TOOLS = List.of(CollaborateTool.NAME);
     
     /** Agent唯一标识（格式：collab-<sessionId>-<sequence>） */
     private final String agentId;
@@ -33,6 +45,16 @@ public class RoleAgent {
     
     /** 基础系统提示词（可选，继承自主 Agent 的核心身份信息） */
     private final String baseSystemPrompt;
+    
+    /**
+     * 发言轮次计数器，为每次流式发言生成唯一的 turn 标识。
+     *
+     * <p>前端按 turn 而非「当前发言块」给协同发言分块：并行协同（Tasks 模式 / 并行工作流节点）
+     * 下多个 Agent 的事件交错到达，只认「当前块」会把同一次发言拆成多段；而顺序型多轮辩论
+     * 里同一 Agent 的两轮发言 turn 不同，天然分成两块。用 Atomic 计数是因为同一个 RoleAgent
+     * 可能被并行波次里的多个任务同时调用。</p>
+     */
+    private final AtomicInteger turnSeq = new AtomicInteger();
     
     /**
      * 构造 RoleAgent，使用外部传入的共享 SessionManager。
@@ -63,10 +85,11 @@ public class RoleAgent {
         String effectiveModel = (role.getModel() != null && !role.getModel().isEmpty())
                 ? role.getModel() : model;
 
-        // 按角色的工具白名单过滤工具集，实现差异化工具权限
-        ToolRegistry effectiveTools = role.hasToolRestrictions()
+        // 按角色的工具白名单过滤工具集，实现差异化工具权限；
+        // 再统一剥掉协同工具自身，白名单里显式写了也不放行
+        ToolRegistry effectiveTools = (role.hasToolRestrictions()
                 ? tools.filter(role.getAllowedTools())
-                : tools;
+                : tools).exclude(DENIED_TOOLS);
 
         this.reActExecutor = new ReActExecutor(provider, effectiveTools, sessionManager,
                 effectiveModel, null, maxIterations);
@@ -99,7 +122,7 @@ public class RoleAgent {
      * 用户无需等待完整回复即可看到 Agent 的发言过程。
      *
      * @param context  共享上下文
-     * @param callback 流式回调，接收 COLLABORATE_AGENT_CHUNK 事件
+     * @param callback 流式回调，接收 COLLABORATE_AGENT_CHUNK / COLLABORATE_AGENT_THINKING 事件
      * @return Agent 的完整回复内容
      */
     public String speakStream(SharedContext context, LLMProvider.EnhancedStreamCallback callback) {
@@ -108,19 +131,41 @@ public class RoleAgent {
 
     /**
      * Agent 流式发言（带自定义提示）
-     * <p>LLM 生成回复时逐 chunk 通过 {@link StreamEvent#collaborateAgentChunk} 事件输出。
+     * <p>LLM 生成回复时逐 chunk 通过 {@link StreamEvent#collaborateAgentChunk} 事件输出，
+     * 推理过程另走 {@link StreamEvent#collaborateAgentThinking} 事件。本次发言的所有事件
+     * 共用同一个 turn 标识，前端据此把它们聚到同一个发言块内。
      *
      * @param context      共享上下文
      * @param customPrompt 自定义提示（追加到系统提示后）
-     * @param callback     流式回调，接收 COLLABORATE_AGENT_CHUNK 事件
+     * @param callback     流式回调，接收 COLLABORATE_AGENT_CHUNK / COLLABORATE_AGENT_THINKING 事件
      * @return Agent 的完整回复内容
      */
     public String speakStream(SharedContext context, String customPrompt,
                               LLMProvider.EnhancedStreamCallback callback) {
-        // 将 LLM 的流式 CONTENT chunk 转换为 COLLABORATE_AGENT_CHUNK 事件
-        LLMProvider.StreamCallback chunkRelay = chunk ->
-                callback.onEvent(StreamEvent.collaborateAgentChunk(role.getRoleName(), chunk));
-        return run(buildMessages(context, customPrompt), chunkRelay);
+        String turn = agentId + "#" + turnSeq.incrementAndGet();
+        // 以增强回调中继：思考内容单独走 COLLABORATE_AGENT_THINKING，不能混进发言正文。
+        // 若传普通 StreamCallback，ReActExecutor 内部的 wrap() 会把 THINKING 事件 format()
+        // 成带 💭 前缀的文本并当作 chunk 发出，导致思维链逐行碎片化夹在正文里。
+        // 按「语义族」而非单一事件类型归并：本次发言里若还嵌了子代理，它的思考也会以
+        // SUBAGENT_THINKING 到达，只认 THINKING 就会让这些内容落进 default 被 format()
+        // 成 💭 文本行——正文里于是夹着一串带气泡前缀的推理碎片
+        LLMProvider.EnhancedStreamCallback eventRelay = event -> {
+            switch (event.getType()) {
+                case CONTENT, SUBAGENT_CONTENT, COLLABORATE_AGENT, COLLABORATE_AGENT_CHUNK ->
+                        callback.onEvent(StreamEvent.collaborateAgentChunk(
+                                role.getRoleName(), event.getContent(), turn));
+                case THINKING, SUBAGENT_THINKING, COLLABORATE_AGENT_THINKING ->
+                        callback.onEvent(StreamEvent.collaborateAgentThinking(
+                                role.getRoleName(), event.getContent(), turn));
+                // 工具调用保持结构化，只标注归属角色与轮次，前端在本次发言块内渲染工具卡片
+                case TOOL_START, TOOL_END -> callback.onEvent(
+                        event.withScope("agent", role.getRoleName()).withScope("turn", turn));
+                // 剩下的都是起止标记，以可读文本行混入发言内容
+                default -> callback.onEvent(
+                        StreamEvent.collaborateAgentChunk(role.getRoleName(), event.format(), turn));
+            }
+        };
+        return run(buildMessages(context, customPrompt), eventRelay);
     }
 
     /**

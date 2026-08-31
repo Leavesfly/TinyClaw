@@ -9,6 +9,8 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.cron.CronService;
 import io.leavesfly.tinyclaw.plugins.PluginManager;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
+import io.leavesfly.tinyclaw.security.SecretResolver;
+import io.leavesfly.tinyclaw.security.SecretStore;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
 import io.leavesfly.tinyclaw.subagent.SpawnTool;
 import io.leavesfly.tinyclaw.subagent.SubagentManager;
@@ -19,6 +21,7 @@ import io.leavesfly.tinyclaw.tools.ExecTool;
 import io.leavesfly.tinyclaw.tools.ListDirTool;
 import io.leavesfly.tinyclaw.tools.MessageTool;
 import io.leavesfly.tinyclaw.tools.ReadFileTool;
+import io.leavesfly.tinyclaw.tools.SecretsTool;
 import io.leavesfly.tinyclaw.tools.SkillsTool;
 import io.leavesfly.tinyclaw.tools.SocialNetworkTool;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
@@ -114,6 +117,12 @@ public final class RuntimeAssembly {
         String workspace = config.getWorkspacePath();
         SecurityGuard securityGuard = createSecurityGuard(workspace);
 
+        // 凭据保管库：在工具执行边界把 ${secret:NAME} 换成真值，
+        // 使对话与模型上下文里只出现引用而不出现明文
+        SecretStore secretStore = new SecretStore(workspace);
+        agentRuntime.getToolRegistry().setSecretResolver(new SecretResolver(secretStore));
+        agentRuntime.registerTool(new SecretsTool(secretStore));
+
         // 文件工具（SecurityGuard 强制注入）
         agentRuntime.registerTool(new ReadFileTool(securityGuard));
         agentRuntime.registerTool(new WriteFileTool(securityGuard));
@@ -145,7 +154,10 @@ public final class RuntimeAssembly {
                 config.getAgent().getModel(), config.getAgent().getMaxToolIterations());
         // 注入动态子代理定义加载器（workspace/agents/<name>/AGENT.md，支持运行时热更新）
         subagentManager.setAgentsLoader(new SubagentsLoader(workspace));
-        agentRuntime.registerTool(new SpawnTool(subagentManager));
+        SpawnTool spawnTool = new SpawnTool(subagentManager);
+        // 子代理同步执行时往会话上报进度，使浏览器刷新后仍能看到任务在跑
+        spawnTool.setProgressSink(agentRuntime.getSessionManager());
+        agentRuntime.registerTool(spawnTool);
         agentRuntime.registerShutdownHook(subagentManager::shutdown);
 
         // 技能管理工具（共享 SkillsLoader 实例，确保与 ContextBuilder 的技能视图一致）
@@ -196,6 +208,7 @@ public final class RuntimeAssembly {
         }
         CollaborateTool collaborateTool = new CollaborateTool(orchestrator);
         collaborateTool.setLLMContext(provider, config.getAgent().getModel());
+        collaborateTool.setProgressSink(agentRuntime.getSessionManager());
 
         // 注入插件注册的 agent 角色库，使主 Agent 可在 collaborate 中按名复用插件 agent
         PluginManager pluginManager = agentRuntime.getPluginManager();

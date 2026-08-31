@@ -2135,6 +2135,11 @@ body {
     font-size: 12px;
 }
 
+/* 子代理 / 协同发言块内嵌的工具调用卡片：字号随容器缩小，与思考卡片对齐 */
+.subagent-body .tool-call-card {
+    font-size: 12px;
+}
+
 .subagent-card.expanded .subagent-body {
     display: block;
 }
@@ -2755,4 +2760,247 @@ body {
     white-space: pre-wrap;
     line-height: 1.5;
     color: var(--text);
+}
+
+/* ==================== 会话搜索 ==================== */
+
+.chat-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.chat-search-icon {
+    position: absolute;
+    left: 9px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    pointer-events: none;
+}
+
+.chat-search-input {
+    width: 100%;
+    padding: 7px 26px 7px 26px;
+    font-size: 12px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.chat-search-input:focus {
+    border-color: var(--primary);
+    background: var(--card);
+}
+
+.chat-search-clear {
+    position: absolute;
+    right: 6px;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 3px;
+}
+
+.chat-search-clear:hover {
+    color: var(--error);
+}
+
+.chat-search-results {
+    flex: 1;
+    overflow-y: auto;
+    margin-top: 10px;
+}
+
+.chat-search-count,
+.chat-search-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 4px 2px 8px;
+}
+
+.chat-search-hint {
+    text-align: center;
+    padding: 18px 0;
+}
+
+.chat-search-item {
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 4px;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-search-item:hover {
+    background: var(--bg);
+    border-color: var(--border);
+}
+
+.chat-search-item-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+
+.chat-search-role {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-dark);
+    color: var(--text-secondary);
+}
+
+.chat-search-role-user {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+.chat-search-session {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-search-snippet {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.45;
+    /* 限两行：片段本身有长度上限，但 CJK 不折行时仍可能把侧栏拉宽 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.chat-search-snippet mark {
+    background: #fef08a;
+    color: inherit;
+    padding: 0 1px;
+    border-radius: 2px;
+}
+
+/* 搜索命中后的消息高亮：瞬时提示，不改变布局 */
+.message.message-search-hit,
+.message-search-hit {
+    animation: search-hit-flash 2.4s ease-out;
+    border-radius: 8px;
+}
+
+@keyframes search-hit-flash {
+    0%, 35% { background: rgba(99, 102, 241, 0.16); }
+    100% { background: transparent; }
+}
+
+/* ==================== 进度卡 ==================== */
+
+.running-task-phase {
+    font-weight: 500;
+    color: var(--text);
+}
+
+.running-task-detail {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    /* 阶段细节可能是很长的任务描述，截断而不撑开横幅 */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 侧栏“正在跑”小点 */
+.history-running {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: running-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes running-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.history-shared {
+    flex-shrink: 0;
+    margin-left: 4px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Sessions 表格里的阶段小标 */
+.progress-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    padding: 1px 6px;
+    font-size: 11px;
+    border-radius: 10px;
+    background: var(--primary-light);
+    color: var(--primary);
+    vertical-align: middle;
+}
+
+.progress-chip-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: running-pulse 1.6s ease-in-out infinite;
+}
+
+/* ==================== 身份与可见性 ==================== */
+
+.col-owner,
+.col-visibility {
+    white-space: nowrap;
+}
+
+.owner-tag {
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-secondary);
+}
+
+.badge-shared,
+.badge-private,
+.badge-legacy {
+    display: inline-block;
+    padding: 1px 7px;
+    font-size: 11px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.badge-shared {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.badge-private {
+    background: var(--bg-dark);
+    color: var(--text-secondary);
+}
+
+.badge-legacy {
+    background: transparent;
+    color: var(--disabled);
+    border: 1px dashed var(--border);
 }

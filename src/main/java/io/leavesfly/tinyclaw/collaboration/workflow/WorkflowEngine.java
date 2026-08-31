@@ -67,6 +67,16 @@ public class WorkflowEngine {
         // 初始化执行上下文
         WorkflowContext context = new WorkflowContext(sharedContext, workflow.getVariables());
 
+        // 载入检查点：上一轮异常中断留下的已完成节点不再重跑
+        WorkflowCheckpointStore checkpoints =
+                new WorkflowCheckpointStore(executionContext.getWorkspace());
+        String runId = WorkflowCheckpointStore.deriveRunId(workflow);
+        int resumedNodes = context.restoreFrom(checkpoints.load(runId));
+        if (resumedNodes > 0) {
+            logger.info("从检查点续跑工作流", Map.of(
+                    "runId", runId, "resumedNodes", resumedNodes));
+        }
+
         // 构建 nodeId → WorkflowNode 映射，供条件分支跳过判断使用
         Map<String, WorkflowNode> nodeMap = new HashMap<>();
         for (WorkflowNode node : workflow.getNodes()) {
@@ -76,21 +86,33 @@ public class WorkflowEngine {
         // 拓扑排序获取执行顺序（循环依赖时抛出异常）
         List<List<WorkflowNode>> executionLayers = topologicalSort(workflow.getNodes());
 
+        boolean interrupted = false;
+
         // 按层执行（同层可并行）
         for (List<WorkflowNode> layer : executionLayers) {
             // 检查全局超时
             if (workflow.getTimeoutMs() > 0 && context.getElapsedTime() > workflow.getTimeoutMs()) {
                 logger.warn("工作流执行超时");
+                interrupted = true;
                 break;
             }
 
             // 检查最大执行数
             if (context.getExecutedNodeCount() >= workflow.getMaxNodeExecutions()) {
                 logger.warn("达到最大节点执行数");
+                interrupted = true;
                 break;
             }
 
             executeLayer(layer, context, executionContext, nodeMap);
+            // 每层收尾写一次：写得再密也只能省下同层内部分节点，
+            // 而层内节点是并行的，逐节点写盘会引入无必要的竞争
+            checkpoints.save(context.snapshot(runId, workflow.getName()));
+        }
+
+        // 正常跑完就删掉检查点；中断时故意保留，它是下次续跑的唯一依据
+        if (!interrupted) {
+            checkpoints.delete(runId);
         }
 
         // 解析输出表达式
@@ -202,6 +224,12 @@ public class WorkflowEngine {
     private void executeNodeWithRetry(WorkflowNode node, WorkflowContext context,
                                       ExecutionContext executionContext,
                                       Map<String, WorkflowNode> nodeMap) {
+        // 从检查点恢复的节点直接跳过：续跑的全部语义就靠这一句——已有完成结果就不重算
+        if (context.isNodeCompleted(node.getId())) {
+            logger.info("节点已有完成结果，跳过重跑", Map.of("nodeId", node.getId()));
+            return;
+        }
+
         // 检查是否被条件分支跳过（未激活的分支目标节点直接跳过）
         if (context.isNodeBranchSkipped(node, nodeMap)) {
             NodeResult skipped = new NodeResult(node.getId());

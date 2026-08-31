@@ -116,6 +116,12 @@ public class StreamResponseParser {
                     if (delta.has("content") && !delta.get("content").isNull()) {
                         String content = delta.get("content").asText();
                         if (content != null && !content.isEmpty()) {
+                            // 正文开始即推理阶段结束，此刻必须把残余思维链冲刷出去。
+                            // 这类 API 的 reasoning 与 content 是先后关系，首个 content 就是
+                            // 可靠的相位分界；若留到流结束才冲刷，那段不足软上限又不含换行的
+                            // 尾巴会在正文全部渲染完之后才发出，前端只能把思考卡片追加到正文
+                            // 之后，看起来就是「回答结束了又冒出思考过程」。
+                            flushReasoningLines(callback, reasoningBuffer, true);
                             fullContent.append(content);
                             if (callback != null) {
                                 callback.onChunk(content);
@@ -165,9 +171,11 @@ public class StreamResponseParser {
      * 无换行部分在流结束或超过软上限时整体透出。仅对 EnhancedStreamCallback 生效，
      * 普通回调无法接收 THINKING 事件，缓冲直接丢弃。</p>
      *
+     * <p>缓冲为空时立即返回，因此可以在每个正文 chunk 前无脑调用，不会产生空事件。</p>
+     *
      * @param callback 流式回调
      * @param buffer 思维链累积缓冲（原地消费）
-     * @param endOfStream 是否流结束（强制冲刷全部剩余）
+     * @param endOfStream 是否强制冲刷全部剩余（流结束或推理相位结束）
      */
     private void flushReasoningLines(LLMProvider.StreamCallback callback,
                                      StringBuilder buffer, boolean endOfStream) {
