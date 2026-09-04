@@ -9,6 +9,7 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMException;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
+import io.leavesfly.tinyclaw.tools.InteractionBroker;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
 
@@ -51,6 +52,8 @@ public class ChatHandler extends BaseHandler {
             handleChatAbort(exchange);
         } else if (WebUtils.API_CHAT_STATUS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
             handleChatStatus(exchange);
+        } else if (WebUtils.API_CHAT_INTERACTION.equals(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            handleInteraction(exchange);
         } else {
             return false;
         }
@@ -124,6 +127,38 @@ public class ChatHandler extends BaseHandler {
             }
         }
         return null;
+    }
+
+    /**
+     * 处理 HITL 交互回传：用户在前端对危险命令审批或 ask_user 提问做出决策后调用。
+     *
+     * <p>请求体：{@code {"requestId":"...", "approved":true|false, "response":"可选文本"}}。
+     * 审批类用 {@code approved}，提问类用 {@code response}。broker 未就绪返回 501；
+     * requestId 缺失返回 400；对应交互不存在或已超时返回 200 且 {@code resolved=false}，
+     * 供前端提示“已失效”。</p>
+     */
+    private void handleInteraction(HttpExchange exchange) throws IOException {
+        String corsOrigin = config.getGateway().getCorsOrigin();
+        InteractionBroker broker = agentRuntime != null ? agentRuntime.getInteractionBroker() : null;
+        if (broker == null) {
+            WebUtils.sendJson(exchange, 501, WebUtils.errorJson("Interaction broker is not available"), corsOrigin);
+            return;
+        }
+        String body = WebUtils.readRequestBodyLimited(exchange);
+        JsonNode json = WebUtils.MAPPER.readTree(body);
+        String requestId = json.path("requestId").asText("");
+        if (requestId.isEmpty()) {
+            WebUtils.sendJson(exchange, 400, WebUtils.errorJson("requestId is required"), corsOrigin);
+            return;
+        }
+        boolean approved = json.path("approved").asBoolean(false);
+        String response = json.path("response").asText(null);
+        boolean resolved = broker.resolve(requestId, approved, response);
+
+        ObjectNode result = WebUtils.MAPPER.createObjectNode();
+        result.put("resolved", resolved);
+        result.put("message", resolved ? "Interaction resolved" : "No pending interaction (may have timed out)");
+        WebUtils.sendJson(exchange, 200, result, corsOrigin);
     }
 
     /**

@@ -109,6 +109,48 @@ workspace/collaboration/{yyyyMMdd}/{sessionKey}-{timestamp}.json
 
 字段包含：配置快照、SharedContext 最终状态、每轮 messages、Token 用量、耗时、结论。
 
+### 11.4.5 CollaborationTopology（协同关系拓扑）
+
+记录新增 `topology` 字段，把一次协同的「结构」归一为 nodes + edges (+ layers)：
+
+| 模式 | Kind | 节点 | 边 | 分层 |
+|------|------|------|-----|------|
+| DISCUSS | `DISCUSSION` | 角色（+ Router） | 定向消息（`targetRole`）；否则 Router 路由边；否则发言顺序链 | 无（前端环形布局） |
+| TASKS · PARALLEL | `TASK_GRAPH` | TeamTask | 任务依赖 | 按依赖深度 |
+| TASKS · HIERARCHY | `HIERARCHY` | 各层角色（id 带 `L{层号}:` 前缀） | 下层→上层汇报（全连接） | HierarchyConfig 层级 |
+| WORKFLOW | `DAG` | WorkflowNode | `dependsOn` | 复用 `WorkflowEngine.topologicalSort` |
+
+节点状态（COMPLETED / FAILED / SKIPPED / RUNNING / PENDING）反映真实执行结果：
+WORKFLOW 取自 `WorkflowEngine` 透出到 `SharedContext` meta 的执行期上下文
+（`WorkflowEngine.META_WORKFLOW_CONTEXT`，中断时也能拿到已跑完的部分状态）。
+
+构建器：`CollaborationTopologyBuilder`（讨论/任务/层级）+ `WorkflowTopologyBuilder`
+（DAG，与引擎同包以便复用包级可见的拓扑排序）。
+任何异常都吞掉并返回 null，记录照常落盘、前端降级为纯线性时间线。
+
+### 11.4.6 实时拓扑（协同执行中）
+
+协同进行中，拓扑会通过两个流式事件驱动 Web 控制台的实时图：
+
+| 事件 | 时机 | 载荷 |
+|------|------|------|
+| `COLLABORATE_TOPOLOGY` | 协同开始（初始版，全 PENDING）与结束前（终版，含真实状态与边） | 完整拓扑结构 |
+| `COLLABORATE_NODE` | 每个节点/任务/角色状态迁移时 | `nodeId` / `label` / `status` |
+
+事件序列：`START → TOPOLOGY(初始) → NODE×N → TOPOLOGY(终版) → END`。
+终版全量替换初始图，用户最终看到的图与落盘记录一致。
+
+节点上报收敛在 `SharedContext.reportNodeStatus()`（无回调时零开销，回调异常被吞），
+各模式的发射点：
+
+- **WORKFLOW**：`WorkflowEngine.executeNodeWithRetry` 的六个迁移点（检查点恢复/分支跳过/
+  审批拒绝/依赖失败/开始/终态），含 RUNNING → COMPLETED 的两次闪烁；
+- **TASKS**：`TasksStrategy` 的任务 markStarted/markCompleted/markFailed 与阻塞标记，
+  HIERARCHY 按层上报（节点 id 与拓扑的 `L{层号}:{角色名}` 命名空间一致）；
+- **DISCUSS**：各角色发言完毕时上报 COMPLETED（DYNAMIC 还含 Router 总结）。
+
+CLI/IM 纯文本通道下这两个事件降级为一行提示（`format()`），不污染正文。
+
 ---
 
 ## 11.5 DiscussionStrategy — 讨论族
@@ -299,6 +341,16 @@ LLM 调用示例（`tool_call`）：
 
 - 查看历史协同记录（`workspace/collaboration/` 下的 JSON）
 - 回放协同过程（逐轮展示 messages 与 artifacts）
+- **协同关系拓扑图**：会话历史的协同卡片可在「时间线 / 拓扑图」之间切换，
+  手写 SVG 零依赖渲染，四种形态对应四种布局：
+  - DISCUSS → 环形布局，边宽随互动频次变化；
+  - DAG / TASK / HIERARCHY → 分层布局（自底向上，与引擎执行顺序一致）；
+  - 悬停节点高亮相邻关系，点击查看详情（提示词/条件/依赖）；
+  - 节点状态色点区分 COMPLETED（绿）/ FAILED（红）/ SKIPPED（灰）/ PENDING（浅灰）。
+  数据来自 `CollaborationRecord.topology`，旧记录无此字段时自动降级为纯时间线。
+- **实时拓扑（协同执行中）**：协同卡片顶部内嵌可折叠的实时图，节点随
+  `COLLABORATE_NODE` 事件逐个点亮（外科手术式更新状态圆点，不重建 SVG），
+  头部显示进度（已完成/总数），终版拓扑到达后全量替换（见 11.4.6）。
 - 手动触发一次协同
 
 对应 REST Handler 位于 `web/handler/` 中（`SessionsHandler` / `WorkspaceHandler`）。

@@ -84,6 +84,7 @@ public class WebUtils {
     public static final String API_CHAT_STREAM     = "/api/chat/stream";
     public static final String API_CHAT_ABORT      = "/api/chat/abort";
     public static final String API_CHAT_STATUS     = "/api/chat/status";
+    public static final String API_CHAT_INTERACTION = "/api/chat/interaction";
     public static final String API_CHANNELS        = "/api/channels";
     public static final String API_SESSIONS        = "/api/sessions";
     public static final String API_CRON            = "/api/cron";
@@ -102,6 +103,7 @@ public class WebUtils {
     public static final String API_TOKEN_STATS     = "/api/token-stats";
     public static final String API_REFLECTION      = "/api/reflection";
     public static final String API_HEARTBEAT       = "/api/heartbeat";
+    public static final String API_MEMORY          = "/api/memory";
 
     // ==================== HTTP Methods ====================
     public static final String HTTP_METHOD_GET     = "GET";

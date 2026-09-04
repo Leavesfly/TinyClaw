@@ -85,7 +85,9 @@ public class WebConsoleServer {
         httpServer.createContext(WebUtils.API_CHAT,      new ChatHandler(config, agentRuntime, security)::handle);
         httpServer.createContext(WebUtils.API_CHAT_ABORT, new ChatHandler(config, agentRuntime, security)::handle);
         httpServer.createContext(WebUtils.API_CHAT_STATUS, new ChatHandler(config, agentRuntime, security)::handle);
-        httpServer.createContext(WebUtils.API_CHANNELS,  new ChannelsHandler(config, security)::handle);
+        httpServer.createContext(WebUtils.API_CHAT_INTERACTION, new ChatHandler(config, agentRuntime, security)::handle);
+        httpServer.createContext(WebUtils.API_CHANNELS,  new ChannelsHandler(config, security,
+                agentRuntime != null ? agentRuntime.getChannelManager() : null)::handle);
         httpServer.createContext(WebUtils.API_SESSIONS,  new SessionsHandler(config, sessionManager, security, config.getWorkspacePath())::handle);
         httpServer.createContext(WebUtils.API_CRON,      new CronHandler(config, cronService, security)::handle);
         httpServer.createContext(WebUtils.API_WORKSPACE, new WorkspaceHandler(config, security)::handle);
@@ -115,6 +117,10 @@ public class WebConsoleServer {
         // 心跳状态与手动触发（仅在 gateway 启用心跳时可用）
         httpServer.createContext(WebUtils.API_HEARTBEAT,
                 new HeartbeatHandler(config, security, heartbeatRunner)::handle);
+
+        // 长期记忆管理（provider 就绪后可用，否则返回 501）
+        httpServer.createContext(WebUtils.API_MEMORY,
+                new MemoryHandler(config, security, agentRuntime)::handle);
     }
 
     private void registerStaticHandler() {

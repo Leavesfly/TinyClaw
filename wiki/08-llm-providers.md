@@ -259,7 +259,30 @@ python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-7B-Instruct
 
 ---
 
-## 8.13 下一步
+## 8.13 Failover 与连接验证
+
+### 8.13.1 运行时 failover
+
+`models.fallbacks` 配置降级链（`definitions` 的 key 列表），`ProviderManager.applyProvider` 将主 Provider 包装为 `FailoverLLMProvider`：
+
+```json
+"models": {
+  "fallbacks": ["qwen3.8-flash", "glm-4.6"]
+}
+```
+
+- 每个 fallback 项使用其在 `definitions` 中绑定的 provider，请求时替换 model 参数；
+- 仅对 `LLMException`（网络/HTTP 错误）与配置缺失降级；未定义或未授权的项跳过并告警；
+- 流式请求一旦已透出事件（正文/思考/工具）不再降级，防半截重复输出；
+- 全部失败抛最后一个异常，调用方感知与单 Provider 一致。
+
+### 8.13.2 连接验证
+
+`POST /api/models/test`（body：`{provider, model?}`，model 缺省取该 provider 首个已定义模型）以极小 `max_tokens` 发起真实请求，返回 `{success, latencyMs, model}` 或 `{success:false, error}`。Web Models 页 Provider 卡片与 LLM 配置卡均提供 Test 按钮，支持保存前验证。
+
+---
+
+## 8.14 下一步
 
 - 工具调用如何落地 → [09 · 工具系统](09-tools-system.md)
 - MCP 协议如何补充工具 → [10 · MCP 协议](10-mcp-integration.md)

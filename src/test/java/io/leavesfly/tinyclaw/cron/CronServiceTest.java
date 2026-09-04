@@ -17,7 +17,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * CronService 单元测试
  *
  * <p>覆盖：findJobByName 按名查找、updateJobSchedule 调度更新、
- * EVERY 任务 misfire 重启补跑、多实例共享同一存储时的丢失更新防护。</p>
+ * EVERY/CRON 任务 misfire 重启补跑、执行历史记录与手动触发、
+ * 多实例共享同一存储时的丢失更新防护。</p>
  */
 @DisplayName("CronService 定时服务测试")
 class CronServiceTest {
@@ -169,5 +170,141 @@ class CronServiceTest {
         assertTrue(path.endsWith("cron" + java.io.File.separator + "jobs.json"),
                 "应为 workspace/cron/jobs.json，实际：" + path);
         assertTrue(path.startsWith(tempDir.toString()), "应位于工作空间内");
+    }
+
+    // ==================== 任务编辑 ====================
+
+    @Test
+    @DisplayName("updateJob: 更新名称/消息/调度，null 项保留原值")
+    void updateJob_UpdatesFieldsAndKeepsNulls() {
+        service = new CronService(tempDir.resolve("jobs.json").toString());
+        CronJob job = service.addJob("orig", CronSchedule.every(60_000), "msg", "chan", "to");
+
+        CronJob updated = service.updateJob(job.getId(), "renamed",
+                CronSchedule.cron("0 8 * * *"), null, null, null);
+        assertNotNull(updated);
+        assertEquals("renamed", updated.getName());
+        assertEquals("msg", updated.getPayload().getMessage(), "null 应保留原消息");
+        assertEquals("chan", updated.getPayload().getChannel());
+        assertEquals(CronSchedule.ScheduleKind.CRON, updated.getSchedule().getKind());
+        assertEquals("0 8 * * *", updated.getSchedule().getExpr());
+        assertNotNull(updated.getState().getNextRunAtMs(), "启用任务改调度后应重算下次运行");
+
+        CronJob msgUpdated = service.updateJob(job.getId(), null, null, "new-msg", null, null);
+        assertEquals("renamed", msgUpdated.getName(), "null 应保留原名称");
+        assertEquals("new-msg", msgUpdated.getPayload().getMessage());
+
+        assertNull(service.updateJob("no-such-id", "x", null, null, null, null));
+    }
+
+    // ==================== 执行历史与手动触发 ====================
+
+    /**
+     * 轮询等待执行历史达到期望条数（历史在 handler 返回后异步追加）。
+     */
+    private CronJob waitForHistory(String jobId, int minSize) throws Exception {
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            CronJob job = service.listJobs(true).stream()
+                    .filter(j -> j.getId().equals(jobId)).findFirst().orElse(null);
+            if (job != null && job.getState().getHistory() != null
+                    && job.getState().getHistory().size() >= minSize) {
+                return job;
+            }
+            Thread.sleep(50);
+        }
+        fail("执行历史未在期限内达到期望条数：" + minSize);
+        return null;
+    }
+
+    @Test
+    @DisplayName("runJobNow: 手动触发记录执行历史（trigger=manual、status ok、结果摘要）")
+    void runJobNow_RecordsManualHistory() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        service = new CronService(tempDir.resolve("jobs.json").toString(), job -> {
+            latch.countDown();
+            return "done";
+        });
+        service.start();
+        CronJob job = service.addJob("manual-test", CronSchedule.every(3600_000), "hi", "", "");
+
+        assertTrue(service.runJobNow(job.getId()));
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
+
+        CronJob updated = waitForHistory(job.getId(), 1);
+        CronRunRecord record = updated.getState().getHistory().get(0);
+        assertEquals("manual", record.getTrigger());
+        assertEquals("ok", record.getStatus());
+        assertEquals("done", record.getResult());
+        assertEquals("ok", updated.getState().getLastStatus());
+
+        assertFalse(service.runJobNow("no-such-id"), "不存在的任务应返回 false");
+    }
+
+    @Test
+    @DisplayName("runJobNow: handler 抛异常记录 error 状态与错误信息")
+    void runJobNow_RecordsErrorHistory() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        service = new CronService(tempDir.resolve("jobs.json").toString(), job -> {
+            latch.countDown();
+            throw new RuntimeException("boom");
+        });
+        service.start();
+        CronJob job = service.addJob("fail-test", CronSchedule.every(3600_000), "hi", "", "");
+
+        assertTrue(service.runJobNow(job.getId()));
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
+
+        CronJob updated = waitForHistory(job.getId(), 1);
+        CronRunRecord record = updated.getState().getHistory().get(0);
+        assertEquals("error", record.getStatus());
+        assertNotNull(record.getError());
+        assertTrue(record.getError().contains("boom"));
+        assertEquals("error", updated.getState().getLastStatus());
+    }
+
+    @Test
+    @DisplayName("执行历史: 上限 20 条，超出截断")
+    void history_CappedAtTwenty() throws Exception {
+        service = new CronService(tempDir.resolve("jobs.json").toString(), job -> "ok");
+        service.start();
+        CronJob job = service.addJob("cap-test", CronSchedule.every(3600_000), "hi", "", "");
+
+        for (int i = 0; i < 25; i++) {
+            assertTrue(service.runJobNow(job.getId()));
+        }
+
+        CronJob updated = waitForHistory(job.getId(), 20);
+        // 等待所有手动触发落盘后仍不得超过上限
+        Thread.sleep(300);
+        assertTrue(updated.getState().getHistory().size() <= 20,
+                "历史应截断在 20 条以内");
+    }
+
+    @Test
+    @DisplayName("misfire: 停机错过的 CRON 任务启动后补跑并记为 misfire")
+    void cronMisfire_RunsImmediatelyAndRecorded() throws Exception {
+        long now = System.currentTimeMillis();
+        Path store = tempDir.resolve("jobs.json");
+        // 每小时整点执行，上次运行在 2 小时前 → 停机期间至少错过一轮
+        String json = String.format("""
+                {"jobs":[{"id":"cron-fixed","name":"cron-misfire","enabled":true,
+                "schedule":{"kind":"cron","expr":"0 * * * *"},
+                "payload":{"kind":"agent_turn","message":"hi","channel":"","to":""},
+                "state":{"lastRunAtMs":%d},
+                "createdAtMs":1,"updatedAtMs":1,"deleteAfterRun":false}]}
+                """, now - 2 * 3600_000);
+        Files.writeString(store, json);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        service = new CronService(store.toString(), job -> {
+            latch.countDown();
+            return "ok";
+        });
+        service.start();
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "停机错过的 CRON 任务应在启动后补跑");
+        CronJob updated = waitForHistory("cron-fixed", 1);
+        assertEquals("misfire", updated.getState().getHistory().get(0).getTrigger());
     }
 }

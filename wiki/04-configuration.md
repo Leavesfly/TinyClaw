@@ -134,6 +134,7 @@
 - `aliases` — 命令行/配置中使用别名，内部解析为真实模型
 - `contextWindow` — 每个模型的上下文窗口大小，用于 `SessionSummarizer` 判断是否需要摘要
 - `modelToProvider` — 模型到 Provider 的映射，`ProviderManager` 根据此反查 Provider
+- `fallbacks` — 运行时 failover 降级链（definitions key 列表），主模型调用失败按序降级，见 [08 · LLM Providers](08-llm-providers.md)
 
 ## 4.4 providers — LLM 提供商
 

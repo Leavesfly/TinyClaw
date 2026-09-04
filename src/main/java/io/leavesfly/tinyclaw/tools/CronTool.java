@@ -316,7 +316,8 @@ public class CronTool implements Tool, ToolContextAware {
      * 根据任务配置决定是直接发送消息还是通过 Agent 处理。
      * 
      * @param job 要执行的定时任务
-     * @return 执行结果
+     * @return 执行结果摘要（Agent 响应文本）
+     * @throws RuntimeException 执行失败时抛出，由调度方记录为 error 状态
      */
     public String executeJob(CronJob job) {
         String jobChannel = getJobChannel(job);
@@ -358,20 +359,19 @@ public class CronTool implements Tool, ToolContextAware {
         String sessionKey = "cron-" + job.getId();
         
         try {
-            executor.processDirectWithChannel(
+            // 响应会通过 MessageBus 由 AgentRuntime 自动发送，返回值作为执行结果摘要
+            return executor.processDirectWithChannel(
                     job.getPayload().getMessage(),
                     sessionKey,
                     jobChannel,
                     jobChatId
             );
-            // 响应会通过 MessageBus 由 AgentRuntime 自动发送
-            return "ok";
         } catch (Exception e) {
             logger.error("Failed to execute cron job", Map.of(
                     "job_id", job.getId(),
-                    "error", e.getMessage()
+                    "error", String.valueOf(e.getMessage())
             ));
-            return "Error: " + e.getMessage();
+            throw new RuntimeException("cron job failed: " + e.getMessage(), e);
         }
     }
 }

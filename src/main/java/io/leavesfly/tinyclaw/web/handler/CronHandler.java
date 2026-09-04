@@ -52,6 +52,10 @@ public class CronHandler extends BaseHandler {
                 WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
             }
 
+        } else if (path.matches(WebUtils.API_CRON + "/[^/]+")
+                && WebUtils.HTTP_METHOD_PUT.equals(method)) {
+            handleUpdateCron(exchange, path, corsOrigin);
+
         } else if (path.matches(WebUtils.API_CRON + "/[^/]+/enable")
                 && WebUtils.HTTP_METHOD_PUT.equals(method)) {
             String id = path.substring(WebUtils.API_CRON.length() + 1).replace("/enable", "");
@@ -66,6 +70,17 @@ public class CronHandler extends BaseHandler {
                 WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
             }
 
+        } else if (path.matches(WebUtils.API_CRON + "/[^/]+/run")
+                && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            String id = path.substring(WebUtils.API_CRON.length() + 1).replace("/run", "");
+            boolean triggered = cronService.runJobNow(id);
+            if (triggered) {
+                WebUtils.sendJson(exchange, 200, WebUtils.successJson("Job triggered"), corsOrigin);
+            } else {
+                WebUtils.sendJson(exchange, 404,
+                        WebUtils.errorJson("Job not found or service not running"), corsOrigin);
+            }
+
         } else {
             return false;
         }
@@ -73,7 +88,8 @@ public class CronHandler extends BaseHandler {
     }
 
     /**
-     * 返回所有定时任务列表，包含 id、name、启用状态、计划表达式及下次运行时间。
+     * 返回所有定时任务列表，包含 id、name、启用状态、计划表达式、下次运行时间、
+     * 上次运行状态及执行历史。
      */
     private void handleListCron(HttpExchange exchange, String corsOrigin) throws IOException {
         List<CronJob> jobs = cronService.listJobs(true);
@@ -89,12 +105,66 @@ public class CronHandler extends BaseHandler {
             } else if (job.getSchedule().getKind() == CronSchedule.ScheduleKind.EVERY) {
                 jobNode.put("schedule", "every " + (job.getSchedule().getEveryMs() / 1000) + "s");
             }
+            // 原始调度字段，供编辑弹窗回填
+            jobNode.put("kind", job.getSchedule().getKind().getValue());
+            if (job.getSchedule().getExpr() != null) {
+                jobNode.put("expr", job.getSchedule().getExpr());
+            }
+            if (job.getSchedule().getEveryMs() != null) {
+                jobNode.put("everyMs", job.getSchedule().getEveryMs());
+            }
+            if (job.getPayload().getChannel() != null) {
+                jobNode.put("channel", job.getPayload().getChannel());
+            }
+            if (job.getPayload().getTo() != null) {
+                jobNode.put("to", job.getPayload().getTo());
+            }
             if (job.getState().getNextRunAtMs() != null) {
                 jobNode.put("nextRun", job.getState().getNextRunAtMs());
+            }
+            if (job.getState().getLastRunAtMs() != null) {
+                jobNode.put("lastRun", job.getState().getLastRunAtMs());
+            }
+            if (job.getState().getLastStatus() != null) {
+                jobNode.put("lastStatus", job.getState().getLastStatus());
+            }
+            if (job.getState().getLastError() != null) {
+                jobNode.put("lastError", job.getState().getLastError());
+            }
+            if (job.getState().getHistory() != null) {
+                jobNode.set("history", WebUtils.MAPPER.valueToTree(job.getState().getHistory()));
             }
             result.add(jobNode);
         }
         WebUtils.sendJson(exchange, 200, result, corsOrigin);
+    }
+
+    /**
+     * 解析请求体并更新任务配置（name/message/channel/to/cron/everySeconds 均为可选）。
+     */
+    private void handleUpdateCron(HttpExchange exchange, String path, String corsOrigin) throws IOException {
+        String id = path.substring(WebUtils.API_CRON.length() + 1);
+        String body = WebUtils.readRequestBodyLimited(exchange);
+        JsonNode json = WebUtils.MAPPER.readTree(body);
+
+        CronSchedule schedule = null;
+        if (json.has("cron")) {
+            schedule = CronSchedule.cron(json.get("cron").asText());
+        } else if (json.has("everySeconds")) {
+            schedule = CronSchedule.every(json.get("everySeconds").asLong() * 1000);
+        }
+
+        CronJob job = cronService.updateJob(id,
+                json.has("name") ? json.get("name").asText() : null,
+                schedule,
+                json.has("message") ? json.get("message").asText() : null,
+                json.has("channel") ? json.get("channel").asText() : null,
+                json.has("to") ? json.get("to").asText() : null);
+        if (job != null) {
+            WebUtils.sendJson(exchange, 200, WebUtils.successJson("Job updated"), corsOrigin);
+        } else {
+            WebUtils.sendJson(exchange, 404, WebUtils.errorJson("Job not found"), corsOrigin);
+        }
     }
 
     /**

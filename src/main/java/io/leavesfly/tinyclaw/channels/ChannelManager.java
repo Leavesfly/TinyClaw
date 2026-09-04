@@ -49,12 +49,22 @@ public class ChannelManager {
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
     private final MessageBus bus;
     private final Config config;
+    private final OutboundPendingStore pendingStore;
+    /** 发送超时“结果不确定”标记：key=channel|chatId，下次成功联系时告警并清除 */
+    private final Map<String, UncertainInfo> uncertainSends = new ConcurrentHashMap<>();
     private volatile boolean dispatchRunning = false;
     private final List<Thread> dispatchThreads = new ArrayList<>();
+    
+    /** 不确定发送标记（次数 + 最近时间） */
+    private record UncertainInfo(int count, long atMs) {}
+    
+    /** 发送失败分类 */
+    enum SendFailureKind { RETRYABLE, UNCERTAIN, FATAL }
     
     public ChannelManager(Config config, MessageBus bus) {
         this.config = config;
         this.bus = bus;
+        this.pendingStore = new OutboundPendingStore(config.getWorkspacePath());
         initChannels();
     }
     
@@ -134,6 +144,9 @@ public class ChannelManager {
         
         logger.info("Starting all channels");
         
+        // 重启恢复：上次未送达的消息重投总线补发
+        restorePendingOutbound();
+        
         // 为每个通道启动独立的出站调度线程，各通道消费者只消费自己通道的消息
         dispatchRunning = true;
         for (String channelName : channels.keySet()) {
@@ -200,7 +213,36 @@ public class ChannelManager {
             }
         }
         
+        // 优雅停机：总线中未及发送的消息转储持久化，重启后补发
+        for (String channelName : channels.keySet()) {
+            List<OutboundMessage> remaining = bus.drainOutbound(channelName);
+            if (!remaining.isEmpty()) {
+                pendingStore.addAll(remaining);
+                logger.info("Persisted undelivered outbound messages on shutdown", Map.of(
+                        "channel", channelName,
+                        "count", remaining.size()
+                ));
+            }
+        }
+        
         logger.info("All channels stopped");
+    }
+    
+    /**
+     * 重启恢复：读出上次未送达消息并重投总线。
+     */
+    private void restorePendingOutbound() {
+        List<OutboundMessage> pending = pendingStore.loadAndClear();
+        for (OutboundMessage msg : pending) {
+            if (channels.containsKey(msg.getChannel())) {
+                bus.publishOutbound(msg);
+            } else {
+                logger.warn("Pending message dropped: channel not enabled", Map.of(
+                        "channel", msg.getChannel(),
+                        "chat_id", msg.getChatId()
+                ));
+            }
+        }
     }
     
     /**
@@ -226,37 +268,7 @@ public class ChannelManager {
                 if (msg == null) {
                     continue;
                 }
-
-                // 消息发送重试逻辑
-                boolean sendSuccess = false;
-                Exception lastException = null;
-
-                for (int retry = 0; retry <= MAX_SEND_RETRIES; retry++) {
-                    try {
-                        channel.send(msg);
-                        sendSuccess = true;
-                        break;
-                    } catch (Exception e) {
-                        lastException = e;
-                        if (retry < MAX_SEND_RETRIES) {
-                            try {
-                                Thread.sleep(RETRY_DELAY_MS);
-                            } catch (InterruptedException ie) {
-                                Thread.currentThread().interrupt();
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (!sendSuccess) {
-                    logger.error("Failed to send message after retries", Map.of(
-                            "channel", channelName,
-                            "chat_id", msg.getChatId(),
-                            "retries", String.valueOf(MAX_SEND_RETRIES),
-                            "error", lastException != null ? lastException.getMessage() : "unknown"
-                    ));
-                }
+                sendWithPolicy(channelName, channel, msg);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -272,6 +284,109 @@ public class ChannelManager {
         }
 
         logger.info("Outbound dispatcher stopped", Map.of("channel", channelName));
+    }
+
+    /**
+     * 按失败分类执行发送策略：
+     *
+     * <ul>
+     *   <li>RETRYABLE（连接类错误）：退避重试，耗尽后持久化待重启补发；</li>
+     *   <li>UNCERTAIN（超时类错误）：对端可能已送达，不重试防重复，
+     *       记录不确定标记，下次成功联系该会话时告警；</li>
+     *   <li>FATAL（HTTP 4xx 等）：重试无意义，直接记录。</li>
+     * </ul>
+     */
+    private void sendWithPolicy(String channelName, Channel channel, OutboundMessage msg) {
+        Exception lastException = null;
+
+        for (int retry = 0; retry <= MAX_SEND_RETRIES; retry++) {
+            try {
+                channel.send(msg);
+                onSendSuccess(channelName, msg);
+                return;
+            } catch (Exception e) {
+                lastException = e;
+                SendFailureKind kind = classifySendFailure(e);
+                if (kind == SendFailureKind.UNCERTAIN) {
+                    recordUncertain(channelName, msg, e);
+                    return;
+                }
+                if (kind == SendFailureKind.FATAL) {
+                    logger.error("Fatal send failure, not retrying", Map.of(
+                            "channel", channelName,
+                            "chat_id", msg.getChatId(),
+                            "error", String.valueOf(e.getMessage())
+                    ));
+                    return;
+                }
+                if (retry < MAX_SEND_RETRIES) {
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 重试耗尽：持久化待重启补发
+        pendingStore.add(msg);
+        logger.error("Failed to send message after retries, persisted for restart recovery", Map.of(
+                "channel", channelName,
+                "chat_id", msg.getChatId(),
+                "retries", String.valueOf(MAX_SEND_RETRIES),
+                "error", lastException != null ? lastException.getMessage() : "unknown"
+        ));
+    }
+
+    /**
+     * 发送成功后检查该会话是否存在不确定标记，有则告警并清除（warn on next contact）。
+     */
+    private void onSendSuccess(String channelName, OutboundMessage msg) {
+        UncertainInfo info = uncertainSends.remove(channelName + "|" + msg.getChatId());
+        if (info != null) {
+            logger.warn("Previous sends to this chat were uncertain, duplicates possible", Map.of(
+                    "channel", channelName,
+                    "chat_id", msg.getChatId(),
+                    "uncertain_count", String.valueOf(info.count)
+            ));
+        }
+    }
+
+    /**
+     * 记录超时类不确定发送。
+     */
+    private void recordUncertain(String channelName, OutboundMessage msg, Exception e) {
+        String key = channelName + "|" + msg.getChatId();
+        uncertainSends.compute(key, (k, old) -> old == null
+                ? new UncertainInfo(1, System.currentTimeMillis())
+                : new UncertainInfo(old.count() + 1, System.currentTimeMillis()));
+        logger.warn("Send timed out, result uncertain; not retrying to avoid duplicates", Map.of(
+                "channel", channelName,
+                "chat_id", msg.getChatId(),
+                "error", String.valueOf(e.getMessage())
+        ));
+    }
+
+    /**
+     * 分类发送失败：超时类为 UNCERTAIN，HTTP 4xx 为 FATAL，其余 RETRYABLE。
+     *
+     * @param e 发送异常
+     * @return 失败分类
+     */
+    static SendFailureKind classifySendFailure(Exception e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof java.io.InterruptedIOException) {
+                // SocketTimeoutException 是其子类：超时意味着对端可能已处理
+                return SendFailureKind.UNCERTAIN;
+            }
+            String message = t.getMessage();
+            if (message != null && message.contains("HTTP 4")) {
+                return SendFailureKind.FATAL;
+            }
+        }
+        return SendFailureKind.RETRYABLE;
     }
     
     /**
@@ -292,6 +407,9 @@ public class ChannelManager {
      * 返回系统中所有已注册通道的当前状态信息，包括：
      * - 是否已启用
      * - 是否正在运行
+     * - 连接三态：usable / recovering / blocked
+     * - 不确定发送次数（超时未重试、结果未知）
+     * - 待重启补发的消息数
      * 
      * 主要用于健康检查和监控面板显示。
      * 
@@ -300,12 +418,26 @@ public class ChannelManager {
     public Map<String, Object> getStatus() {
         Map<String, Object> status = new HashMap<>();
         for (Map.Entry<String, Channel> entry : channels.entrySet()) {
+            String channelName = entry.getKey();
             Map<String, Object> channelStatus = new HashMap<>();
             channelStatus.put("enabled", true);
             channelStatus.put("running", entry.getValue().isRunning());
-            status.put(entry.getKey(), channelStatus);
+            channelStatus.put("state", entry.getValue().connectionState());
+            int uncertain = uncertainSends.entrySet().stream()
+                    .filter(e -> e.getKey().startsWith(channelName + "|"))
+                    .mapToInt(e -> e.getValue().count())
+                    .sum();
+            channelStatus.put("uncertainSends", uncertain);
+            status.put(channelName, channelStatus);
         }
         return status;
+    }
+    
+    /**
+     * 待重启补发的消息数量。
+     */
+    public int getPendingOutboundCount() {
+        return pendingStore.size();
     }
     
     /**

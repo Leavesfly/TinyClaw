@@ -284,7 +284,38 @@ ChannelManager 的 feishu dispatcher 线程
 
 ---
 
-## 7.11 扩展：新增通道
+## 7.11 可靠性三件套（对齐 OpenClaw 2.0）
+
+### 7.11.1 连接三态
+
+`Channel.connectionState()` 返回 `usable` / `recovering` / `blocked`：
+
+- 长连接通道（Discord/钉钉/飞书）由 `Reconnector` 推导：`disable()` 后为 blocked，连续失败中为 recovering，其余 usable；
+- 其余通道默认以 `isRunning()` 推导。
+- `ChannelManager.getStatus()` 暴露三态与 `uncertainSends`，Web Channels 页以绿/黄/红徽章展示。
+
+### 7.11.2 发送去重（不确定态）
+
+`ChannelManager.classifySendFailure` 将发送失败分为三类：
+
+| 分类 | 判定 | 策略 |
+|------|------|------|
+| UNCERTAIN | 超时类（`InterruptedIOException`/`SocketTimeoutException`） | 不重试（对端可能已送达），记录标记，下次成功联系该会话时告警 |
+| FATAL | HTTP 4xx | 不重试，直接记录 |
+| RETRYABLE | 其余连接类错误 | 重试 3 次，耗尽后持久化待重启补发 |
+
+### 7.11.3 跨重启保留
+
+`OutboundPendingStore`（`workspace/bus/outbound-pending.json`，上限 200 条）：
+
+- 优雅停机时 `stopAll()` 将总线未及发送的消息 `drainOutbound` 转储；
+- 重试耗尽仍失败的消息追加；
+- `startAll()` 读回并重投总线补发；通道未启用则丢弃并告警。
+- 超时类不确定消息不进入此处，避免重启补发产生重复。
+
+---
+
+## 7.12 扩展：新增通道
 
 见 [20 · 扩展开发](20-extending.md)。关键步骤：
 
@@ -296,7 +327,7 @@ ChannelManager 的 feishu dispatcher 线程
 
 ---
 
-## 7.12 下一步
+## 7.13 下一步
 
 - 想了解 LLM 层 → [08 · LLM 提供商](08-llm-providers.md)
 - 想了解 Web 控制台如何与总线交互 → [17 · Web 控制台](17-web-console.md)

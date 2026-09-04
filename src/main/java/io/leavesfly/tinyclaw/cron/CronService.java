@@ -73,6 +73,14 @@ public class CronService {
     
     private static final String STATUS_OK = "ok";         // 执行成功状态
     private static final String STATUS_ERROR = "error";   // 执行失败状态
+    private static final String STATUS_TIMEOUT = "timeout"; // 执行超时状态
+    
+    private static final String TRIGGER_SCHEDULE = "schedule"; // 正常调度触发
+    private static final String TRIGGER_MISFIRE = "misfire";   // 停机补跑触发
+    private static final String TRIGGER_MANUAL = "manual";     // 手动触发
+    
+    private static final int MAX_HISTORY_SIZE = 20;       // 每个任务保留的执行历史条数
+    private static final int RESULT_MAX_LENGTH = 500;     // 执行结果摘要最大长度
     
     private static final String THREAD_NAME = "cron-service";  // 调度线程名称
     
@@ -88,6 +96,7 @@ public class CronService {
     private ExecutorService jobExecutor;                  // 任务执行线程池（隔离调度线程，支持超时中断）
     
     private final CronParser cronParser;                  // Cron 表达式解析器
+    private final Set<String> misfiredJobIds = new HashSet<>(); // 启动时判定补跑的任务 ID，执行时记为 misfire 触发
     
     private long lastLoadedMtimeMs = -1L;                  // 上次加载时文件的 mtime，用于检测外部改动
     private long lastLoadedSize = -1L;                     // 上次加载时文件的大小，同上
@@ -232,19 +241,22 @@ public class CronService {
      * 在锁外执行任务，避免长时间持有锁。
      */
     private void checkJobs() {
-        List<CronJob> dueJobs = collectDueJobs();
-        
-        for (CronJob job : dueJobs) {
-            executeJob(job);
+        for (DueJob due : collectDueJobs()) {
+            executeJob(due.job(), due.trigger());
         }
     }
     
     /**
+     * 到期任务及其触发方式。
+     */
+    private record DueJob(CronJob job, String trigger) {}
+    
+    /**
      * 收集到期的任务。
      * 
-     * @return 到期任务列表
+     * @return 到期任务列表（含触发方式）
      */
-    private List<CronJob> collectDueJobs() {
+    private List<DueJob> collectDueJobs() {
         lock.writeLock().lock();
         try {
             if (!running) {
@@ -255,11 +267,13 @@ public class CronService {
             reloadIfChangedUnsafe();
             
             long now = System.currentTimeMillis();
-            List<CronJob> dueJobs = new ArrayList<>();
+            List<DueJob> dueJobs = new ArrayList<>();
             
             for (CronJob job : store.getJobs()) {
                 if (isJobDue(job, now)) {
-                    dueJobs.add(job);
+                    String trigger = misfiredJobIds.remove(job.getId())
+                            ? TRIGGER_MISFIRE : TRIGGER_SCHEDULE;
+                    dueJobs.add(new DueJob(job, trigger));
                     job.getState().setNextRunAtMs(null);  // 清除下次运行时间，防止重复执行
                 }
             }
@@ -290,16 +304,23 @@ public class CronService {
     /**
      * 执行单个任务。
      * 
-     * 调用任务处理器执行任务，更新任务状态和下次执行时间。
+     * 调用任务处理器执行任务，记录执行历史，更新任务状态和下次执行时间。
      * 
      * @param job 要执行的任务
+     * @param trigger 触发方式（schedule / misfire / manual）
      */
-    private void executeJob(CronJob job) {
+    private void executeJob(CronJob job, String trigger) {
         long startTime = System.currentTimeMillis();
-        String error = invokeJobHandler(job);
+        RunOutcome outcome = invokeJobHandler(job);
+        long durationMs = System.currentTimeMillis() - startTime;
         
-        updateJobState(job, startTime, error);
+        updateJobState(job, startTime, durationMs, outcome, trigger);
     }
+    
+    /**
+     * 单次执行结果。
+     */
+    private record RunOutcome(String status, String error, String result) {}
     
     /**
      * 调用任务处理器。
@@ -307,21 +328,21 @@ public class CronService {
      * 在独立工作线程池中执行并设置超时，避免卡住的任务阻塞整个调度循环。
      * 
      * @param job 要执行的任务
-     * @return 错误信息，成功返回 null
+     * @return 执行结果（状态 / 错误 / 结果摘要）
      */
-    private String invokeJobHandler(CronJob job) {
+    private RunOutcome invokeJobHandler(CronJob job) {
         if (onJob == null) {
-            return null;
+            return new RunOutcome(STATUS_OK, null, null);
         }
         ExecutorService executor = jobExecutor;
         if (executor == null) {
-            return null;
+            return new RunOutcome(STATUS_OK, null, null);
         }
         
-        Future<?> future = executor.submit(() -> onJob.handle(job));
+        Future<String> future = executor.submit(() -> onJob.handle(job));
         try {
-            future.get(JOB_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            return null;
+            String result = future.get(JOB_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return new RunOutcome(STATUS_OK, null, truncateResult(result));
         } catch (TimeoutException e) {
             future.cancel(true);  // 中断卡住的任务，释放工作线程
             String error = "job timed out after " + JOB_TIMEOUT_MS + "ms";
@@ -329,11 +350,11 @@ public class CronService {
                     "job_id", job.getId(),
                     "timeout_ms", JOB_TIMEOUT_MS
             ));
-            return error;
+            return new RunOutcome(STATUS_TIMEOUT, error, null);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
-            return "interrupted";
+            return new RunOutcome(STATUS_ERROR, "interrupted", null);
         } catch (Exception e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             String error = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
@@ -341,18 +362,34 @@ public class CronService {
                     "job_id", job.getId(),
                     "error", error
             ));
-            return error;
+            return new RunOutcome(STATUS_ERROR, error, null);
         }
     }
     
     /**
-     * 更新任务状态。
+     * 截断执行结果摘要，避免历史撑大存储文件。
+     * 
+     * @param result 处理器返回结果
+     * @return 截断后的结果，null 安全
+     */
+    private static String truncateResult(String result) {
+        if (result == null || result.length() <= RESULT_MAX_LENGTH) {
+            return result;
+        }
+        return result.substring(0, RESULT_MAX_LENGTH);
+    }
+    
+    /**
+     * 更新任务状态并追加执行历史。
      * 
      * @param job 任务对象
      * @param startTime 开始执行时间
-     * @param error 错误信息，成功为 null
+     * @param durationMs 执行耗时
+     * @param outcome 执行结果
+     * @param trigger 触发方式
      */
-    private void updateJobState(CronJob job, long startTime, String error) {
+    private void updateJobState(CronJob job, long startTime, long durationMs,
+                                RunOutcome outcome, String trigger) {
         lock.writeLock().lock();
         try {
             CronJob storeJob = findJobById(job.getId());
@@ -362,19 +399,47 @@ public class CronService {
             
             storeJob.getState().setLastRunAtMs(startTime);
             storeJob.setUpdatedAtMs(System.currentTimeMillis());
+            storeJob.getState().setLastStatus(outcome.status());
+            storeJob.getState().setLastError(outcome.error());
             
-            if (error != null) {
-                storeJob.getState().setLastStatus(STATUS_ERROR);
-                storeJob.getState().setLastError(error);
-            } else {
-                storeJob.getState().setLastStatus(STATUS_OK);
-                storeJob.getState().setLastError(null);
-            }
+            appendHistory(storeJob, startTime, durationMs, outcome, trigger);
             
             handlePostExecution(storeJob);
             saveStoreUnsafe();
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+    
+    /**
+     * 追加执行历史记录，最新在前，超过上限截断。
+     * 
+     * @param job 任务对象
+     * @param startTime 开始执行时间
+     * @param durationMs 执行耗时
+     * @param outcome 执行结果
+     * @param trigger 触发方式
+     */
+    private void appendHistory(CronJob job, long startTime, long durationMs,
+                               RunOutcome outcome, String trigger) {
+        CronJobState state = job.getState();
+        List<CronRunRecord> history = state.getHistory();
+        if (history == null) {
+            history = new ArrayList<>();
+            state.setHistory(history);
+        }
+        
+        CronRunRecord record = new CronRunRecord();
+        record.setStartedAtMs(startTime);
+        record.setDurationMs(durationMs);
+        record.setStatus(outcome.status());
+        record.setTrigger(trigger);
+        record.setError(outcome.error());
+        record.setResult(outcome.result());
+        
+        history.add(0, record);
+        if (history.size() > MAX_HISTORY_SIZE) {
+            history.subList(MAX_HISTORY_SIZE, history.size()).clear();
         }
     }
     
@@ -500,15 +565,17 @@ public class CronService {
     /**
      * 重新计算所有启用任务的下次执行时间。
      *
-     * <p>misfire 补跑：EVERY 类型任务若上次执行后停机时间超过一个周期
-     * （lastRunAtMs + everyMs <= now），则下次执行时间设为 now，
-     * 在启动后立即补跑一次；其余任务按常规重算。</p>
+     * <p>misfire 补跑：停机期间错过的执行点在启动后立即补跑一次
+     * （EVERY：上次执行后停机超过一个周期；CRON：最近应执行点晚于上次实际执行）；
+     * AT 一次性任务不补跑；其余任务按常规重算。</p>
      */
     private void recomputeNextRuns() {
         long now = System.currentTimeMillis();
+        misfiredJobIds.clear();
         for (CronJob job : store.getJobs()) {
             if (job.isEnabled()) {
-                if (isEveryJobMisfired(job, now)) {
+                if (isJobMisfired(job, now)) {
+                    misfiredJobIds.add(job.getId());
                     job.getState().setNextRunAtMs(now);
                     logger.info("Misfired job will run immediately on startup", Map.of(
                             "job_id", job.getId(),
@@ -522,6 +589,25 @@ public class CronService {
     }
 
     /**
+     * 判断任务是否错过了应执行的时间点（misfire）。
+     *
+     * @param job 任务对象
+     * @param now 当前时间戳
+     * @return 错过返回 true
+     */
+    private boolean isJobMisfired(CronJob job, long now) {
+        CronSchedule schedule = job.getSchedule();
+        if (schedule == null) {
+            return false;
+        }
+        return switch (schedule.getKind()) {
+            case EVERY -> isEveryJobMisfired(job, now);
+            case CRON -> isCronJobMisfired(job, now);
+            case AT -> false;
+        };
+    }
+
+    /**
      * 判断 EVERY 任务是否错过了应执行的时间点（misfire）。
      *
      * @param job 任务对象
@@ -530,12 +616,41 @@ public class CronService {
      */
     private boolean isEveryJobMisfired(CronJob job, long now) {
         CronSchedule schedule = job.getSchedule();
-        if (schedule == null || CronSchedule.ScheduleKind.EVERY != schedule.getKind()) {
-            return false;
-        }
         Long lastRun = job.getState().getLastRunAtMs();
         Long everyMs = schedule.getEveryMs();
         return lastRun != null && everyMs != null && everyMs > 0 && lastRun + everyMs <= now;
+    }
+
+    /**
+     * 判断 CRON 任务是否错过了应执行的时间点（misfire）。
+     *
+     * <p>规则：最近一个应执行时间点晚于上次实际执行时间，
+     * 说明停机期间至少错过一轮；从未执行过的新任务不视为 misfire。</p>
+     *
+     * @param job 任务对象
+     * @param now 当前时间戳
+     * @return 错过返回 true
+     */
+    private boolean isCronJobMisfired(CronJob job, long now) {
+        Long lastRun = job.getState().getLastRunAtMs();
+        String expr = job.getSchedule().getExpr();
+        if (lastRun == null || expr == null || expr.isEmpty()) {
+            return false;
+        }
+        
+        try {
+            Cron cron = cronParser.parse(expr);
+            ExecutionTime executionTime = ExecutionTime.forCron(cron);
+            ZonedDateTime nowZdt = ZonedDateTime.ofInstant(
+                Instant.ofEpochMilli(now),
+                ZoneId.systemDefault()
+            );
+            Optional<ZonedDateTime> last = executionTime.lastExecution(nowZdt);
+            
+            return last.map(z -> z.toInstant().toEpochMilli() > lastRun).orElse(false);
+        } catch (Exception e) {
+            return false;
+        }
     }
     
     /**
@@ -728,6 +843,24 @@ public class CronService {
      * @return 更新后的任务对象，任务不存在返回 null
      */
     public CronJob updateJobSchedule(String jobId, CronSchedule schedule) {
+        return updateJob(jobId, null, schedule, null, null, null);
+    }
+
+    /**
+     * 更新任务配置（名称 / 调度 / 负载），null 项保留原值。
+     *
+     * <p>调度变更后若任务启用则重算下次执行时间。</p>
+     *
+     * @param jobId 任务 ID
+     * @param name 新名称，null 保留原值
+     * @param schedule 新调度配置，null 保留原值
+     * @param message 新消息内容，null 保留原值
+     * @param channel 新目标通道，null 保留原值
+     * @param to 新目标接收者，null 保留原值
+     * @return 更新后的任务对象，任务不存在返回 null
+     */
+    public CronJob updateJob(String jobId, String name, CronSchedule schedule,
+                             String message, String channel, String to) {
         lock.writeLock().lock();
         try {
             reloadIfChangedUnsafe();
@@ -736,10 +869,24 @@ public class CronService {
                 return null;
             }
 
-            job.setSchedule(schedule);
+            if (name != null && !name.isEmpty()) {
+                job.setName(name);
+            }
+            if (schedule != null) {
+                job.setSchedule(schedule);
+            }
+            if (message != null) {
+                job.getPayload().setMessage(message);
+            }
+            if (channel != null) {
+                job.getPayload().setChannel(channel);
+            }
+            if (to != null) {
+                job.getPayload().setTo(to);
+            }
             job.setUpdatedAtMs(System.currentTimeMillis());
             if (job.isEnabled()) {
-                job.getState().setNextRunAtMs(computeNextRun(schedule, System.currentTimeMillis()));
+                job.getState().setNextRunAtMs(computeNextRun(job.getSchedule(), System.currentTimeMillis()));
             }
 
             saveStoreUnsafe();
@@ -809,6 +956,34 @@ public class CronService {
         } finally {
             lock.writeLock().unlock();
         }
+    }
+    
+    /**
+     * 手动立即触发任务（异步执行，不阻塞调用方）。
+     * 
+     * @param jobId 任务 ID
+     * @return 触发成功返回 true，任务不存在或服务未运行返回 false
+     */
+    public boolean runJobNow(String jobId) {
+        CronJob job;
+        lock.readLock().lock();
+        try {
+            if (!running || jobExecutor == null) {
+                return false;
+            }
+            job = findJobById(jobId);
+            if (job == null) {
+                return false;
+            }
+        } finally {
+            lock.readLock().unlock();
+        }
+        
+        // 在独立线程执行：避免阻塞调用方，也避免在 jobExecutor 内部自提交死锁
+        Thread thread = new Thread(() -> executeJob(job, TRIGGER_MANUAL), THREAD_NAME + "-manual");
+        thread.setDaemon(true);
+        thread.start();
+        return true;
     }
     
     /**

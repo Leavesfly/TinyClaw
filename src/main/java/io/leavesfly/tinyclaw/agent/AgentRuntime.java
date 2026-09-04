@@ -31,6 +31,7 @@ import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.session.SessionMeta;
 import io.leavesfly.tinyclaw.skills.SkillsLoader;
 import io.leavesfly.tinyclaw.tools.Tool;
+import io.leavesfly.tinyclaw.tools.InteractionBroker;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 import io.leavesfly.tinyclaw.util.StringUtils;
@@ -83,6 +84,9 @@ public class AgentRuntime {
 
     /* ---------- 通道管理器（可选，由 GatewayBootstrap 注入） ---------- */
     private volatile ChannelManager channelManager;
+
+    /* ---------- HITL 交互登记处（可选，由 RuntimeAssembly 注入，供 ChatHandler 回传用户决策） ---------- */
+    private volatile InteractionBroker interactionBroker;
 
     /**
      * Hook 调度器。构造时从 {@code ~/.tinyclaw/hooks.json} 加载；文件不存在或加载失败时
@@ -209,6 +213,28 @@ public class AgentRuntime {
     public void setChannelManager(ChannelManager channelManager) {
         this.channelManager = channelManager;
         this.messageRouter.setChannelManager(channelManager);
+    }
+
+    /**
+     * 注入 HITL 交互登记处，供 Web 层回传用户对危险命令审批 / ask_user 提问的决策。
+     * 由 RuntimeAssembly 在装配工具时调用。
+     */
+    public void setInteractionBroker(InteractionBroker interactionBroker) {
+        this.interactionBroker = interactionBroker;
+    }
+
+    /**
+     * 获取 HITL 交互登记处（未注入时返回 null）。
+     */
+    public InteractionBroker getInteractionBroker() {
+        return interactionBroker;
+    }
+
+    /**
+     * 获取通道管理器（未注入时返回 null）。
+     */
+    public ChannelManager getChannelManager() {
+        return channelManager;
     }
 
     // ==================== 生命周期 ====================

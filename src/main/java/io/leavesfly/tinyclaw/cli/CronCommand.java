@@ -39,6 +39,7 @@ public class CronCommand extends CliCommand {
     
     private static final String SUBCOMMAND_LIST = "list";         // 列出任务子命令
     private static final String SUBCOMMAND_ADD = "add";           // 添加任务子命令
+    private static final String SUBCOMMAND_EDIT = "edit";         // 编辑任务子命令
     private static final String SUBCOMMAND_REMOVE = "remove";     // 删除任务子命令
     private static final String SUBCOMMAND_ENABLE = "enable";     // 启用任务子命令
     private static final String SUBCOMMAND_DISABLE = "disable";   // 禁用任务子命令
@@ -101,6 +102,13 @@ public class CronCommand extends CliCommand {
         return switch (subcommand) {
             case SUBCOMMAND_LIST -> listJobs(cronStorePath);
             case SUBCOMMAND_ADD -> addJob(cronStorePath, args);
+            case SUBCOMMAND_EDIT -> {
+                if (args.length < 2) {
+                    System.out.println("Usage: tinyclaw cron edit <job_id> [--name] [--message] [--every|--cron] [--channel] [--to]");
+                    yield 1;
+                }
+                yield editJob(cronStorePath, args[1], args);
+            }
             case SUBCOMMAND_REMOVE -> {
                 if (args.length < 2) {
                     System.out.println("Usage: tinyclaw cron remove <job_id>");
@@ -173,7 +181,26 @@ public class CronCommand extends CliCommand {
         System.out.println("  " + job.getName() + " (" + job.getId() + ")");
         System.out.println("    计划: " + schedule);
         System.out.println("    状态: " + status);
+        System.out.println("    上次运行: " + formatLastRun(job, formatter));
         System.out.println("    下次运行: " + nextRun);
+    }
+    
+    /**
+     * 格式化上次运行时间与结果。
+     * 
+     * @param job 任务对象
+     * @param formatter 时间格式化器
+     * @return 上次运行描述，未运行过返回“无”
+     */
+    private String formatLastRun(CronJob job, DateTimeFormatter formatter) {
+        if (job.getState().getLastRunAtMs() == null) {
+            return "无";
+        }
+        String time = formatter.format(Instant.ofEpochMilli(job.getState().getLastRunAtMs()));
+        String lastStatus = job.getState().getLastStatus() != null
+                ? job.getState().getLastStatus() : "unknown";
+        String lastError = job.getState().getLastError();
+        return time + " (" + lastStatus + (lastError != null ? ": " + lastError : "") + ")";
     }
     
     /**
@@ -320,6 +347,37 @@ public class CronCommand extends CliCommand {
     }
     
     /**
+     * 编辑定时任务，未提供的参数保留原值。
+     * 
+     * @param storePath 任务存储路径
+     * @param jobId 任务 ID
+     * @param args 所有参数
+     * @return 执行结果状态码
+     */
+    private int editJob(String storePath, String jobId, String[] args) {
+        Map<String, String> params = parseArgs(args, 2);
+        JobParams jobParams = parseJobParams(params);
+        
+        CronSchedule schedule = null;
+        if (jobParams.everyStr != null || jobParams.cronExpr != null) {
+            schedule = parseSchedule(jobParams);
+            if (schedule == null) {
+                return 1;
+            }
+        }
+        
+        CronService service = new CronService(storePath);
+        CronJob job = service.updateJob(jobId,
+                jobParams.name, schedule, jobParams.message, jobParams.channel, jobParams.to);
+        if (job != null) {
+            System.out.println("✓ 已更新任务 '" + job.getName() + "' (" + job.getId() + ")");
+            return 0;
+        }
+        System.out.println("✗ 未找到任务 " + jobId);
+        return 1;
+    }
+    
+    /**
      * 删除定时任务。
      * 
      * @param storePath 任务存储路径
@@ -362,6 +420,7 @@ public class CronCommand extends CliCommand {
         System.out.println("定时任务命令：");
         System.out.println("  list              列出所有定时任务");
         System.out.println("  add              添加新的定时任务");
+        System.out.println("  edit <id>        编辑任务（未提供的参数保留原值）");
         System.out.println("  remove <id>       根据 ID 移除任务");
         System.out.println("  enable <id>      启用任务");
         System.out.println("  disable <id>     禁用任务");

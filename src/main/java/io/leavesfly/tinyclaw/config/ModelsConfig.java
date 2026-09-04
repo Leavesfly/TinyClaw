@@ -21,6 +21,16 @@ public class ModelsConfig {
     @JsonProperty("definitions")
     private Map<String, ModelDefinition> definitions = new HashMap<>();
 
+    /**
+     * 运行时 failover 降级链：模型定义 key 列表。
+     *
+     * <p>主模型调用失败（网络/限流/服务错误）时按序降级到列表中的下一个模型，
+     * 每个 fallback 项使用其在 definitions 中绑定的 provider，
+     * 未配置或为空时不启用 failover。</p>
+     */
+    @JsonProperty("fallbacks")
+    private List<String> fallbacks = new ArrayList<>();
+
     public ModelsConfig() {
         // 添加常用模型的默认定义
 
@@ -57,6 +67,14 @@ public class ModelsConfig {
 
     public void setDefinitions(Map<String, ModelDefinition> definitions) {
         this.definitions = definitions;
+    }
+
+    public List<String> getFallbacks() {
+        return fallbacks;
+    }
+
+    public void setFallbacks(List<String> fallbacks) {
+        this.fallbacks = fallbacks != null ? fallbacks : new ArrayList<>();
     }
 
     /**

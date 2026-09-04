@@ -90,6 +90,8 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
 
                 for (TeamTask blocked : blockedTasks) {
                     blocked.markFailed(failureReason);
+                    context.reportNodeStatus(blocked.getTaskId(), blocked.getTaskName(),
+                            CollaborationTopology.NodeStatus.FAILED);
                 }
 
                 logger.error("任务调度阻塞", Map.of(
@@ -187,10 +189,14 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
 
     private void executeTask(TeamTask task, Map<String, RoleAgent> agentMap, SharedContext context) {
         task.markStarted();
+        context.reportNodeStatus(task.getTaskId(), task.getTaskName(),
+                CollaborationTopology.NodeStatus.RUNNING);
 
         AgentRole assignee = task.getAssignee();
         if (assignee == null) {
             task.markFailed("未分配执行者");
+            context.reportNodeStatus(task.getTaskId(), task.getTaskName(),
+                    CollaborationTopology.NodeStatus.FAILED);
             return;
         }
 
@@ -200,6 +206,8 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
         }
         if (agent == null) {
             task.markFailed("找不到对应的Agent: " + assignee.getRoleName());
+            context.reportNodeStatus(task.getTaskId(), task.getTaskName(),
+                    CollaborationTopology.NodeStatus.FAILED);
             return;
         }
 
@@ -208,6 +216,8 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
             String result = agent.answer(taskPrompt);
 
             task.markCompleted(result);
+            context.reportNodeStatus(task.getTaskId(), task.getTaskName(),
+                    CollaborationTopology.NodeStatus.COMPLETED);
 
             synchronized (context) {
                 context.addMessage(agent.getAgentId(), agent.getRoleName(),
@@ -220,6 +230,8 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
             ));
         } catch (Exception e) {
             task.markFailed(e.getMessage());
+            context.reportNodeStatus(task.getTaskId(), task.getTaskName(),
+                    CollaborationTopology.NodeStatus.FAILED);
             logger.error("任务执行失败", Map.of("taskId", task.getTaskId(), "error", e.getMessage()));
         }
     }
@@ -306,6 +318,9 @@ public class TasksStrategy extends AbstractCollaborationStrategy {
 
             for (Map.Entry<String, String> entry : results.entrySet()) {
                 context.addMessage("level-" + levelIndex, entry.getKey(), entry.getValue());
+                // 节点 id 与拓扑的层级命名空间一致：L{层号}:{角色名}
+                context.reportNodeStatus("L" + levelIndex + ":" + entry.getKey(), entry.getKey(),
+                        CollaborationTopology.NodeStatus.COMPLETED);
             }
         }
 

@@ -536,4 +536,15 @@ public class DingTalkChannel extends BaseChannel {
             this.ticket = ticket;
         }
     }
+
+    /**
+     * 连接三态：永久禁用为 blocked，连续失败中为 recovering，其余 usable。
+     */
+    @Override
+    public String connectionState() {
+        if (!isRunning() || reconnector.isDisabled()) {
+            return "blocked";
+        }
+        return reconnector.attempts() > 0 ? "recovering" : "usable";
+    }
 }

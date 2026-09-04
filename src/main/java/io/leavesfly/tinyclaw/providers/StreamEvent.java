@@ -20,6 +20,8 @@ import java.util.Map;
  * - COLLABORATE_START: 多 Agent 协同开始
  * - COLLABORATE_AGENT: 协同中的 Agent 发言
  * - COLLABORATE_AGENT_THINKING: 协同中的 Agent 思考/推理过程（可选展示）
+ * - COLLABORATE_TOPOLOGY: 协同关系拓扑结构（初始版/终版全量下发，驱动实时拓扑图）
+ * - COLLABORATE_NODE: 协同拓扑节点状态变化（实时增量，点亮图上的节点）
  * - COLLABORATE_END: 多 Agent 协同结束
  * - THINKING: 思考/推理过程（可选展示）
  */
@@ -50,10 +52,20 @@ public class StreamEvent {
         COLLABORATE_AGENT_CHUNK,
         /** 协同中的 Agent 思考/推理过程 */
         COLLABORATE_AGENT_THINKING,
+        /** 协同关系拓扑结构（协同开始时下发初始版，结束时下发含真实状态的终版） */
+        COLLABORATE_TOPOLOGY,
+        /** 协同拓扑节点状态变化（执行期增量，驱动前端实时点亮） */
+        COLLABORATE_NODE,
         /** 多 Agent 协同结束 */
         COLLABORATE_END,
         /** 思考/推理过程 */
-        THINKING
+        THINKING,
+        /** 危险命令审批请求（HITL）：暂停执行，等待用户在 Web 控制台批准/拒绝 */
+        APPROVAL_REQUEST,
+        /** 结构化提问（HITL）：向用户征询信息/决策并等待回答 */
+        ASK_USER,
+        /** 任务计划清单（Plan/Todo）：展示多步任务的分解与进度 */
+        PLAN
     }
     
     private final EventType type;
@@ -145,6 +157,35 @@ public class StreamEvent {
                 Map.of("agent", safe(agentName), "turn", safe(turn)));
     }
     
+    /**
+     * 创建协同拓扑结构事件。
+     *
+     * <p>协同开始时下发初始版（全 PENDING），结束时下发终版（含真实状态与边）。
+     * 前端收到终版后全量替换，用户看到的最后一张图与落盘记录一致。</p>
+     *
+     * <p>参数类型为 {@code Object} 而非具体拓扑类：本类位于 providers 包，不应反向
+     * 依赖 collaboration 包。拓扑对象只需是 Jackson 可序列化的普通数据类。</p>
+     *
+     * @param topology 协同拓扑快照（collaboration.CollaborationTopology）
+     */
+    public static StreamEvent collaborateTopology(Object topology) {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("topology", topology);
+        return new StreamEvent(EventType.COLLABORATE_TOPOLOGY, null, meta);
+    }
+
+    /**
+     * 创建协同拓扑节点状态变化事件。
+     *
+     * @param nodeId 节点 id（与拓扑结构里的节点 id 对应）
+     * @param label  节点展示名（CLI 降级显示用）
+     * @param status 新状态（COMPLETED / FAILED / SKIPPED / RUNNING / PENDING）
+     */
+    public static StreamEvent collaborateNode(String nodeId, String label, String status) {
+        return new StreamEvent(EventType.COLLABORATE_NODE, safe(label),
+                Map.of("nodeId", safe(nodeId), "label", safe(label), "status", safe(status)));
+    }
+
     /** 创建协同结束事件 */
     public static StreamEvent collaborateEnd(String mode, String result) {
         return new StreamEvent(EventType.COLLABORATE_END, result,
@@ -154,6 +195,49 @@ public class StreamEvent {
     /** 创建思考过程事件 */
     public static StreamEvent thinking(String content) {
         return new StreamEvent(EventType.THINKING, content, null);
+    }
+
+    /**
+     * 创建危险命令审批请求事件（HITL）。
+     *
+     * <p>前端据此渲染审批卡片；用户点击批准/拒绝后经 REST 回传，
+     * 由 {@code InteractionBroker} 唤醒阻塞中的工具执行。</p>
+     *
+     * @param requestId 交互请求 id（回传时用于定位等待中的 future）
+     * @param command   待审批的危险命令
+     * @param reason    触发审批的原因（命中的黑名单规则/拦截说明）
+     */
+    public static StreamEvent approvalRequest(String requestId, String command, String reason) {
+        return new StreamEvent(EventType.APPROVAL_REQUEST, command,
+                Map.of("requestId", safe(requestId), "command", safe(command), "reason", safe(reason)));
+    }
+
+    /**
+     * 创建结构化提问事件（HITL）。
+     *
+     * @param requestId 交互请求 id
+     * @param question  问题文本
+     * @param options   可选项（可为空，表示自由作答）
+     */
+    public static StreamEvent askUser(String requestId, String question, java.util.List<String> options) {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("requestId", safe(requestId));
+        meta.put("options", options != null ? options : java.util.List.of());
+        return new StreamEvent(EventType.ASK_USER, question, meta);
+    }
+
+    /**
+     * 创建任务计划事件（Plan/Todo）。
+     *
+     * <p>专用结构化事件而非复用 TOOL_START：后者的 args 值会被截断到 500 字符，
+     * 较长的清单 JSON 会被截断导致前端无法解析。本事件完整序列化 todos 数组。</p>
+     *
+     * @param todos 任务项列表，每项形如 {@code {content, status}}
+     */
+    public static StreamEvent plan(java.util.List<?> todos) {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("todos", todos != null ? todos : java.util.List.of());
+        return new StreamEvent(EventType.PLAN, null, meta);
     }
     
     /**
@@ -269,8 +353,25 @@ public class StreamEvent {
             }
             case COLLABORATE_AGENT_CHUNK -> content;
             case COLLABORATE_AGENT_THINKING -> "💭 " + ensureTrailingNewline(content);
+            case COLLABORATE_TOPOLOGY -> {
+                // 图形信息无法在纯文本通道呈现，只报规模，避免污染 CLI 正文
+                yield "\n🕸 协同拓扑已下发（详见 Web 控制台）\n";
+            }
+            case COLLABORATE_NODE -> {
+                String label = getMeta("label");
+                String status = getMeta("status");
+                String display = (label != null && !label.isEmpty()) ? label : getMeta("nodeId");
+                yield "▸ " + display + " · " + status + "\n";
+            }
             case COLLABORATE_END -> "\n🎯 协同完成\n";
             case THINKING -> "💭 " + ensureTrailingNewline(content);
+            case APPROVAL_REQUEST -> "\n⚠️ 需要审批的危险命令: " + content + "\n";
+            case ASK_USER -> "\n❓ " + content + "\n";
+            case PLAN -> {
+                Object todos = getMeta("todos");
+                int n = (todos instanceof java.util.List<?> l) ? l.size() : 0;
+                yield "\n📋 任务计划已更新（" + n + " 项）\n";
+            }
         };
     }
     
@@ -375,10 +476,53 @@ public class StreamEvent {
                     node.put("content", content != null ? content : "");
                     putScopeFields(node);
                 }
+                case COLLABORATE_TOPOLOGY -> {
+                    Object topology = getMeta("topology");
+                    // 序列化失败时降级为空拓扑而非断流，前端收不到结构只是少了实时图。
+                    // 连 StackOverflowError 也接：自引用结构会让 Jackson 递归爆栈，
+                    // 它是 Error 不是 RuntimeException，不接会击穿整个流
+                    if (topology != null) {
+                        try {
+                            node.set("topology", MAPPER.valueToTree(topology));
+                        } catch (RuntimeException | StackOverflowError e) {
+                            node.putObject("topology");
+                        }
+                    }
+                }
+                case COLLABORATE_NODE -> {
+                    String nodeId = getMeta("nodeId");
+                    String label = getMeta("label");
+                    String status = getMeta("status");
+                    node.put("nodeId", nodeId != null ? nodeId : "");
+                    node.put("label", label != null ? label : "");
+                    node.put("status", status != null ? status : "");
+                }
                 case COLLABORATE_END -> {
                     String mode = getMeta("mode");
                     node.put("mode", mode != null ? mode : "");
                     node.put("result", content != null ? content : "");
+                }
+                case APPROVAL_REQUEST -> {
+                    String requestId = getMeta("requestId");
+                    String reason = getMeta("reason");
+                    node.put("requestId", requestId != null ? requestId : "");
+                    node.put("command", content != null ? content : "");
+                    node.put("reason", reason != null ? reason : "");
+                }
+                case ASK_USER -> {
+                    String requestId = getMeta("requestId");
+                    node.put("requestId", requestId != null ? requestId : "");
+                    node.put("question", content != null ? content : "");
+                    Object options = getMeta("options");
+                    if (options != null) {
+                        node.set("options", MAPPER.valueToTree(options));
+                    }
+                }
+                case PLAN -> {
+                    Object todos = getMeta("todos");
+                    if (todos != null) {
+                        node.set("todos", MAPPER.valueToTree(todos));
+                    }
                 }
             }
 

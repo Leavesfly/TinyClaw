@@ -132,6 +132,33 @@ public class FeedbackManager {
         }
     }
 
+    // ==================== 显式反馈收集 ====================
+
+    /**
+     * 记录用户显式评价（如 Web 控制台的 👍/👎）。
+     *
+     * <p>与隐式反馈不同，显式评价直接以极值写入评分（👍=1.0 / 👎=0.0），
+     * 并标记为 {@link EvaluationFeedback.EvalMode#USER_EXPLICIT}，信号权重最高；
+     * 可选的 note 作为文本梯度参与后续 prompt 优化。</p>
+     *
+     * @param sessionKey 会话键
+     * @param positive   {@code true}=👍（满意），{@code false}=👎（不满意）
+     * @param note       可选的文字说明，为空时不作为文本梯度
+     */
+    public void recordExplicitRating(String sessionKey, boolean positive, String note) {
+        EvaluationFeedback feedback = EvaluationFeedback.builder()
+                .sessionKey(sessionKey)
+                .evalMode(EvaluationFeedback.EvalMode.USER_EXPLICIT)
+                .primaryScore(positive ? 1.0 : 0.0)
+                .sampleCount(1)
+                .textualGradient(note != null && !note.isBlank() ? note : null)
+                .metric("helpfulness", positive ? 1.0 : 0.0)
+                .build();
+        save(feedback);
+        logger.info("Recorded explicit user rating", Map.of(
+                "session", String.valueOf(sessionKey), "positive", positive));
+    }
+
     // ==================== 反馈查询与聚合 ====================
 
     /**

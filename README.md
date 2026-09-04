@@ -42,33 +42,83 @@
 ```
 src/main/java/io/leavesfly/tinyclaw/
 ├── TinyClaw.java                    # 应用入口，命令注册与分发
+├── TinyClawException.java           # 框架统一异常基类
+│
+├── bootstrap/                       # 运行时装配（组合根）
+│   └── RuntimeAssembly.java         #   集中构建对象图，保证 CronService / SecurityGuard /
+│                                    #   SubagentManager 等有状态组件全进程仅一份实例
+│
 ├── agent/                           # Agent 核心引擎
-│   ├── AgentLoop.java               #   生命周期管理与消息消费主循环
+│   ├── AgentRuntime.java            #   运行时容器 + 消息消费主循环（run/stop、Provider 热重载）
 │   ├── MessageRouter.java           #   消息路由（用户/系统/指令）
 │   ├── ProviderManager.java         #   LLM Provider 管理与热重载
-│   ├── LLMExecutor.java             #   LLM 调用与工具迭代循环
+│   ├── ProviderComponents.java      #   Provider 切换时原子替换的组件集合
 │   ├── ContextBuilder.java          #   分段式上下文构建
 │   ├── SessionSummarizer.java       #   会话摘要与上下文压缩
-│   ├── context/                     #   上下文分段模块（Identity/Bootstrap/Tools/Skills/Memory）
-│   ├── evolution/                   #   自我进化引擎（PromptOptimizer/FeedbackManager/MemoryEvolver）
-│   └── collaboration/               #   多 Agent 协同编排（7 种模式 + 工作流引擎）
+│   └── context/                     #   上下文分段模块（Identity/Bootstrap/Tools/Skills/Memory）
+├── react/                           # ReAct 执行循环
+│   └── ReActExecutor.java           #   LLM 调用与工具迭代循环（流式/非流式、迭代上限保护）
+│
 ├── bus/                             # 消息总线（发布/订阅，入站/出站队列）
-├── channels/                        # 消息通道适配器（7 种平台）
-├── cli/                             # 命令行接口（8 个命令）
-├── config/                          # 配置模型与加载（11 个配置类）
-├── cron/                            # 定时任务引擎
-├── heartbeat/                       # 心跳服务
-├── logger/                          # 结构化日志封装
+├── channels/                        # 消息通道适配器（7 种平台 + 重连/Webhook/Token 管理）
+├── cli/                             # 命令行接口（12 个命令）
+├── config/                          # 配置模型与加载（20 个类，含 Loader/Migrator/Doctor）
+│
+├── collaboration/                   # 多 Agent 协同编排（顶层包）
+│   ├── AgentOrchestrator.java       #   协同调度器
+│   ├── RoleAgent.java               #   角色 Agent，协同发言的基本单元
+│   ├── CollaborateTool.java         #   collaborate 工具入口（7 种协同模式）
+│   ├── CollaborationTopology.java  #   协同关系拓扑快照（归一为 nodes/edges/layers）
+│   ├── CollaborationTopologyBuilder.java  #   拓扑构建：讨论交互图/任务依赖图/层级图
+│   ├── strategy/                    #   协同策略（Discussion / Tasks / Workflow）
+│   └── workflow/                    #   工作流引擎（6 种节点类型 + 断点续跑 + LLM 动态生成 + DAG 拓扑构建）
+├── subagent/                        # 子代理（顶层包）
+│   ├── SubagentManager.java         #   子代理生成与任务跟踪
+│   ├── SpawnTool.java               #   spawn 工具入口（同步 / 异步两种模式）
+│   ├── SubagentsLoader.java         #   专职子代理定义加载（workspace > global > builtin）
+│   └── SubagentDefinition.java      #   AGENT.md 定义模型
+├── evolution/                       # 自我进化引擎（顶层包）
+│   ├── PromptOptimizer.java         #   Prompt 自动优化
+│   ├── VariantManager.java          #   Prompt 变体管理
+│   ├── FeedbackManager.java         #   反馈收集（评分/文字/隐式信号）
+│   ├── strategy/                    #   优化策略（SelfReflection 等）
+│   └── reflection/                  #   工具调用失败反思（记录→检测→挖掘→修复→应用）
+├── hooks/                           # Hooks 钩子（顶层包，6 种生命周期切点）
+│   ├── HookDispatcher.java          #   事件调度与决策合并
+│   ├── HookRegistry.java            #   钩子注册表
+│   ├── HookConfigLoader.java        #   ~/.tinyclaw/hooks.json 加载
+│   └── CommandHookHandler.java      #   命令型钩子执行（fail-open 语义）
+│
+├── plugins/                         # 插件系统（顶层包，兼容 Claude Code / OpenClaw 插件）
+│   ├── PluginManager.java           #   插件装配总线：发现 → 校验 → 注册 → 接入运行时
+│   ├── PluginDiscovery.java         #   多目录发现（workspace → ~/.tinyclaw → 配置路径）
+│   ├── ManifestParser.java          #   插件清单解析
+│   ├── PluginInstaller.java         #   插件安装（本地路径 / GitHub / git 链接）
+│   ├── MarketplaceManager.java      #   插件市场（<plugin>@<marketplace> 按名选装）
+│   ├── McpComponentAdapter.java     #   MCP 组件 → MCPServersConfig
+│   ├── HookComponentAdapter.java    #   hooks 组件 → HookRegistry
+│   └── AgentComponentAdapter.java   #   agent 组件 → collaboration AgentRole（命名角色库）
+│
+├── providers/                       # LLM 调用抽象（HTTPProvider + StreamEvent + Failover）
 ├── mcp/                             # MCP 协议集成（3 种传输方式）
-├── providers/                       # LLM 调用抽象（HTTPProvider + StreamEvent）
-├── security/                        # 安全沙箱（SecurityGuard）
-├── session/                         # 会话管理与持久化
+├── tools/                           # Agent 工具集（13 个内置工具 + ToolRegistry + MCP 桥接；
+│                                    #   spawn / collaborate 分别位于 subagent/ 与 collaboration/）
 ├── skills/                          # 技能系统（加载/注册/搜索/安装）
-├── tools/                           # Agent 工具集（15 个内置工具 + MCP 桥接）
-├── util/                            # 工具类
+├── session/                         # 会话管理与持久化（JSONL）
+├── memory/                          # 长期记忆（MemoryStore + MemoryEvolver + MemoryScope）
+├── cron/                            # 定时任务引擎（Cron / 固定间隔 / 单次 + 执行记录）
+├── heartbeat/                       # 心跳服务
+├── security/                        # 安全沙箱（SecurityGuard + SecretStore / SecretResolver）
 ├── voice/                           # 语音转写（AliyunTranscriber）
-└── web/                             # Web 控制台（17 个 REST API Handler）
+├── web/                             # Web 控制台（17 个 REST API Handler + 静态资源 + 安全中间件）
+├── logger/                          # 结构化日志封装
+└── util/                            # 工具类（JSON 存储 / 媒体路径 / SSL / 字符串）
 ```
+
+> **分层约定**：`bootstrap` 是唯一组合根，CLI 与网关都从同一个 `RuntimeAssembly` 取用运行时对象；
+> `agent` 只负责生命周期与上下文，实际的 LLM 调用与工具迭代下沉到 `react`；
+> `collaboration`、`subagent`、`evolution`、`hooks`、`plugins` 均为**顶层包**（不再是 `agent` 的子包），
+> 各自通过 `CollaborateTool` / `SpawnTool` 等工具入口被主 Agent 调用，与引擎解耦。
 
 ---
 
@@ -319,6 +369,7 @@ TinyClaw 通过 **SecurityGuard** 提供多层安全防护：
 
 - 实时对话（支持 SSE 流式输出）
 - 会话管理与历史记录
+- 协同关系拓扑可视化（讨论交互图 / 工作流 DAG / 任务依赖图 / 层级汇报图，手写 SVG 零依赖，协同执行中实时点亮节点）
 - 模型切换（运行时热重载）
 - Provider 管理
 - 通道状态监控

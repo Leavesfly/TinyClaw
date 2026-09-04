@@ -56,6 +56,14 @@ public class CollaborationRecord {
     /** 统计指标 */
     private Map<String, Object> metrics;
 
+    /**
+     * 协同关系拓扑快照（角色交互图 / DAG / 任务依赖图 / 层级图）。
+     *
+     * <p>可为 {@code null}：构建失败时不影响记录落盘，旧版记录文件反序列化后也为 null，
+     * 前端据此降级为纯线性时间线。</p>
+     */
+    private CollaborationTopology topology;
+
     /** Jackson ObjectMapper（静态，线程安全） */
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT)
@@ -110,7 +118,10 @@ public class CollaborationRecord {
         
         // 计算统计指标
         record.calculateMetrics(context);
-        
+
+        // 构建协同关系拓扑（内部已吞异常，失败时返回 null 走降级）
+        record.setTopology(CollaborationTopologyBuilder.build(config, context));
+
         return record;
     }
 
@@ -468,5 +479,13 @@ public class CollaborationRecord {
 
     public void setMetrics(Map<String, Object> metrics) {
         this.metrics = metrics;
+    }
+
+    public CollaborationTopology getTopology() {
+        return topology;
+    }
+
+    public void setTopology(CollaborationTopology topology) {
+        this.topology = topology;
     }
 }

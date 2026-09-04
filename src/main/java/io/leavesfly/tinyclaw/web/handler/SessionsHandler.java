@@ -11,6 +11,7 @@ import io.leavesfly.tinyclaw.session.SessionMeta;
 import io.leavesfly.tinyclaw.session.SessionProgress;
 import io.leavesfly.tinyclaw.session.SessionSearchHit;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
+import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.collaboration.AgentMessage;
 import io.leavesfly.tinyclaw.collaboration.CollaborationRecord;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
@@ -129,6 +130,55 @@ public class SessionsHandler extends BaseHandler {
             }
             WebUtils.sendJson(exchange, 200, result, corsOrigin);
 
+        } else if (isForkPath(path) && WebUtils.HTTP_METHOD_POST.equals(method)) {
+            // 派生分支会话：复制截断点之前的转录到新会话，供「重新生成 / 回溯重发」使用。
+            // 源会话保持不可变，分支作为独立会话存在。
+            String key = forkSessionKey(path);
+            String body = WebUtils.readRequestBodyLimited(exchange);
+            JsonNode json = (body != null && !body.isBlank())
+                    ? WebUtils.MAPPER.readTree(body) : null;
+            int requestedCut = json != null ? json.path("cutIndex").asInt(-1) : -1;
+
+            List<Message> history = sessionManager.getHistory(key);
+            if (history.isEmpty()) {
+                WebUtils.sendJson(exchange, 404,
+                        WebUtils.errorJson("Source session is empty or missing"), corsOrigin);
+                return true;
+            }
+            // 截断点：显式传入则夹取到 [0, size]；缺省时回退到「最后一条 user 消息」的下标，
+            // 使分支复制该提问之前的全部转录，前端再把它作为新一轮重发 → 达成重新生成
+            int cut = requestedCut >= 0
+                    ? Math.min(requestedCut, history.size())
+                    : lastUserIndex(history);
+            if (cut < 0) {
+                cut = history.size();
+            }
+            String newKey = sessionManager.forkSession(key, cut, null);
+            if (newKey == null) {
+                WebUtils.sendJson(exchange, 404,
+                        WebUtils.errorJson("Source session not found"), corsOrigin);
+                return true;
+            }
+            ObjectNode forkResult = WebUtils.MAPPER.createObjectNode();
+            forkResult.put("sessionKey", newKey);
+            forkResult.put("copiedCount", cut);
+            // 重发载荷：截断点处被排除的那条消息（通常是 user 提问），前端据此在新分支重跑
+            if (cut < history.size()) {
+                Message replay = history.get(cut);
+                if ("user".equals(replay.getRole())) {
+                    ObjectNode replayNode = WebUtils.MAPPER.createObjectNode();
+                    replayNode.put("content", replay.getContent() != null ? replay.getContent() : "");
+                    if (replay.hasImages()) {
+                        ArrayNode imgs = replayNode.putArray("images");
+                        for (String imgPath : replay.getImages()) {
+                            imgs.add(imgPath);
+                        }
+                    }
+                    forkResult.set("replayMessage", replayNode);
+                }
+            }
+            WebUtils.sendJson(exchange, 200, forkResult, corsOrigin);
+
         } else if (path.startsWith(WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR)
                 && WebUtils.HTTP_METHOD_GET.equals(method)) {
             String key = URLDecoder.decode(
@@ -184,6 +234,8 @@ public class SessionsHandler extends BaseHandler {
                             r.put("argsSummary", record.getArgsSummary());
                             r.put("resultSummary", record.getResultSummary());
                             r.put("success", record.isSuccess());
+                            // 工具调用时间戳：供前端 Trace 时间线展示时序与相邻步骤耗时
+                            r.put("timestamp", record.getTimestamp() != null ? record.getTimestamp().toString() : null);
                             // collaborate 工具调用：附带协同过程详情
                             if ("collaborate".equals(record.getToolName())) {
                                 appendCollaborationDetailToToolRecord(
@@ -231,6 +283,31 @@ public class SessionsHandler extends BaseHandler {
         String middle = path.substring(prefix.length(),
                 path.length() - (WebUtils.PATH_SEPARATOR + "progress").length());
         return URLDecoder.decode(middle, StandardCharsets.UTF_8);
+    }
+
+    /** 派生子资源路径：{@code /api/sessions/{key}/fork} */
+    private boolean isForkPath(String path) {
+        String prefix = WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR;
+        return path.startsWith(prefix)
+                && path.endsWith(WebUtils.PATH_SEPARATOR + "fork")
+                && path.length() > prefix.length() + "/fork".length();
+    }
+
+    private String forkSessionKey(String path) {
+        String prefix = WebUtils.API_SESSIONS + WebUtils.PATH_SEPARATOR;
+        String middle = path.substring(prefix.length(),
+                path.length() - (WebUtils.PATH_SEPARATOR + "fork").length());
+        return URLDecoder.decode(middle, StandardCharsets.UTF_8);
+    }
+
+    /** 转录中最后一条 user 消息的绝对下标；没有则返回 -1 */
+    private int lastUserIndex(List<Message> history) {
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if ("user".equals(history.get(i).getRole())) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private ObjectNode progressNode(SessionProgress progress) {
@@ -359,7 +436,7 @@ public class SessionsHandler extends BaseHandler {
 
     /**
      * 将 CollaborationRecord 构建为 JSON 节点，包含模式、目标、参与者、
-     * 多 Agent 对话历史和统计指标。
+     * 多 Agent 对话历史、统计指标与协同关系拓扑。
      */
     private ObjectNode buildCollaborationDetailNode(CollaborationRecord record) {
         ObjectNode detail = WebUtils.MAPPER.createObjectNode();
@@ -402,6 +479,11 @@ public class SessionsHandler extends BaseHandler {
         if (record.getMetrics() != null && !record.getMetrics().isEmpty()) {
             ObjectNode metricsNode = WebUtils.MAPPER.valueToTree(record.getMetrics());
             detail.set("metrics", metricsNode);
+        }
+
+        // 协同关系拓扑：缺失时不下发该字段，前端据此只渲染线性时间线（兼容旧记录）
+        if (record.getTopology() != null) {
+            detail.set("topology", WebUtils.MAPPER.valueToTree(record.getTopology()));
         }
 
         return detail;

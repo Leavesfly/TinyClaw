@@ -15,11 +15,14 @@ import io.leavesfly.tinyclaw.security.SecurityGuard;
 import io.leavesfly.tinyclaw.subagent.SpawnTool;
 import io.leavesfly.tinyclaw.subagent.SubagentManager;
 import io.leavesfly.tinyclaw.subagent.SubagentsLoader;
+import io.leavesfly.tinyclaw.tools.AskUserTool;
 import io.leavesfly.tinyclaw.tools.CronTool;
 import io.leavesfly.tinyclaw.tools.EditFileTool;
 import io.leavesfly.tinyclaw.tools.ExecTool;
+import io.leavesfly.tinyclaw.tools.InteractionBroker;
 import io.leavesfly.tinyclaw.tools.ListDirTool;
 import io.leavesfly.tinyclaw.tools.MessageTool;
+import io.leavesfly.tinyclaw.tools.PlanTool;
 import io.leavesfly.tinyclaw.tools.ReadFileTool;
 import io.leavesfly.tinyclaw.tools.SecretsTool;
 import io.leavesfly.tinyclaw.tools.SkillsTool;
@@ -129,8 +132,19 @@ public final class RuntimeAssembly {
         agentRuntime.registerTool(new ListDirTool(securityGuard));
         agentRuntime.registerTool(new EditFileTool(securityGuard));
 
-        // 执行工具
-        agentRuntime.registerTool(new ExecTool(workspace, securityGuard));
+        // HITL 交互登记处：危险命令审批与 ask_user 提问共用，Web 层通过 AgentRuntime 回传用户决策
+        InteractionBroker interactionBroker = new InteractionBroker();
+        agentRuntime.setInteractionBroker(interactionBroker);
+        boolean hitlEnabled = config.getAgent().isHitlApprovalEnabled();
+
+        // 执行工具（接入危险命令人工审批）
+        agentRuntime.registerTool(new ExecTool(workspace, securityGuard, interactionBroker, hitlEnabled));
+
+        // 结构化提问工具（HITL）：让 Agent 在信息不足时征询用户
+        agentRuntime.registerTool(new AskUserTool(interactionBroker));
+
+        // 任务计划工具（Plan/Todo）：将多步任务拆解为可视化清单并实时更新进度
+        agentRuntime.registerTool(new PlanTool());
 
         // 网络工具
         String braveApiKey = config.getTools() != null ? config.getTools().getBraveApi() : null;

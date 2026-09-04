@@ -193,4 +193,19 @@ class MessageBusTest {
         bus.publishInbound(new InboundMessage("ch", "u", "c", "msg"));
         assertTrue(bus.hasInbound());
     }
+
+    @Test
+    @DisplayName("drainOutbound: 排空指定通道队列，不影响其他通道")
+    void drainOutbound_DrainsOnlyTargetChannel() {
+        bus.publishOutbound(new OutboundMessage("telegram", "c1", "a"));
+        bus.publishOutbound(new OutboundMessage("telegram", "c1", "b"));
+        bus.publishOutbound(new OutboundMessage("discord", "c2", "x"));
+
+        var drained = bus.drainOutbound("telegram");
+        assertEquals(2, drained.size());
+        assertEquals(0, bus.getOutboundSize("telegram"));
+        assertEquals(1, bus.getOutboundSize("discord"), "不得影响其他通道");
+
+        assertTrue(bus.drainOutbound("unknown").isEmpty());
+    }
 }

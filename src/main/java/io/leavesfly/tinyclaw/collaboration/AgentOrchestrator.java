@@ -160,12 +160,25 @@ public class AgentOrchestrator {
         
         boolean isHierarchyStyle = config.getMode() == CollaborationConfig.Mode.TASKS
                 && config.getTasksStyle() == CollaborationConfig.TasksStyle.HIERARCHY;
-        if (agents.isEmpty() && !isHierarchyStyle) {
+        // WORKFLOW 的执行者来自工作流定义里的节点 agents，config.roles 可以为空——
+        // WorkflowStrategy 不使用传入的 agents 列表，旧的空角色拦截会拒掉合法的直接调用
+        boolean rolesOptional = isHierarchyStyle
+                || config.getMode() == CollaborationConfig.Mode.WORKFLOW;
+        if (agents.isEmpty() && !rolesOptional) {
             return "未配置参与角色，无法启动协同";
         }
         
         // 3. 获取对应策略
         CollaborationStrategy strategy = resolveStrategy(config);
+
+        // 下发初始拓扑结构（全 PENDING）：前端先画出骨架，执行中靠节点事件逐个点亮。
+        // 构建器内部已吞异常，失败只是没有实时图，不影响协同本身
+        if (callback != null) {
+            CollaborationTopology initialTopology = CollaborationTopologyBuilder.build(config, context);
+            if (initialTopology != null) {
+                callback.onEvent(StreamEvent.collaborateTopology(initialTopology));
+            }
+        }
         
         // 4. 执行协同流程
         try {
@@ -182,6 +195,12 @@ public class AgentOrchestrator {
 
             // 通过回调输出协同结束事件
             if (callback != null) {
+                // 下发终版拓扑（含真实节点状态与边）：前端全量替换实时图，
+                // 用户最终看到的图与落盘记录一致，边也是初始版画不出来的
+                CollaborationTopology finalTopology = CollaborationTopologyBuilder.build(config, context);
+                if (finalTopology != null) {
+                    callback.onEvent(StreamEvent.collaborateTopology(finalTopology));
+                }
                 callback.onEvent(StreamEvent.collaborateEnd(modeStr, result));
             }
 

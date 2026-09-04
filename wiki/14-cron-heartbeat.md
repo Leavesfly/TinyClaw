@@ -12,6 +12,8 @@
 - **Cron 表达式**：5 字段（分 时 日 月 周），由 `cron-utils 9.2` 解析（Unix 风格）
 - **固定间隔（EVERY）**：每 N 毫秒执行，支持 **misfire 补跑**（见 14.7）
 - **单次定时（AT）**：在指定时间点执行一次
+- **执行历史**：每次运行记录 `CronRunRecord`（状态 ok/error/timeout、触发方式 schedule/misfire/manual、耗时、错误、结果摘要），每任务保留最近 20 条，随 `jobs.json` 持久化
+- **手动触发**：`CronService.runJobNow(jobId)` / Web `POST /api/cron/{id}/run`，异步执行不阻塞调用方
 - **持久化**：任务变更即落盘 `workspace/cron/jobs.json`，含 `state.lastRunAtMs` 用于重启补跑判断
 - **并发安全**：`ReentrantReadWriteLock` 保护任务列表
 - **系统内置 job**：以 `__` 前后缀命名（`__heartbeat__`、`__memory_evolution__`），由 `GatewayBootstrap` 的复合 onJob handler 按名称分发
@@ -22,7 +24,8 @@
 |----|------|
 | `CronJob` | 任务实体：ID、名称、payload、schedule、启用状态、创建/更新时间 |
 | `CronSchedule` | 调度策略：`kind=cron/every/at`，`cron` 表达式、`everyMs`、`at` 时间点 |
-| `CronJobState` | 运行态：`lastRunAtMs` / `nextRunAtMs` / `runCount` / `lastError` |
+| `CronJobState` | 运行态：`lastRunAtMs` / `nextRunAtMs` / `lastStatus` / `lastError` / `history` |
+| `CronRunRecord` | 单次执行记录：`startedAtMs` / `durationMs` / `status` / `trigger` / `error` / `result` |
 | `CronPayload` | 任务内容：`kind` + `message`（消息文本）+ 目标 `channel` / `to` |
 
 ### 14.1.3 运行流程
@@ -42,13 +45,16 @@
    │
    ▼
 回写 lastRunAtMs / nextRunAtMs / runCount → CronStore.save(...)
+   │
+   ▼
+追加 CronRunRecord 到 state.history（最新在前，上限 20 条）→ 落盘
 ```
 
 ### 14.1.4 CLI / 工具 / Web 入口
 
-- **CLI**：`tinyclaw cron list|add|remove|enable|disable ...`
+- **CLI**：`tinyclaw cron list|add|edit|remove|enable|disable ...`（list 含上次运行状态）
 - **工具**：`cron` 工具（Agent 可自主创建任务）
-- **Web**：`CronHandler`（REST + UI）
+- **Web**：`CronHandler`（REST + UI）：列表含 `lastStatus`/`history`；`POST /api/cron/{id}/run` 手动触发；`PUT /api/cron/{id}` 编辑任务；Cron 页面支持 Edit / Run / History
 
 三路入口最终都落到同一个 `CronService` API。
 
@@ -232,7 +238,9 @@ TinyClaw 采用 **Unix 标准 5 字段**（与 Linux `crontab` 一致）：
 | JSON 文件损坏 | 启动时告警，回退为空任务列表；原文件备份为 `.bak` |
 | 心跳整轮超时 | `future.cancel(true)` + `abortCurrentTask()`，记 `TIMEOUT` |
 | Agent 忙（任务进行中） | 心跳本轮跳过（`SKIPPED_BUSY`），下轮正常 |
-| EVERY 任务 misfire | 启动重算时若 `lastRunAtMs + everyMs <= now`，下次运行时间设为 now（启动后补跑一次）；CRON/AT 任务不补跑 |
+| EVERY 任务 misfire | 启动重算时若 `lastRunAtMs + everyMs <= now`，下次运行时间设为 now（启动后补跑一次） |
+| CRON 任务 misfire | 启动重算时若最近应执行点（`lastExecution(now)`）晚于 `lastRunAtMs`，启动后补跑一次；从未执行过的新任务不补跑 |
+| AT 任务错过 | 不补跑（一次性任务过期即失效） |
 
 ---
 

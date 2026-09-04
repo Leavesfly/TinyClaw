@@ -1,6 +1,7 @@
 package io.leavesfly.tinyclaw.tools;
 
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
+import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.security.SecurityGuard;
 
 import java.io.BufferedReader;
@@ -27,25 +28,47 @@ import java.util.regex.Pattern;
  * 此工具允许执行任意系统命令，请务必配合 SecurityGuard 使用，
  * 避免执行危险命令（如 rm -rf、格式化等）。
  */
-public class ExecTool implements Tool {
+public class ExecTool implements Tool, StreamAwareTool, ToolContextAware {
     
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("exec");
     
     private static final int MAX_OUTPUT_LENGTH = 10000;         // 输出最大长度
     private static final long DEFAULT_TIMEOUT_SECONDS = 60;     // 默认超时时间（秒）
     private static final long THREAD_JOIN_TIMEOUT_MS = 1000;    // 线程等待超时（毫秒）
+    private static final long APPROVAL_TIMEOUT_SECONDS = 120;   // 危险命令人工审批等待超时（秒）
     
     private final SecurityGuard securityGuard;   // 安全守卫（可选）
     private final String workingDir;             // 默认工作目录
     private final long timeoutSeconds;           // 命令超时时间
+    private final InteractionBroker broker;      // HITL 交互登记处（null 表示不支持审批）
+    private final boolean hitlEnabled;           // 是否对交互式 Web 会话的危险命令启用人工审批
+
+    // 单例工具的可变上下文：每次执行前由 ReActExecutor.setToolContext 覆写
+    private volatile LLMProvider.EnhancedStreamCallback streamCallback;
+    private volatile String sessionKey;
     
     public ExecTool(String workingDir, SecurityGuard securityGuard) {
+        this(workingDir, securityGuard, null, false);
+    }
+
+    /**
+     * 构造 ExecTool，可选接入 HITL 危险命令审批。
+     *
+     * @param workingDir     默认工作目录
+     * @param securityGuard  安全守卫（必需）
+     * @param broker         HITL 交互登记处，null 表示不启用审批（维持硬拦截）
+     * @param hitlEnabled    是否对交互式 Web 会话的危险命令启用人工审批
+     */
+    public ExecTool(String workingDir, SecurityGuard securityGuard,
+                    InteractionBroker broker, boolean hitlEnabled) {
         if (securityGuard == null) {
             throw new IllegalArgumentException("SecurityGuard is required for ExecTool");
         }
         this.securityGuard = securityGuard;
         this.workingDir = workingDir;
         this.timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
+        this.broker = broker;
+        this.hitlEnabled = hitlEnabled;
     }
     
     @Override
@@ -128,12 +151,16 @@ public class ExecTool implements Tool {
     /**
      * 执行安全检查。
      * 
+     * <p>工作目录越界为硬约束，直接拒绝。命令命中黑名单时：若为交互式 Web 会话
+     * 且启用了 HITL，则转为人工审批——沿 SSE 下发审批请求并阻塞等待用户决策，
+     * 批准则放行、拒绝/超时则拦截；否则维持原有硬拦截行为。</p>
+     * 
      * @param command 要执行的命令
      * @param cwd 工作目录
-     * @return 错误信息，无错误则返回 null
+     * @return 错误信息，无错误（含审批通过）则返回 null
      */
     private String performSecurityChecks(String command, String cwd) {
-        // 检查工作目录
+        // 检查工作目录（硬约束，不可审批绕过）
         if (securityGuard != null) {
             String error = securityGuard.checkWorkingDir(cwd);
             if (error != null) {
@@ -142,7 +169,32 @@ public class ExecTool implements Tool {
         }
         
         // 检查命令安全性
-        return guardCommand(command);
+        String blockReason = guardCommand(command);
+        if (blockReason == null) {
+            return null; // 非危险命令，放行
+        }
+        
+        // 危险命令：交互式 Web 会话且启用 HITL 时转人工审批，否则硬拦截
+        if (canRequestApproval()) {
+            LLMProvider.EnhancedStreamCallback cb = this.streamCallback;
+            boolean approved = broker.requestApproval(cb, command, blockReason, APPROVAL_TIMEOUT_SECONDS);
+            if (approved) {
+                logger.warn("Dangerous command APPROVED via HITL, proceeding",
+                        Map.of("command", command, "session", String.valueOf(sessionKey)));
+                return null;
+            }
+            return "用户拒绝执行该危险命令（" + blockReason + "）";
+        }
+        return blockReason;
+    }
+    
+    /**
+     * 是否可对当前命令发起人工审批：启用 HITL、broker 就绪、有 SSE 回调，且为 Web 会话。
+     * 非 Web 通道无审批 UI，返回 false 以维持硬拦截，避免挂起。
+     */
+    private boolean canRequestApproval() {
+        return hitlEnabled && broker != null && streamCallback != null
+                && sessionKey != null && sessionKey.startsWith("web");
     }
     
     /**
@@ -314,6 +366,21 @@ public class ExecTool implements Tool {
      */
     private String guardCommand(String command) {
         return securityGuard.checkCommand(command);
+    }
+    
+    @Override
+    public void setStreamCallback(LLMProvider.EnhancedStreamCallback callback) {
+        this.streamCallback = callback;
+    }
+    
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        // exec 不需要投递目标；实现接口只为拿到 setSessionContext 的 sessionKey 用于审批门控
+    }
+    
+    @Override
+    public void setSessionContext(String sessionKey) {
+        this.sessionKey = sessionKey;
     }
     
     /**

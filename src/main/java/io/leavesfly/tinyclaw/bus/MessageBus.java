@@ -309,6 +309,24 @@ public class MessageBus {
     }
 
     /**
+     * 排空指定通道的出站队列，返回其中全部消息。
+     *
+     * <p>用于优雅停机时将未发送消息转储到持久化存储，重启后补发。</p>
+     *
+     * @param channel 通道名称
+     * @return 队列中的全部消息，队列为空时返回空列表
+     */
+    public java.util.List<OutboundMessage> drainOutbound(String channel) {
+        LinkedBlockingQueue<OutboundMessage> channelQueue = outboundByChannel.get(channel);
+        if (channelQueue == null) {
+            return java.util.List.of();
+        }
+        java.util.List<OutboundMessage> drained = new java.util.ArrayList<>();
+        channelQueue.drainTo(drained);
+        return drained;
+    }
+
+    /**
      * 检查消息总线是否已关闭
      *
      * @return 如果已关闭返回 true

@@ -356,4 +356,31 @@ public class SharedContext {
     public LLMProvider.EnhancedStreamCallback getStreamCallback() {
         return streamCallback;
     }
+
+    /**
+     * 上报协同拓扑节点状态变化：有流式回调时发出 {@code COLLABORATE_NODE} 事件，否则静默。
+     *
+     * <p>供各策略 / 工作流引擎在节点状态迁移点调用，驱动 Web 控制台的实时拓扑图。
+     * 收敛到这里而不是各处直接取回调，是为了让非流式路径（CLI 单次消息、无回调的
+     * 嵌套场景）自然降级为零开销，调用方无需判空。</p>
+     *
+     * <p>事件上报绝不能拖垮执行：回调内部异常在这里吞掉，节点状态图少一次闪烁
+     * 可接受，协同本身被中断不可接受。</p>
+     *
+     * @param nodeId 节点 id（与拓扑结构下发的一致）
+     * @param label  节点展示名
+     * @param status 新状态
+     */
+    public void reportNodeStatus(String nodeId, String label,
+                                 CollaborationTopology.NodeStatus status) {
+        LLMProvider.EnhancedStreamCallback callback = this.streamCallback;
+        if (callback == null || nodeId == null || status == null) {
+            return;
+        }
+        try {
+            callback.onEvent(StreamEvent.collaborateNode(nodeId, label, status.name()));
+        } catch (RuntimeException e) {
+            // 上报是过程展示，失败只影响实时图，不影响协同本身
+        }
+    }
 }

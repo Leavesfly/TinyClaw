@@ -33,6 +33,16 @@ public interface Channel {
      * 检查通道是否正在运行
      */
     boolean isRunning();
+
+    /**
+     * 通道连接状态（对齐 OpenClaw 三态）：
+     * usable（可用）/ recovering（断线重连中）/ blocked（不可恢复或已停止）。
+     *
+     * <p>默认实现以 isRunning 推导；长连接通道应覆写以反映重连器状态。</p>
+     */
+    default String connectionState() {
+        return isRunning() ? "usable" : "blocked";
+    }
     
     /**
      * 检查发送者是否被允许

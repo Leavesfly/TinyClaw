@@ -15,11 +15,14 @@ import io.leavesfly.tinyclaw.config.ProvidersConfig;
 import io.leavesfly.tinyclaw.hooks.HookDispatcher;
 import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.HTTPProvider;
+import io.leavesfly.tinyclaw.providers.FailoverLLMProvider;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.tools.TokenUsageStore;
 import io.leavesfly.tinyclaw.tools.ToolRegistry;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -160,9 +163,10 @@ class ProviderManager {
      * 调用方需自行保证线程安全（构造器天然安全，setProvider 通过 providerLock 保护）。
      */
     private void applyProvider(LLMProvider newProvider) {
-        this.provider = newProvider;
-
         String model = config.getAgent().getModel();
+        LLMProvider effective = wrapWithFailover(newProvider, model);
+        this.provider = effective;
+
         int maxIterations = config.getAgent().getMaxToolIterations();
         int contextWindow = resolveContextWindow(model);
         String providerName = resolveProviderName(model);
@@ -171,15 +175,15 @@ class ProviderManager {
         contextBuilder.setContextWindow(contextWindow);
 
         MemoryStore memoryStore = contextBuilder.getMemoryStore();
-        MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, newProvider, model);
+        MemoryEvolver memoryEvolver = new MemoryEvolver(memoryStore, effective, model);
 
         TokenUsageStore tokenUsageStore = new TokenUsageStore(workspace);
-        ReActExecutor reActExecutor = new ReActExecutor(newProvider, tools, sessions, model, providerName, maxIterations);
+        ReActExecutor reActExecutor = new ReActExecutor(effective, tools, sessions, model, providerName, maxIterations);
         reActExecutor.setTokenUsageStore(tokenUsageStore);
         reActExecutor.setHookDispatcher(hookDispatcher);
 
         SessionSummarizer summarizer = new SessionSummarizer(
-                sessions, newProvider, model, contextWindow, memoryStore, memoryEvolver);
+                sessions, effective, model, contextWindow, memoryStore, memoryEvolver);
 
         // 热切换 Provider 时先关闭旧组件的摘要线程池，避免线程残留
         ProviderComponents old = this.components;
@@ -188,9 +192,60 @@ class ProviderManager {
         }
 
         this.components = buildOptionalComponents(
-                newProvider, model, maxIterations, reActExecutor, summarizer, memoryEvolver, tokenUsageStore);
+                effective, model, maxIterations, reActExecutor, summarizer, memoryEvolver, tokenUsageStore);
 
         this.providerConfigured = true;
+    }
+
+    /**
+     * 按 models.fallbacks 配置将主 Provider 包装为 failover 链。
+     *
+     * <p>fallback 项为 models.definitions 的 key，自带 provider 绑定；
+     * 未配置、未定义或 provider 未授权的项跳过并告警；
+     * 无有效 fallback 时原样返回主 Provider。</p>
+     *
+     * @param primary 主 Provider
+     * @param primaryModel 主模型名
+     * @return failover 装饰器或原主 Provider
+     */
+    private LLMProvider wrapWithFailover(LLMProvider primary, String primaryModel) {
+        List<String> fallbackModels = config.getModels().getFallbacks();
+        if (fallbackModels == null || fallbackModels.isEmpty()) {
+            return primary;
+        }
+
+        List<LLMProvider> providers = new ArrayList<>(List.of(primary));
+        List<String> models = new ArrayList<>(List.of(primaryModel));
+
+        for (String fallbackModel : fallbackModels) {
+            if (fallbackModel == null || models.contains(fallbackModel)) {
+                continue;
+            }
+            ModelsConfig.ModelDefinition def = config.getModels().getDefinitions().get(fallbackModel);
+            if (def == null) {
+                logger.warn("failover skipped: model not defined", Map.of("model", fallbackModel));
+                continue;
+            }
+            ProvidersConfig.ProviderConfig providerConfig = config.getProviders().getByName(def.getProvider());
+            if (providerConfig == null || !providerConfig.isValid()) {
+                logger.warn("failover skipped: provider not authorized", Map.of(
+                        "model", fallbackModel, "provider", def.getProvider()));
+                continue;
+            }
+            String apiBase = providerConfig.getApiBaseOrDefault(
+                    ProvidersConfig.getDefaultApiBase(def.getProvider()));
+            HTTPProvider fallbackProvider = new HTTPProvider(providerConfig.getApiKey(), apiBase, def.getProvider());
+            fallbackProvider.setThinkingEnabled(config.getAgent().isThinkingEnabled());
+            providers.add(fallbackProvider);
+            models.add(fallbackModel);
+        }
+
+        if (providers.size() == 1) {
+            return primary;
+        }
+        logger.info("Provider failover chain configured", Map.of(
+                "chain", String.join(" -> ", models)));
+        return new FailoverLLMProvider(providers, models);
     }
 
     /**

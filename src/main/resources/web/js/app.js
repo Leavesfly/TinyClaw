@@ -7,6 +7,8 @@ class TinyClawConsole {
         this.allSessions = [];
         this.currentSessionPage = 1;
         this.authToken = localStorage.getItem('tinyclaw_token') || null;
+        // 后端能力开关：显式反馈（👍/👎）是否启用，由 fetchCapabilities 探测
+        this.feedbackEnabled = false;
         this.init();
     }
 
@@ -17,6 +19,7 @@ class TinyClawConsole {
             marked.setOptions({ breaks: false });
         }
         
+        this.bindThemeToggle();
         this.bindNavigation();
         this.bindChat();
         this.bindModal();
@@ -147,8 +150,26 @@ class TinyClawConsole {
         document.querySelectorAll('.nav-group-header').forEach(header => {
             header.addEventListener('click', () => {
                 const group = header.parentElement;
+                const app = document.querySelector('.app');
+                if (app.classList.contains('sidebar-collapsed')) {
+                    // 折叠态下点击分组图标：展开侧边栏并展开该分组
+                    app.classList.remove('sidebar-collapsed');
+                    localStorage.setItem('tinyclaw_sidebar_collapsed', '0');
+                    group.classList.remove('collapsed');
+                    return;
+                }
                 group.classList.toggle('collapsed');
             });
+        });
+
+        // Sidebar collapse/expand
+        const app = document.querySelector('.app');
+        if (localStorage.getItem('tinyclaw_sidebar_collapsed') === '1') {
+            app.classList.add('sidebar-collapsed');
+        }
+        document.getElementById('sidebarToggle').addEventListener('click', () => {
+            const collapsed = app.classList.toggle('sidebar-collapsed');
+            localStorage.setItem('tinyclaw_sidebar_collapsed', collapsed ? '1' : '0');
         });
 
         // Hash change
@@ -156,6 +177,28 @@ class TinyClawConsole {
             const page = window.location.hash.slice(1) || 'chat';
             this.navigateTo(page, false);
         });
+    }
+
+    // ==================== Theme ====================
+
+    /**
+     * 绑定主题切换按钮：在浅色 / 深色间切换并持久化到 localStorage。
+     * 默认浅色；首屏的实际应用由 index.html <head> 内联脚本完成（防闪烁），此处负责交互与兜底。
+     */
+    bindThemeToggle() {
+        const btn = document.getElementById('themeToggle');
+        // 兜底：即便内联脚本未生效，也确保进入时应用已保存主题（默认浅色）
+        this.applyTheme(localStorage.getItem('tinyclaw_theme') === 'dark' ? 'dark' : 'light');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+            this.applyTheme(next);
+            localStorage.setItem('tinyclaw_theme', next);
+        });
+    }
+
+    applyTheme(theme) {
+        document.documentElement.dataset.theme = theme;
     }
 
     navigateTo(page, updateHash = true) {
@@ -171,6 +214,7 @@ class TinyClawConsole {
 
         // Update title
         const titles = {
+            dashboard: 'Dashboard',
             chat: 'Chat',
             channels: 'Channels',
             sessions: 'Sessions',
@@ -178,6 +222,8 @@ class TinyClawConsole {
             workspace: 'Workspace',
             skills: 'Skills',
             mcp: 'MCP Servers',
+            'tools-health': 'Tools Health',
+            memory: 'Memory',
             models: 'Models',
             environments: 'Environments',
             'token-usage': 'Token Usage'
@@ -193,12 +239,32 @@ class TinyClawConsole {
     }
 
     loadInitialPage() {
-        const page = window.location.hash.slice(1) || 'chat';
-        this.navigateTo(page, false);
+        // 先探测能力开关（如显式反馈是否启用）再渲染首屏，避免消息操作栏状态竞态
+        this.fetchCapabilities().finally(() => {
+            const page = window.location.hash.slice(1) || 'chat';
+            this.navigateTo(page, false);
+        });
+    }
+
+    /**
+     * 探测后端能力开关：目前用于判断显式反馈（👍/👎）是否启用，
+     * 未启用（进化关闭）时消息操作栏不渲染反馈按钮，避免点击必然报错。
+     */
+    async fetchCapabilities() {
+        try {
+            const resp = await this.authFetch('/api/feedback');
+            if (resp.ok) {
+                const data = await resp.json();
+                this.feedbackEnabled = !!data.feedbackEnabled;
+            }
+        } catch (e) {
+            this.feedbackEnabled = false;
+        }
     }
 
     loadPageData(page) {
         switch (page) {
+            case 'dashboard': this.loadDashboard(); break;
             case 'chat': this.loadChatHistory(); this.loadChatSessions(); break;
             case 'channels': this.loadChannels(); break;
             case 'sessions': this.loadSessions(); break;
@@ -206,6 +272,8 @@ class TinyClawConsole {
             case 'workspace': this.loadWorkspaceFiles(); break;
             case 'skills': this.loadSkills(); break;
             case 'mcp': this.loadMcpServers(); break;
+            case 'tools-health': this.loadReflection(); break;
+            case 'memory': this.loadMemory(); break;
             case 'models': this.loadProviders(); this.loadCurrentModel(); break;
             case 'environments': this.loadAgentConfig(); break;
             case 'token-usage': this.loadTokenUsage(); break;
@@ -216,6 +284,10 @@ class TinyClawConsole {
 
     // 待上传的图片列表（存储 Base64 数据）
     pendingImages = [];
+    // fork 重新生成时，原始提问已上传的图片路径（跳过 base64 重传，由 sendMessage 消费）
+    _replayImagePaths = null;
+    // 本次会话中 Agent 通过 write_file/edit_file 触达的文件（Artifacts 面板）
+    sessionArtifacts = [];
     // 当前正在执行的任务的 AbortController（用于中断）
     currentAbortController = null;
     // Slash command menu state
@@ -282,6 +354,10 @@ class TinyClawConsole {
         // 图片上传按钮
         uploadBtn.addEventListener('click', () => imageUpload.click());
         imageUpload.addEventListener('change', (e) => this.handleImageSelect(e));
+
+        // Artifacts（本次会话产生的文件）按钮
+        const artifactsBtn = document.getElementById('artifactsBtn');
+        if (artifactsBtn) artifactsBtn.addEventListener('click', () => this.openArtifactsPanel());
 
         // 支持拖拽上传
         input.addEventListener('dragover', (e) => {
@@ -538,6 +614,9 @@ class TinyClawConsole {
      * 连续的 assistant 消息会合并成一个气泡，避免多轮工具调用产生的碎片感。
      */
     async loadChatHistory() {
+        // 切换/重载会话时重置 Artifacts（它们是当前会话实时交互的产物）
+        this.sessionArtifacts = [];
+        this.updateArtifactsBadge();
         try {
             const response = await this.authFetch(`/api/sessions/${encodeURIComponent(this.chatSessionId)}`);
             if (!response.ok) return;
@@ -612,6 +691,15 @@ class TinyClawConsole {
                     continue;
                 }
                 this.addMessage(msg.content, msg.role, msg.images, false);
+                // 工具调用步骤（含工具卡片，或无正文文本的 assistant）不挂复制/重新生成操作栏：
+                // 这两个操作只对真正的文本答案有意义，挂在工具卡片下方会被误认为卡片自带功能
+                const renderedEl0 = messagesDiv.lastElementChild;
+                if (renderedEl0 && msg.role === 'assistant'
+                    && ((msg.toolCallRecords && msg.toolCallRecords.length > 0)
+                        || !(msg.content || '').trim())) {
+                    const bar0 = renderedEl0.querySelector(':scope > .message-actions');
+                    if (bar0) bar0.remove();
+                }
                 // 把绝对下标写到气泡上，供搜索结果跳转定位
                 if (msg.index !== null && msg.index !== undefined) {
                     const renderedEl = messagesDiv.lastElementChild;
@@ -873,12 +961,14 @@ class TinyClawConsole {
     }
 
     /**
-     * 渲染协同过程的多 Agent 对话时间线。
-     * 在 collaborate 工具卡片下方展示各 Agent 的逐轮发言，
-     * 使用不同颜色区分不同角色，支持折叠/展开。
+     * 渲染协同过程：多 Agent 对话时间线 + 可切换的关系拓扑图。
+     * 在 collaborate 工具卡片下方展示，使用不同颜色区分不同角色，支持折叠/展开。
+     *
+     * <p>拓扑图<b>懒渲染</b>：只在用户第一次点「拓扑图」时才构建 SVG。一份会话历史
+     * 可能含多条协同记录，而每条记录的图都要算一遍布局，预先全渲染会明显拖慢历史加载。</p>
      *
      * @param {HTMLElement} container - 消息容器
-     * @param {Object} detail - 协同详情 { mode, goal, participants, agentMessages, metrics, ... }
+     * @param {Object} detail - 协同详情 { mode, goal, participants, agentMessages, metrics, topology, ... }
      */
     appendCollaborationTimeline(container, detail) {
         const timeline = document.createElement('div');
@@ -888,22 +978,39 @@ class TinyClawConsole {
         const participants = detail.participants || [];
         const mode = detail.mode || '';
         const totalRounds = detail.totalRounds || 0;
+        const topology = detail.topology;
+        const hasTopology = !!(topology && Array.isArray(topology.nodes) && topology.nodes.length);
 
         // 为每个参与者分配颜色
         const roleColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444'];
         const roleColorMap = {};
-        participants.forEach((name, index) => {
-            roleColorMap[name] = roleColors[index % roleColors.length];
-        });
+        let colorCursor = 0;
+        const colorOf = (name) => {
+            if (!roleColorMap[name]) {
+                roleColorMap[name] = roleColors[colorCursor++ % roleColors.length];
+            }
+            return roleColorMap[name];
+        };
+        participants.forEach(colorOf);
+        // 拓扑图里会出现 participants 之外的节点（Router、工作流节点、任务），
+        // 提前占好颜色，保证同一角色在时间线与拓扑图中颜色一致
+        if (hasTopology) {
+            topology.nodes.forEach((node) => colorOf(node.label || node.id));
+        }
 
         // 标题栏（可折叠）
         const headerHtml = `
-            <div class="collab-timeline-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="collab-timeline-header">
                 <span class="collab-timeline-icon">🤝</span>
                 <span class="collab-timeline-title">协同过程 · ${this.escapeHtml(mode)} · ${totalRounds} 轮</span>
                 <span class="collab-timeline-participants">${participants.map(p =>
-                    `<span class="collab-participant-tag" style="background:${roleColorMap[p] || '#6366f1'}20;color:${roleColorMap[p] || '#6366f1'}">${this.escapeHtml(p)}</span>`
+                    `<span class="collab-participant-tag" style="background:${colorOf(p)}20;color:${colorOf(p)}">${this.escapeHtml(p)}</span>`
                 ).join('')}</span>
+                ${hasTopology ? `
+                <span class="collab-view-switch">
+                    <button type="button" class="collab-view-btn active" data-view="timeline">时间线</button>
+                    <button type="button" class="collab-view-btn" data-view="topology">拓扑图</button>
+                </span>` : ''}
                 <span class="collab-timeline-toggle">▼</span>
             </div>
         `;
@@ -931,8 +1038,355 @@ class TinyClawConsole {
         }
         messagesHtml += '</div>';
 
-        timeline.innerHTML = headerHtml + messagesHtml;
+        // 拓扑图容器（内容首次切换时才填充）
+        const topoHtml = hasTopology
+            ? '<div class="collab-topo-body" style="display:none"></div>'
+            : '';
+
+        timeline.innerHTML = headerHtml + messagesHtml + topoHtml;
         container.appendChild(timeline);
+
+        if (!hasTopology) {
+            // 无拓扑数据（旧记录）：保留原来的整栏点击折叠行为
+            timeline.querySelector('.collab-timeline-header')
+                .addEventListener('click', () => timeline.classList.toggle('collapsed'));
+            return;
+        }
+
+        const header = timeline.querySelector('.collab-timeline-header');
+        const timelineBody = timeline.querySelector('.collab-timeline-body');
+        const topoBody = timeline.querySelector('.collab-topo-body');
+
+        header.addEventListener('click', (e) => {
+            // 视图切换按钮的点击不该顺带折叠面板
+            if (e.target.closest('.collab-view-switch')) return;
+            timeline.classList.toggle('collapsed');
+        });
+
+        timeline.querySelectorAll('.collab-view-btn').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const view = btn.dataset.view;
+                timeline.querySelectorAll('.collab-view-btn')
+                    .forEach(b => b.classList.toggle('active', b === btn));
+                const showTopo = view === 'topology';
+                timelineBody.style.display = showTopo ? 'none' : '';
+                topoBody.style.display = showTopo ? '' : 'none';
+                if (showTopo && !topoBody.dataset.rendered) {
+                    topoBody.dataset.rendered = '1';
+                    this.renderCollaborationTopology(topoBody, topology, roleColorMap);
+                }
+            });
+        });
+    }
+
+    /**
+     * 把协同关系拓扑渲染成手写 SVG（零外部依赖）并绑定交互。
+     *
+     * @param {HTMLElement} mount - 挂载容器
+     * @param {Object} topology - { kind, style, nodes, edges, layers, meta }
+     * @param {Object} roleColorMap - 角色名 → 颜色，与时间线共用
+     */
+    renderCollaborationTopology(mount, topology, roleColorMap) {
+        const uid = `tc${(this._topoUid = (this._topoUid || 0) + 1)}`;
+        const svg = this.buildTopologySvg(topology, roleColorMap, uid);
+
+        mount.innerHTML = `
+            <div class="collab-topo-toolbar">
+                <span class="collab-topo-kind">${this.escapeHtml(this.topologyKindLabel(topology))}</span>
+                ${this.buildTopologyLegend(topology)}
+            </div>
+            <div class="collab-topo-canvas">${svg}</div>
+            <div class="collab-topo-detail" style="display:none"></div>
+        `;
+
+        this.bindTopologyInteractions(mount, topology);
+    }
+
+    /**
+     * 拓扑形态的中文标题。
+     */
+    topologyKindLabel(topology) {
+        const style = topology.style ? ` · ${topology.style}` : '';
+        switch (topology.kind) {
+            case 'DAG': return `工作流 DAG${style}`;
+            case 'TASK_GRAPH': return `任务依赖图${style}`;
+            case 'HIERARCHY': return `层级汇报图${style}`;
+            default: return `角色交互图${style}`;
+        }
+    }
+
+    /**
+     * 图例：节点状态配色 + 规模统计。
+     */
+    buildTopologyLegend(topology) {
+        const statuses = new Set((topology.nodes || []).map(n => n.status).filter(Boolean));
+        const palette = TinyClawConsole.TOPO_STATUS_COLORS;
+        const items = Object.keys(palette)
+            .filter(s => statuses.has(s))
+            .map(s => `<span class="collab-topo-legend-item">
+                    <i style="background:${palette[s]}"></i>${s}</span>`);
+        items.push(`<span class="collab-topo-legend-item collab-topo-legend-count">
+                ${(topology.nodes || []).length} 节点 / ${(topology.edges || []).length} 边</span>`);
+        return `<span class="collab-topo-legend">${items.join('')}</span>`;
+    }
+
+    /** 节点状态配色，与全局 CSS 变量语义保持一致 */
+    static TOPO_STATUS_COLORS = {
+        COMPLETED: '#10b981',
+        RUNNING: '#f59e0b',
+        FAILED: '#ef4444',
+        SKIPPED: '#94a3b8',
+        PENDING: '#cbd5e1'
+    };
+
+    /**
+     * 构建拓扑 SVG 字符串。
+     *
+     * <p>两种布局：</p>
+     * <ul>
+     *   <li><b>分层布局</b>（后端给了 {@code layers}：DAG / 任务依赖 / 金字塔）——
+     *       自底向上排布，同层水平均分，边用竖向三次贝塞尔曲线；</li>
+     *   <li><b>环形布局</b>（讨论型关系图，无层序可言）——节点均匀分布在圆周上，
+     *       边用向圆心内凹的二次贝塞尔曲线，避免弦直接穿过中心区域的其他节点。</li>
+     * </ul>
+     */
+    buildTopologySvg(topology, roleColorMap, uid) {
+        const nodes = topology.nodes || [];
+        const edges = topology.edges || [];
+        const NODE_W = 138;
+        const NODE_H = 40;
+        const pos = new Map();
+        let width;
+        let height;
+        let center = null;
+
+        if (Array.isArray(topology.layers) && topology.layers.length) {
+            const X_GAP = 178;
+            const Y_GAP = 98;
+            const PAD_X = 48;
+            const PAD_Y = 44;
+
+            // 理论上 layers 已覆盖全部节点；仍有遗漏时补一行到顶部，
+            // 让悬空节点可见而不是被悄悄丢弃
+            const layers = topology.layers.map(layer => Array.isArray(layer) ? layer.slice() : []);
+            const placed = new Set(layers.flat());
+            const orphans = nodes.map(n => n.id).filter(id => !placed.has(id));
+            if (orphans.length) layers.push(orphans);
+
+            const widest = layers.reduce((max, layer) => Math.max(max, layer.length), 1);
+            width = Math.max(widest * X_GAP, 380) + PAD_X * 2;
+            height = layers.length * Y_GAP + PAD_Y * 2;
+
+            layers.forEach((layer, layerIndex) => {
+                // layerIndex 0 是最底层，画在最下面（金字塔/DAG 都是自下往上读）
+                const y = height - PAD_Y - NODE_H / 2 - layerIndex * Y_GAP;
+                const startX = (width - layer.length * X_GAP) / 2 + X_GAP / 2;
+                layer.forEach((id, i) => pos.set(id, { x: startX + i * X_GAP, y }));
+            });
+        } else {
+            const count = nodes.length;
+            const radius = Math.max(120, count * 46);
+            width = radius * 2 + NODE_W + 90;
+            height = radius * 2 + NODE_H + 90;
+            center = { x: width / 2, y: height / 2 };
+            nodes.forEach((node, i) => {
+                const angle = (i / count) * Math.PI * 2 - Math.PI / 2;
+                pos.set(node.id, {
+                    x: center.x + radius * Math.cos(angle),
+                    y: center.y + radius * Math.sin(angle)
+                });
+            });
+        }
+
+        const maxWeight = edges.reduce((max, e) => Math.max(max, e.weight || 1), 1);
+        const edgeSvg = edges.map((edge) => {
+            const s = pos.get(edge.from);
+            const t = pos.get(edge.to);
+            if (!s || !t) return '';
+            const weight = edge.weight || 1;
+            // 权重映射到线宽与不透明度：互动最密集的一对角色一眼可见
+            const strokeW = 1.2 + Math.min(3, (weight / maxWeight) * 2.6);
+            const opacity = 0.38 + Math.min(0.5, (weight / maxWeight) * 0.5);
+            const d = center
+                ? this.topoCurvedEdge(s, t, center, NODE_W, NODE_H)
+                : this.topoLayeredEdge(s, t, NODE_W, NODE_H);
+            return `<path class="topo-edge" d="${d}" data-from="${this.escapeAttr(edge.from)}"
+                    data-to="${this.escapeAttr(edge.to)}"
+                    stroke-width="${strokeW.toFixed(2)}" opacity="${opacity.toFixed(2)}"></path>`;
+        }).join('');
+
+        const nodeSvg = nodes.map((node, index) => {
+            const p = pos.get(node.id);
+            if (!p) return '';
+            const color = roleColorMap[node.label] || roleColorMap[node.id] || '#6366f1';
+            const status = node.status || 'PENDING';
+            const statusColor = TinyClawConsole.TOPO_STATUS_COLORS[status] || '#cbd5e1';
+            const label = this.truncateTopoLabel(node.label || node.id, 9);
+            const type = node.type && node.type !== 'AGENT' ? node.type : '';
+            const agents = Array.isArray(node.agents) && node.agents.length
+                ? `\n参与: ${node.agents.join(', ')}` : '';
+            return `<g class="topo-node" data-idx="${index}"
+                    transform="translate(${(p.x - NODE_W / 2).toFixed(1)}, ${(p.y - NODE_H / 2).toFixed(1)})">
+                <title>${this.escapeHtml(`${node.label || node.id}${type ? ' [' + type + ']' : ''} · ${status}${agents}`)}</title>
+                ${type ? `<text class="topo-node-type" x="${NODE_W / 2}" y="-7">${this.escapeHtml(type)}</text>` : ''}
+                <rect class="topo-node-box" width="${NODE_W}" height="${NODE_H}" rx="10"
+                      style="stroke:${color}"></rect>
+                <rect class="topo-node-accent" width="4" height="${NODE_H}" rx="2"
+                      style="fill:${color}"></rect>
+                <circle class="topo-node-status" cx="16" cy="${NODE_H / 2}" r="4.5"
+                        style="fill:${statusColor}"></circle>
+                <text class="topo-node-label" x="${NODE_W / 2 + 8}" y="${NODE_H / 2 + 1}">${this.escapeHtml(label)}</text>
+            </g>`;
+        }).join('');
+
+        return `<svg class="topo-svg" viewBox="0 0 ${width.toFixed(0)} ${height.toFixed(0)}"
+                preserveAspectRatio="xMidYMid meet" role="img">
+            <defs>
+                <marker id="${uid}a" viewBox="0 0 10 10" refX="9" refY="5"
+                        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M 0 1 L 9 5 L 0 9 z" fill="#94a3b8"></path>
+                </marker>
+            </defs>
+            <g class="topo-edges" marker-end="url(#${uid}a)">${edgeSvg}</g>
+            <g class="topo-nodes">${nodeSvg}</g>
+        </svg>`;
+    }
+
+    /**
+     * 分层布局的边：从源节点顶边到目标节点底边的竖向三次贝塞尔。
+     * 同层或层序颠倒时改走侧边，避免画出穿过节点框的竖线。
+     */
+    topoLayeredEdge(s, t, nodeW, nodeH) {
+        if (Math.abs(s.y - t.y) < nodeH) {
+            const leftToRight = t.x > s.x;
+            const sx = s.x + (leftToRight ? nodeW / 2 : -nodeW / 2);
+            const tx = t.x + (leftToRight ? -nodeW / 2 : nodeW / 2);
+            const bow = (sx + tx) / 2;
+            const lift = Math.min(34, Math.abs(tx - sx) * 0.28) + nodeH * 0.6;
+            return `M ${sx.toFixed(1)} ${s.y.toFixed(1)} C ${bow.toFixed(1)} ${(s.y - lift).toFixed(1)},`
+                + ` ${bow.toFixed(1)} ${(t.y - lift).toFixed(1)}, ${tx.toFixed(1)} ${t.y.toFixed(1)}`;
+        }
+        const upward = t.y < s.y;
+        const sx = s.x;
+        const sy = s.y + (upward ? -nodeH / 2 : nodeH / 2);
+        const tx = t.x;
+        const ty = t.y + (upward ? nodeH / 2 : -nodeH / 2);
+        const midY = (sy + ty) / 2;
+        return `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${sx.toFixed(1)} ${midY.toFixed(1)},`
+            + ` ${tx.toFixed(1)} ${midY.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+    }
+
+    /**
+     * 环形布局的边：两端裁到节点矩形边界，控制点向圆心内凹形成弧线。
+     */
+    topoCurvedEdge(s, t, center, nodeW, nodeH) {
+        const start = this.topoRectBoundary(s, t, nodeW, nodeH);
+        const end = this.topoRectBoundary(t, s, nodeW, nodeH);
+        const mx = (start.x + end.x) / 2;
+        const my = (start.y + end.y) / 2;
+        const ctrlX = mx + (center.x - mx) * 0.42;
+        const ctrlY = my + (center.y - my) * 0.42;
+        return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} Q ${ctrlX.toFixed(1)} ${ctrlY.toFixed(1)},`
+            + ` ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    }
+
+    /**
+     * 求从矩形中心 {@code box} 指向 {@code toward} 的射线与矩形边界的交点。
+     * 不裁剪的话箭头会落在节点框底下，看不见指向。
+     */
+    topoRectBoundary(box, toward, nodeW, nodeH) {
+        const dx = toward.x - box.x;
+        const dy = toward.y - box.y;
+        if (dx === 0 && dy === 0) return { x: box.x, y: box.y };
+        const hw = nodeW / 2;
+        const hh = nodeH / 2;
+        const scaleX = dx === 0 ? Infinity : hw / Math.abs(dx);
+        const scaleY = dy === 0 ? Infinity : hh / Math.abs(dy);
+        const scale = Math.min(scaleX, scaleY);
+        return { x: box.x + dx * scale, y: box.y + dy * scale };
+    }
+
+    /**
+     * 按显示宽度截断节点标签。
+     *
+     * <p>SVG 的 {@code text} 不支持 text-overflow，只能自己截。CJK 字符宽度约等于
+     * 字号，拉丁字符约为其 0.55 倍，因此按加权单位数而非字符数截断。</p>
+     */
+    truncateTopoLabel(text, maxUnits) {
+        if (!text) return '';
+        let units = 0;
+        let out = '';
+        for (const ch of String(text)) {
+            units += /[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? 1 : 0.55;
+            if (units > maxUnits) return out + '…';
+            out += ch;
+        }
+        return out;
+    }
+
+    /**
+     * 绑定拓扑图交互：悬停高亮相邻关系、点击查看详情。
+     *
+     * <p>高亮用「加 class + CSS 降透明度」而不是逐个改内联样式：一次协同可能有
+     * 上百条边，逐个写 style 会触发布局抖动，而切换根节点的一个 class 只需一次重绘。</p>
+     */
+    bindTopologyInteractions(mount, topology) {
+        const svg = mount.querySelector('.topo-svg');
+        const detailBox = mount.querySelector('.collab-topo-detail');
+        if (!svg) return;
+
+        const nodeEls = Array.from(svg.querySelectorAll('.topo-node'));
+        const edgeEls = Array.from(svg.querySelectorAll('.topo-edge'));
+        const nodes = topology.nodes || [];
+
+        nodeEls.forEach((el) => {
+            const node = nodes[Number(el.dataset.idx)];
+            if (!node) return;
+
+            el.addEventListener('mouseenter', () => {
+                svg.classList.add('topo-focus');
+                el.classList.add('hl');
+                const linked = new Set([node.id]);
+                edgeEls.forEach((edge) => {
+                    const incident = edge.dataset.from === node.id || edge.dataset.to === node.id;
+                    edge.classList.toggle('hl', incident);
+                    if (incident) {
+                        linked.add(edge.dataset.from);
+                        linked.add(edge.dataset.to);
+                    }
+                });
+                nodeEls.forEach((other) => {
+                    const otherNode = nodes[Number(other.dataset.idx)];
+                    other.classList.toggle('linked', !!otherNode && linked.has(otherNode.id));
+                });
+            });
+
+            el.addEventListener('mouseleave', () => {
+                svg.classList.remove('topo-focus');
+                el.classList.remove('hl');
+                edgeEls.forEach(edge => edge.classList.remove('hl'));
+                nodeEls.forEach(other => other.classList.remove('linked'));
+            });
+
+            el.addEventListener('click', () => {
+                nodeEls.forEach(other => other.classList.remove('selected'));
+                el.classList.add('selected');
+                const inbound = edgeEls.filter(e => e.dataset.to === node.id).length;
+                const outbound = edgeEls.filter(e => e.dataset.from === node.id).length;
+                detailBox.style.display = '';
+                detailBox.innerHTML = `
+                    <div class="collab-topo-detail-head">
+                        <strong>${this.escapeHtml(node.label || node.id)}</strong>
+                        ${node.type ? `<span class="collab-topo-detail-type">${this.escapeHtml(node.type)}</span>` : ''}
+                        <span class="collab-topo-detail-status" data-status="${this.escapeAttr(node.status || 'PENDING')}">${this.escapeHtml(node.status || 'PENDING')}</span>
+                        <span class="collab-topo-detail-degree">入 ${inbound} / 出 ${outbound}</span>
+                    </div>
+                    ${node.detail ? `<pre class="collab-topo-detail-body">${this.escapeHtml(node.detail)}</pre>`
+                        : '<div class="collab-topo-detail-empty">该节点没有更多详情</div>'}
+                `;
+            });
+        });
     }
 
     /**
@@ -1385,6 +1839,12 @@ class TinyClawConsole {
             }
         }
 
+        // fork 重新生成：原始提问携带的图片已是服务器路径，直接复用，跳过 base64 上传
+        if (this._replayImagePaths && this._replayImagePaths.length) {
+            imagePaths = this._replayImagePaths;
+            this._replayImagePaths = null;
+        }
+
         // 如果是该会话的第一条消息，缓存到 localStorage 作为会话标题
         // （后端内存会话重启后丢失，localStorage 可跨重启保持标题）
         const titleKey = `tinyclaw_title_${this.chatSessionId}`;
@@ -1409,6 +1869,10 @@ class TinyClawConsole {
         // 渲染状态：跟踪当前正在流式输出的文本内容 div 和工具调用卡片
         let currentTextContent = '';
         let currentTextDiv = null;
+        // 本轮 assistant 正文的完整原始文本（跨多个 text div 累加，不因分段而重置），供“复制”使用
+        let assistantRawText = '';
+        // 当前任务计划卡片（PLAN 事件就地刷新同一张卡，而非每次新建）
+        let currentPlanCard = null;
         // toolCardMap: 归属前缀+toolName -> { card, statusEl, resultSectionEl, resultEl }
         const toolCardMap = {};
         // subagentCardMap: taskId -> { card, bodyEl, statusEl, contentBuffer }
@@ -1423,6 +1887,13 @@ class TinyClawConsole {
         // 按发言轮次（turn）而非「当前块」建索引：并行协同时多个 Agent 的事件交错到达，
         // 只认「当前块」会把同一次发言拆成多块；顺序型多轮发言则因 turn 不同天然分块
         const collabBlockMap = {};
+        // 实时协同拓扑：{ wrap, bodyEl, progressEl, colorMap, colorCursor, topology }
+        // 协同开始时由 COLLABORATE_TOPOLOGY 事件创建，节点状态靠 COLLABORATE_NODE 增量点亮，
+        // 终版拓扑到达后全量替换；协同结束/流结束释放引用（DOM 保留终版图）
+        let liveCollabTopo = null;
+        // 协同角色配色：与 appendCollaborationTimeline 共用同一套，
+        // 保证实时图与刷新后历史里的图颜色一致
+        const collabRoleColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444'];
 
         /**
          * 获取或创建当前文本输出区域（用于流式追加 CONTENT 事件）。
@@ -1780,6 +2251,101 @@ class TinyClawConsole {
         };
 
         /**
+         * 释放实时拓扑引用（DOM 保留，它持有终版图）。
+         *
+         * <p>不释放的话，下一轮协同的 TOPOLOGY 事件会把新图画进上一轮的容器，
+         * 节点状态也会写串。协同结束、新一轮开始与流结束三个边界都调。</p>
+         */
+        const finalizeLiveTopo = () => {
+            liveCollabTopo = null;
+        };
+
+        /**
+         * 处理 COLLABORATE_TOPOLOGY 事件：创建/替换实时协同拓扑图。
+         *
+         * <p>首次到达（初始版，全 PENDING）时在协同卡片顶部创建可折叠容器；
+         * 终版到达时全量重绘——边和 Router 节点只有终版才有，用户看到的最后一张图
+         * 与刷新后历史里的图一致。渲染复用 renderCollaborationTopology，交互能力相同。</p>
+         */
+        const handleCollaborateTopology = (event) => {
+            const topo = event.topology;
+            if (!topo || !Array.isArray(topo.nodes) || !topo.nodes.length) return;
+            const collabBody = this._currentCollabBody;
+            if (!collabBody) return;
+
+            if (!liveCollabTopo) {
+                const wrap = document.createElement('div');
+                wrap.className = 'collab-live-topo';
+                wrap.innerHTML = `
+                    <div class="collab-live-topo-header">
+                        <span class="collab-live-topo-icon">🕸</span>
+                        <span class="collab-live-topo-title">协同拓扑</span>
+                        <span class="collab-live-topo-progress">0/0</span>
+                        <span class="collab-timeline-toggle">▼</span>
+                    </div>
+                    <div class="collab-live-topo-body"></div>`;
+                wrap.querySelector('.collab-live-topo-header')
+                    .addEventListener('click', () => wrap.classList.toggle('collapsed'));
+                // 放在发言块之前：图在上方，逐个点亮的动态不被后续发言冲走视线
+                collabBody.insertBefore(wrap, collabBody.firstChild);
+                liveCollabTopo = {
+                    wrap,
+                    bodyEl: wrap.querySelector('.collab-live-topo-body'),
+                    progressEl: wrap.querySelector('.collab-live-topo-progress'),
+                    colorMap: {},
+                    colorCursor: 0,
+                    topology: null
+                };
+            }
+
+            liveCollabTopo.topology = topo;
+            (topo.nodes || []).forEach(n => {
+                const key = n.label || n.id;
+                if (!liveCollabTopo.colorMap[key]) {
+                    liveCollabTopo.colorMap[key] =
+                        collabRoleColors[(liveCollabTopo.colorCursor++) % collabRoleColors.length];
+                }
+            });
+            this.renderCollaborationTopology(liveCollabTopo.bodyEl, topo, liveCollabTopo.colorMap);
+            updateLiveTopoProgress();
+        };
+
+        /**
+         * 处理 COLLABORATE_NODE 事件：点亮实时拓扑里的一个节点。
+         *
+         * <p>外科手术式更新——只改状态圆点的颜色，不重建 SVG：保留用户的悬停/选中态
+         * 与滚动位置，几十个节点的高频闪烁也不会有可感知的卡顿。</p>
+         */
+        const handleCollaborateNode = (event) => {
+            if (!liveCollabTopo || !liveCollabTopo.topology) return;
+            const nodes = liveCollabTopo.topology.nodes || [];
+            const idx = nodes.findIndex(n => n.id === event.nodeId);
+            if (idx < 0) return; // 初始拓扑外的节点（如 Router）静默忽略，终版拓扑会补上
+
+            nodes[idx].status = event.status || 'PENDING';
+            const nodeEl = liveCollabTopo.bodyEl.querySelector(`.topo-node[data-idx="${idx}"]`);
+            if (nodeEl) {
+                const dot = nodeEl.querySelector('.topo-node-status');
+                if (dot) {
+                    dot.style.fill = TinyClawConsole.TOPO_STATUS_COLORS[event.status] || '#cbd5e1';
+                }
+            }
+            updateLiveTopoProgress();
+        };
+
+        /**
+         * 更新实时拓扑头部进度（已完成 / 总数）。
+         */
+        const updateLiveTopoProgress = () => {
+            if (!liveCollabTopo || !liveCollabTopo.progressEl || !liveCollabTopo.topology) return;
+            const nodes = liveCollabTopo.topology.nodes || [];
+            const done = nodes.filter(n =>
+                n.status === 'COMPLETED' || n.status === 'FAILED' || n.status === 'SKIPPED').length;
+            liveCollabTopo.progressEl.textContent = `${done}/${nodes.length}`;
+            liveCollabTopo.progressEl.classList.toggle('done', nodes.length > 0 && done >= nodes.length);
+        };
+
+        /**
          * 协同发言块的索引键：优先用后端下发的 turn（一次发言），
          * 缺失时退到角色名，至少保证同一角色的内容不会散开。
          */
@@ -1833,6 +2399,120 @@ class TinyClawConsole {
         };
 
         /**
+         * 处理 APPROVAL_REQUEST 事件：渲染危险命令审批卡片（HITL）。
+         * Agent 已在后端阻塞等待，用户点击批准/拒绝后经 /api/chat/interaction 回传，流随后继续。
+         */
+        const handleApprovalRequest = (event) => {
+            finalizeCurrentText();
+            const requestId = event.requestId || '';
+            const command = event.command || '';
+            const reason = event.reason || '';
+            const card = document.createElement('div');
+            card.className = 'hitl-card hitl-approval';
+            card.innerHTML = `
+                <div class="hitl-head"><span class="hitl-icon">⚠️</span><span class="hitl-title">危险命令需要审批</span></div>
+                ${reason ? `<div class="hitl-reason">${this.escapeHtml(reason)}</div>` : ''}
+                <pre class="hitl-command">${this.escapeHtml(command)}</pre>
+                <div class="hitl-actions">
+                    <button class="btn btn-sm btn-danger" data-decision="deny">拒绝</button>
+                    <button class="btn btn-sm btn-primary" data-decision="approve">批准执行</button>
+                </div>
+                <div class="hitl-status" style="display:none;"></div>`;
+            contentDiv.appendChild(card);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            const setStatus = (text, cls) => {
+                const statusEl = card.querySelector('.hitl-status');
+                card.querySelectorAll('.hitl-actions button').forEach(b => { b.disabled = true; });
+                statusEl.textContent = text;
+                statusEl.className = 'hitl-status ' + (cls || '');
+                statusEl.style.display = 'block';
+            };
+            card.querySelectorAll('.hitl-actions button').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const approved = btn.dataset.decision === 'approve';
+                    setStatus(approved ? '已批准，继续执行…' : '已拒绝', approved ? 'hitl-ok' : 'hitl-deny');
+                    const ok = await this.submitInteraction(requestId, approved, null);
+                    if (!ok) setStatus('审批已失效（可能已超时）', 'hitl-deny');
+                });
+            });
+        };
+
+        /**
+         * 处理 ASK_USER 事件：渲染结构化提问卡片（HITL）。
+         * 有 options 时提供点选按钮，同时始终提供自由输入框。
+         */
+        const handleAskUser = (event) => {
+            finalizeCurrentText();
+            const requestId = event.requestId || '';
+            const question = event.question || '';
+            const options = Array.isArray(event.options) ? event.options : [];
+            const inputId = 'askuser_' + requestId;
+            const optionBtns = options.map((o, i) =>
+                `<button class="hitl-option" data-opt="${this.escapeAttr(String(i))}">${this.escapeHtml(o)}</button>`).join('');
+            const card = document.createElement('div');
+            card.className = 'hitl-card hitl-ask';
+            card.innerHTML = `
+                <div class="hitl-head"><span class="hitl-icon">❓</span><span class="hitl-title">Agent 想向你确认</span></div>
+                <div class="hitl-question">${this.escapeHtml(question)}</div>
+                ${optionBtns ? `<div class="hitl-options">${optionBtns}</div>` : ''}
+                <div class="hitl-input-row">
+                    <input type="text" class="form-control" id="${inputId}" placeholder="输入你的回答…" autocomplete="off">
+                    <button class="btn btn-sm btn-primary" data-send="1">发送</button>
+                </div>
+                <div class="hitl-status" style="display:none;"></div>`;
+            contentDiv.appendChild(card);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            const inputEl = card.querySelector('#' + inputId);
+            const setStatus = (text, cls) => {
+                const statusEl = card.querySelector('.hitl-status');
+                card.querySelectorAll('button, input').forEach(el => { el.disabled = true; });
+                statusEl.textContent = text;
+                statusEl.className = 'hitl-status ' + (cls || '');
+                statusEl.style.display = 'block';
+            };
+            const send = async (text) => {
+                if (!text || !text.trim()) return;
+                setStatus('已回答：' + text, 'hitl-ok');
+                const ok = await this.submitInteraction(requestId, true, text);
+                if (!ok) setStatus('提问已失效（可能已超时）', 'hitl-deny');
+            };
+            card.querySelectorAll('.hitl-option').forEach(btn => {
+                btn.addEventListener('click', () => send(options[Number(btn.dataset.opt)]));
+            });
+            card.querySelector('[data-send]').addEventListener('click', () => send(inputEl.value));
+            inputEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); send(inputEl.value); }
+            });
+        };
+
+        /**
+         * 处理 PLAN 事件：渲染/刷新任务计划清单卡片。
+         * 同一条 assistant 消息内多次 PLAN 事件就地更新同一张卡（计划随执行演进）。
+         */
+        const handlePlan = (event) => {
+            finalizeCurrentText();
+            const todos = Array.isArray(event.todos) ? event.todos : [];
+            if (!currentPlanCard || !currentPlanCard.isConnected) {
+                currentPlanCard = document.createElement('div');
+                currentPlanCard.className = 'plan-card';
+                currentPlanCard.innerHTML = `<div class="plan-head"><span class="plan-icon">📋</span><span class="plan-title">任务计划</span><span class="plan-progress"></span></div><div class="plan-items"></div>`;
+                contentDiv.appendChild(currentPlanCard);
+            }
+            const itemsEl = currentPlanCard.querySelector('.plan-items');
+            itemsEl.innerHTML = todos.map(t => {
+                const status = t.status || 'pending';
+                const icon = status === 'completed' ? '✅' : status === 'in_progress' ? '🔄' : '⬜';
+                return `<div class="plan-item" data-status="${this.escapeAttr(status)}"><span class="plan-item-icon">${icon}</span><span class="plan-item-text">${this.escapeHtml(t.content || '')}</span></div>`;
+            }).join('');
+            const done = todos.filter(t => t.status === 'completed').length;
+            const progEl = currentPlanCard.querySelector('.plan-progress');
+            if (progEl) progEl.textContent = todos.length ? `${done}/${todos.length}` : '';
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        };
+
+        /**
          * 处理单个 SSE JSON 事件，根据 type 分发到对应的渲染函数。
          */
         const handleSseEvent = (jsonStr) => {
@@ -1857,6 +2537,7 @@ class TinyClawConsole {
                     finalizeThinking();
                     const textDiv = getOrCreateTextDiv();
                     currentTextContent += event.content || '';
+                    assistantRawText += event.content || '';
                     // 流式阶段实时用 marked.parse 渲染，保证列表等 Markdown 结构正确显示
                     if (typeof marked !== 'undefined') {
                         textDiv.classList.add('markdown-body');
@@ -1875,7 +2556,17 @@ class TinyClawConsole {
                     handleThinking(event);
                     break;
                 }
+                case 'APPROVAL_REQUEST':
+                    handleApprovalRequest(event);
+                    break;
+                case 'ASK_USER':
+                    handleAskUser(event);
+                    break;
+                case 'PLAN':
+                    handlePlan(event);
+                    break;
                 case 'TOOL_START':
+                    this.trackArtifact(event);
                     handleToolStart(event);
                     break;
                 case 'TOOL_END':
@@ -1907,6 +2598,8 @@ class TinyClawConsole {
                     currentTextDiv = null;
                     currentTextContent = '';
                     finalizeAllCollabBlocks();
+                    // 上一轮若未正常释放（如流中断），这里兜底，避免新拓扑画进旧容器
+                    finalizeLiveTopo();
                     // 保存协同卡片引用，供后续事件使用
                     this._currentCollabCard = collabCard;
                     this._currentCollabBody = collabCard.querySelector('.subagent-body');
@@ -1953,8 +2646,17 @@ class TinyClawConsole {
                     handleCollabAgentThinking(event);
                     break;
                 }
+                case 'COLLABORATE_TOPOLOGY': {
+                    handleCollaborateTopology(event);
+                    break;
+                }
+                case 'COLLABORATE_NODE': {
+                    handleCollaborateNode(event);
+                    break;
+                }
                 case 'COLLABORATE_END': {
                     finalizeAllCollabBlocks();
+                    finalizeLiveTopo();
                     finalizeCurrentText();
                     // 更新协同卡片状态
                     if (this._currentCollabCard) {
@@ -2036,6 +2738,7 @@ class TinyClawConsole {
             // 流结束：将最后一段文本用 Markdown 渲染
             finalizeThinking();
             finalizeAllCollabBlocks();
+            finalizeLiveTopo();
             finalizeCurrentText();
             // 移除所有残留的流式光标
             contentDiv.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
@@ -2051,6 +2754,14 @@ class TinyClawConsole {
                 textDiv.textContent = 'Error: ' + error.message;
             }
         } finally {
+            // 为流式 assistant 气泡挂载操作栏（复制/重新生成），并记录原始文本供复制使用。
+            // 整轮没有任何正文文本（纯工具执行）时不挂操作栏——工具调用步骤无需复制/重新生成。
+            if (assistantDiv) {
+                assistantDiv._rawContent = assistantRawText;
+                if ((assistantRawText || '').trim().length > 0) {
+                    this.attachMessageActions(assistantDiv, 'assistant');
+                }
+            }
             // 恢复按钮状态：可点击，恢复圆形
             this.currentAbortController = null;
             sendBtn.classList.remove('loading');
@@ -2112,10 +2823,531 @@ class TinyClawConsole {
         }
 
         div.innerHTML = html;
+        div._rawContent = content || '';
+        this.attachMessageActions(div, displayRole);
         messagesDiv.appendChild(div);
         if (scroll) {
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
+    }
+
+    /**
+     * 为消息气泡追加操作栏（复制 / 编辑重发）。
+     *
+     * <p>幂等：已存在操作栏时不重复追加，避免历史回放与流式收尾重复挂载。
+     * 操作栏作为 {@code .message-content} 气泡的兄弟节点追加，位于气泡下方。</p>
+     *
+     * @param {HTMLElement} messageEl - {@code .message} 气泡元素
+     * @param {'user'|'assistant'} role - 展示角色，决定可用操作（user 额外提供编辑重发）
+     */
+    attachMessageActions(messageEl, role) {
+        if (!messageEl || messageEl.querySelector('.message-actions')) return;
+        const bar = document.createElement('div');
+        bar.className = 'message-actions';
+        const buttons = ['<button class="msg-action-btn" data-action="copy" title="复制">⧉</button>'];
+        if (role === 'user') {
+            buttons.push('<button class="msg-action-btn" data-action="edit" title="编辑并重发">✎</button>');
+        }
+        if (role === 'assistant') {
+            buttons.push('<button class="msg-action-btn" data-action="regen" title="重新生成（派生分支会话）">↻</button>');
+        }
+        if (role === 'assistant' && this.feedbackEnabled) {
+            buttons.push('<button class="msg-action-btn" data-action="up" title="有帮助">👍</button>');
+            buttons.push('<button class="msg-action-btn" data-action="down" title="需改进">👎</button>');
+        }
+        bar.innerHTML = buttons.join('');
+        bar.addEventListener('click', (e) => {
+            const btn = e.target.closest('.msg-action-btn');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'copy') this.copyMessageText(messageEl, btn);
+            else if (action === 'edit') this.editUserMessage(messageEl);
+            else if (action === 'regen') this.regenerateFrom(messageEl, btn);
+            else if (action === 'up' || action === 'down') this.submitFeedback(action, btn);
+        });
+        messageEl.appendChild(bar);
+    }
+
+    /**
+     * 复制消息原始文本到剪贴板，成功后按钮短暂显示对勾。
+     * 优先用气泡上缓存的原始 Markdown（{@code _rawContent}），回退到渲染后的可见文本。
+     */
+    async copyMessageText(messageEl, btn) {
+        const raw = messageEl._rawContent;
+        const contentEl = messageEl.querySelector('.message-content');
+        const text = (raw != null && raw !== '')
+            ? raw
+            : (contentEl ? contentEl.innerText : messageEl.innerText);
+        try {
+            await navigator.clipboard.writeText(text || '');
+            this.flashActionButton(btn, '✓');
+        } catch (e) {
+            // clipboard API 在非安全上下文（http 内网）可能不可用，回退到临时 textarea + execCommand
+            this.legacyCopy(text || '');
+            this.flashActionButton(btn, '✓');
+        }
+    }
+
+    /**
+     * clipboard API 不可用时的降级复制实现。
+     */
+    legacyCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) { /* 忽略：复制失败不阻断交互 */ }
+        ta.remove();
+    }
+
+    /**
+     * 操作按钮点击后的短暂视觉反馈（切换图标 + 高亮，1.2s 后还原）。
+     */
+    flashActionButton(btn, symbol) {
+        if (!btn) return;
+        const original = btn.textContent;
+        btn.textContent = symbol;
+        btn.classList.add('msg-action-done');
+        setTimeout(() => {
+            btn.textContent = original;
+            btn.classList.remove('msg-action-done');
+        }, 1200);
+    }
+
+    /**
+     * 编辑重发：把用户消息原文载入输入框，供修改后作为新一轮发送。
+     */
+    editUserMessage(messageEl) {
+        const raw = messageEl._rawContent || '';
+        const input = document.getElementById('chatInput');
+        if (!input) return;
+        input.value = raw;
+        input.focus();
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+        this.showToast('已载入输入框，编辑后发送', 'info');
+    }
+
+    /**
+     * 重新生成 / 回溯重发：以 fork 分支的方式重跑某一轮回答。
+     *
+     * <p>遵循后端「不可变转录」约束——不删改原会话，而是派生一个复制了截断点之前
+     * 全部转录的新分支会话，再把触发该轮的 user 提问在新分支里重发，从而得到一次
+     * 全新的回答。截断点取该 assistant 气泡之前最近的 user 消息下标（历史回放气泡
+     * 带 data-msg-index）；实时刚生成、还没有下标的气泡则传 -1，由后端回退到
+     * 「最后一条 user 消息」，即重跑最新一轮。</p>
+     *
+     * @param {HTMLElement} messageEl - 触发重新生成的 assistant 气泡
+     * @param {HTMLElement} btn - 触发的按钮，用于状态反馈
+     */
+    async regenerateFrom(messageEl, btn) {
+        if (this.currentAbortController) {
+            this.showToast('请等待当前任务完成后再重新生成', 'info');
+            return;
+        }
+        // 计算 fork 截断点：该 assistant 轮次对应的 user 提问的绝对下标
+        let cutIndex = -1;
+        const startIdx = (messageEl && messageEl.dataset)
+            ? parseInt(messageEl.dataset.msgIndex, 10) : NaN;
+        if (!isNaN(startIdx)) {
+            let best = -1;
+            document.querySelectorAll('#chatMessages .message.user[data-msg-index]').forEach(b => {
+                const bi = parseInt(b.dataset.msgIndex, 10);
+                if (!isNaN(bi) && bi < startIdx && bi > best) best = bi;
+            });
+            cutIndex = best;
+        }
+        const sourceKey = this.chatSessionId;
+        if (btn) btn.disabled = true;
+        try {
+            const resp = await this.authFetch(
+                `/api/sessions/${encodeURIComponent(sourceKey)}/fork`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cutIndex >= 0 ? { cutIndex } : {})
+                });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('派生分支失败 (' + resp.status + ')'), 'error');
+                return;
+            }
+            const data = await resp.json();
+            const newKey = data.sessionKey;
+            if (!newKey) { this.showToast('派生分支失败：未返回新会话', 'error'); return; }
+
+            // 切换到分支会话并重载已复制的历史前缀
+            this.chatSessionId = newKey;
+            localStorage.setItem('tinyclaw_chat_session', newKey);
+            await this.loadChatHistory();
+            this.loadChatSessions();
+
+            const replay = data.replayMessage;
+            if (!replay || !replay.content) {
+                // 截断点处没有可重发的 user 提问：仅停留在分支会话
+                this.showToast('已派生分支会话（无可重发的提问）', 'success');
+                return;
+            }
+            // 把提问塞回输入框；图片走已上传路径通道（sendMessage 内消费 _replayImagePaths）
+            if (Array.isArray(replay.images) && replay.images.length) {
+                this._replayImagePaths = replay.images;
+            }
+            const input = document.getElementById('chatInput');
+            input.value = replay.content;
+            this.showToast('已在新分支重新生成', 'info');
+            await this.sendMessage();
+        } catch (e) {
+            this.showToast('重新生成失败：' + e.message, 'error');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    /**
+     * 提交对 assistant 回复的显式评价（👍/👎）到进化反馈系统。
+     * 后端未启用进化时返回 501，此时提示用户而不报错。
+     *
+     * @param {'up'|'down'} rating - 评价方向
+     * @param {HTMLElement} btn - 触发的按钮，用于成功后高亮反馈
+     */
+    async submitFeedback(rating, btn) {
+        try {
+            const resp = await this.authFetch('/api/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: this.chatSessionId, rating })
+            });
+            if (resp.ok) {
+                this.flashActionButton(btn, '✓');
+                this.showToast(rating === 'up' ? '感谢反馈' : '已记录，我们会持续改进', 'success');
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('反馈提交失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误，反馈未提交', 'error');
+        }
+    }
+
+    /**
+     * 回传一次 HITL 交互决策（审批或提问回答）到后端，唤醒阻塞中的工具执行。
+     *
+     * @param {string} requestId - 交互请求 id
+     * @param {boolean} approved - 审批结果（提问类可传 true）
+     * @param {string|null} response - 回答文本（审批类传 null）
+     * @returns {Promise<boolean>} 后端是否成功唤醒等待中的交互（false 表示已失效/超时）
+     */
+    async submitInteraction(requestId, approved, response) {
+        try {
+            const resp = await this.authFetch('/api/chat/interaction', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId, approved, response })
+            });
+            if (!resp.ok) return false;
+            const data = await resp.json().catch(() => ({}));
+            return !!data.resolved;
+        } catch (e) {
+            console.error('Failed to submit interaction:', e);
+            return false;
+        }
+    }
+
+    // ==================== Artifacts（本次会话产生的文件） ====================
+
+    /**
+     * 从 TOOL_START 事件中提取 write_file/edit_file 的目标路径，登记为本次会话产物。
+     * 去重，并将最近触达的文件排到末尾。
+     */
+    trackArtifact(event) {
+        const tool = event && event.tool;
+        if (tool !== 'write_file' && tool !== 'edit_file') return;
+        const args = event.args || {};
+        const path = args.path || args.file_path;
+        if (!path || typeof path !== 'string') return;
+        const idx = this.sessionArtifacts.indexOf(path);
+        if (idx >= 0) this.sessionArtifacts.splice(idx, 1);
+        this.sessionArtifacts.push(path);
+        this.updateArtifactsBadge();
+    }
+
+    /** 更新 Artifacts 按钮上的数量角标。 */
+    updateArtifactsBadge() {
+        const badge = document.getElementById('artifactsBadge');
+        if (!badge) return;
+        const n = this.sessionArtifacts.length;
+        badge.textContent = String(n);
+        badge.style.display = n > 0 ? 'inline-flex' : 'none';
+    }
+
+    /** 打开 Artifacts 面板（模态），列出本次会话产生/修改的文件，点击可预览。 */
+    openArtifactsPanel() {
+        const items = this.sessionArtifacts;
+        const body = items.length === 0
+            ? '<p class="empty-state">本次会话尚未产生文件。Agent 调用 write_file / edit_file 后会在此列出。</p>'
+            : `<div class="artifacts-list">${items.slice().reverse().map(p => `
+                <div class="artifact-item" data-path="${this.escapeAttr(p)}">
+                    <span class="artifact-icon">📄</span>
+                    <span class="artifact-name">${this.escapeHtml(this.basename(p))}</span>
+                    <span class="artifact-path">${this.escapeHtml(p)}</span>
+                </div>`).join('')}</div>`;
+        this.showModal('Artifacts · 本次会话文件', body, null);
+        document.getElementById('modalConfirm').style.display = 'none';
+        document.querySelectorAll('#modalBody .artifact-item').forEach(el => {
+            el.addEventListener('click', () => this.previewArtifact(el.dataset.path));
+        });
+    }
+
+    /**
+     * 预览某个产物文件的内容（尽力而为：工作空间外的文件会 403 并提示）。
+     */
+    async previewArtifact(path) {
+        try {
+            const resp = await this.authFetch('/api/workspace/files/' + encodeURIComponent(path));
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('无法预览 (' + resp.status + ')'), 'error');
+                return;
+            }
+            const data = await resp.json();
+            const content = data.content || '';
+            this.showModal(this.basename(path), `
+                <pre class="artifact-preview">${this.escapeHtml(content)}</pre>
+                <div class="artifact-preview-actions">
+                    <button class="btn btn-secondary btn-sm" id="artifactDownloadBtn">下载</button>
+                </div>`, null);
+            document.getElementById('modalConfirm').style.display = 'none';
+            const dl = document.getElementById('artifactDownloadBtn');
+            if (dl) dl.addEventListener('click', () => this.downloadText(this.basename(path), content));
+        } catch (e) {
+            this.showToast('预览失败：' + e.message, 'error');
+        }
+    }
+
+    /** 取路径的文件名部分。 */
+    basename(p) {
+        const s = String(p || '');
+        const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+        return i >= 0 ? s.substring(i + 1) : s;
+    }
+
+    /** 前端触发文本文件下载。 */
+    downloadText(filename, text) {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // ==================== Memory（长期记忆管理） ====================
+
+    /**
+     * 加载记忆页：绑定工具栏按钮并拉取记忆条目列表。
+     * 记忆系统未就绪（501）时展示提示而非报错。
+     */
+    async loadMemory() {
+        const addBtn = document.getElementById('addMemoryBtn');
+        const refreshBtn = document.getElementById('refreshMemoryBtn');
+        if (addBtn) addBtn.onclick = () => this.showMemoryForm(null);
+        if (refreshBtn) refreshBtn.onclick = () => this.loadMemory();
+
+        const list = document.getElementById('memoryList');
+        if (!list) return;
+        try {
+            const resp = await this.authFetch('/api/memory');
+            if (resp.status === 501) {
+                list.innerHTML = '<p class="empty-state">记忆系统未就绪（provider 未初始化）。</p>';
+                return;
+            }
+            if (!resp.ok) {
+                list.innerHTML = '<p class="empty-state">加载失败 (' + resp.status + ')</p>';
+                return;
+            }
+            const data = await resp.json();
+            this.renderMemory(data.entries || []);
+        } catch (e) {
+            list.innerHTML = '<p class="empty-state">加载失败：' + this.escapeHtml(e.message) + '</p>';
+        }
+    }
+
+    /**
+     * 渲染记忆条目列表，采用事件委托绑定编辑/删除（避免 id 拼接进 onclick 字符串）。
+     */
+    renderMemory(entries) {
+        const list = document.getElementById('memoryList');
+        if (!list) return;
+        if (entries.length === 0) {
+            list.innerHTML = '<p class="empty-state">暂无记忆条目</p>';
+            return;
+        }
+        list.innerHTML = entries.map(e => {
+            const tags = Array.isArray(e.tags) ? e.tags : [];
+            const tagsHtml = tags.length
+                ? `<div class="memory-tags">${tags.map(t => `<span class="memory-tag">${this.escapeHtml(t)}</span>`).join('')}</div>`
+                : '';
+            const imp = e.importance != null ? Number(e.importance).toFixed(2) : '—';
+            const when = e.createdAt ? this.timeAgo(Date.parse(e.createdAt)) : '';
+            return `
+            <div class="memory-item" data-id="${this.escapeAttr(e.id)}">
+                <div class="memory-item-head">
+                    <span class="badge badge-outline">${this.escapeHtml(e.scope || 'global')}</span>
+                    <span class="memory-imp">重要度 ${imp}</span>
+                    <span class="memory-meta">${this.escapeHtml(e.source || '')}${when ? ' · ' + when : ''}</span>
+                </div>
+                <div class="memory-content">${this.escapeHtml(e.content || '')}</div>
+                ${tagsHtml}
+                <div class="memory-actions">
+                    <button class="btn btn-text" data-act="edit">Edit</button>
+                    <button class="btn btn-text btn-danger" data-act="delete">Delete</button>
+                </div>
+            </div>`;
+        }).join('');
+        list.querySelectorAll('.memory-item').forEach(item => {
+            const id = item.dataset.id;
+            const entry = entries.find(x => String(x.id) === String(id));
+            const editBtn = item.querySelector('[data-act="edit"]');
+            const delBtn = item.querySelector('[data-act="delete"]');
+            if (editBtn) editBtn.addEventListener('click', () => this.showMemoryForm(entry));
+            if (delBtn) delBtn.addEventListener('click', () => this.deleteMemory(id));
+        });
+    }
+
+    /**
+     * 弹出记忆表单：entry 为 null 时新增，否则编辑。保存后刷新列表。
+     */
+    showMemoryForm(entry) {
+        const isEdit = !!entry;
+        const content = isEdit ? (entry.content || '') : '';
+        const importance = isEdit && entry.importance != null ? entry.importance : 0.5;
+        const tags = isEdit && Array.isArray(entry.tags) ? entry.tags.join(', ') : '';
+        this.showModal(isEdit ? 'Edit Memory' : 'Add Memory', `
+            <div class="form-group">
+                <label>Content</label>
+                <textarea id="memContent" class="form-control" rows="4" style="width:100%;resize:vertical;">${this.escapeHtml(content)}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Importance (0.0 ~ 1.0)</label>
+                <input id="memImportance" type="number" class="form-control" step="0.05" min="0" max="1" value="${importance}">
+            </div>
+            <div class="form-group">
+                <label>Tags (comma separated)</label>
+                <input id="memTags" type="text" class="form-control" value="${this.escapeAttr(tags)}">
+            </div>
+        `, async () => {
+            const c = document.getElementById('memContent').value.trim();
+            if (!c) { this.showToast('内容不能为空', 'error'); return; }
+            const imp = parseFloat(document.getElementById('memImportance').value || '0.5');
+            const tagList = document.getElementById('memTags').value.split(',').map(s => s.trim()).filter(Boolean);
+            const url = isEdit ? `/api/memory/${encodeURIComponent(entry.id)}` : '/api/memory';
+            const method = isEdit ? 'PUT' : 'POST';
+            const resp = await this.authFetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: c, importance: imp, tags: tagList })
+            });
+            if (resp.ok) {
+                this.showToast(isEdit ? '记忆已更新' : '记忆已添加', 'success');
+                this.loadMemory();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('保存失败 (' + resp.status + ')'), 'error');
+            }
+        });
+        document.getElementById('modalConfirm').textContent = 'Save';
+        document.getElementById('modalConfirm').style.display = 'block';
+    }
+
+    /**
+     * 删除一条记忆（二次确认后）。
+     */
+    async deleteMemory(id) {
+        if (!confirm('删除这条记忆？此操作不可撤销。')) return;
+        try {
+            const resp = await this.authFetch(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            if (resp.ok) {
+                this.showToast('记忆已删除', 'success');
+                this.loadMemory();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('删除失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误，删除失败', 'error');
+        }
+    }
+
+    // ==================== Trace（单次执行时间线） ====================
+
+    /**
+     * 打开某会话的执行 Trace 时间线：按转录顺序还原 user/thinking/tool/assistant 各步骤，
+     * 工具步骤带时间戳与相对上一步的耗时。纯前端复用已持久化的会话详情数据。
+     */
+    async showSessionTrace(sessionId) {
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+            if (!resp.ok) { this.showToast('加载 Trace 失败 (' + resp.status + ')', 'error'); return; }
+            const messages = await resp.json();
+            this.showModal(`执行 Trace · ${sessionId}`, this.renderTraceTimeline(messages || []), null);
+            document.getElementById('modalConfirm').style.display = 'none';
+        } catch (e) {
+            this.showToast('加载 Trace 失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * 将会话转录渲染为垂直时间线 HTML。
+     */
+    renderTraceTimeline(messages) {
+        if (!messages.length) return '<p class="empty-state">该会话没有可展示的执行步骤</p>';
+        let prevTs = null;
+        const nodes = [];
+        const fmtTime = (iso) => {
+            const t = Date.parse(iso);
+            return isNaN(t) ? '' : new Date(t).toLocaleTimeString();
+        };
+        for (const msg of messages) {
+            if (msg.role === 'summary') {
+                nodes.push(`<div class="trace-node trace-summary"><div class="trace-dot">📋</div><div class="trace-body"><div class="trace-label">上文已压缩为摘要</div></div></div>`);
+                continue;
+            }
+            if (msg.role === 'user') {
+                nodes.push(`<div class="trace-node trace-user"><div class="trace-dot">👤</div><div class="trace-body"><div class="trace-label">用户输入</div><div class="trace-text">${this.escapeHtml((msg.content || '').slice(0, 400))}</div></div></div>`);
+                continue;
+            }
+            if (msg.role === 'assistant') {
+                if (msg.thinking) {
+                    nodes.push(`<div class="trace-node trace-thinking"><div class="trace-dot">💭</div><div class="trace-body"><div class="trace-label">思考</div><details class="trace-details"><summary>展开</summary><div class="trace-text">${this.escapeHtml(msg.thinking)}</div></details></div></div>`);
+                }
+                const records = Array.isArray(msg.toolCallRecords) ? msg.toolCallRecords : [];
+                for (const r of records) {
+                    const ts = r.timestamp || null;
+                    let delta = '';
+                    if (ts && prevTs) {
+                        const dt = Date.parse(ts) - prevTs;
+                        if (!isNaN(dt) && dt >= 0) delta = ` +${(dt / 1000).toFixed(1)}s`;
+                    }
+                    if (ts) prevTs = Date.parse(ts);
+                    const okCls = r.success ? 'trace-ok' : 'trace-fail';
+                    const okIcon = r.success ? '✅' : '❌';
+                    nodes.push(`<div class="trace-node trace-tool ${okCls}"><div class="trace-dot">🔧</div><div class="trace-body">`
+                        + `<div class="trace-label">${this.escapeHtml(r.toolName || 'tool')} ${okIcon}<span class="trace-time">${ts ? this.escapeHtml(fmtTime(ts) + delta) : ''}</span></div>`
+                        + (r.argsSummary ? `<details class="trace-details"><summary>参数</summary><pre class="trace-pre">${this.escapeHtml(r.argsSummary)}</pre></details>` : '')
+                        + (r.resultSummary ? `<details class="trace-details"><summary>结果</summary><pre class="trace-pre">${this.escapeHtml(r.resultSummary)}</pre></details>` : '')
+                        + `</div></div>`);
+                }
+                if (msg.content) {
+                    nodes.push(`<div class="trace-node trace-assistant"><div class="trace-dot">🤖</div><div class="trace-body"><div class="trace-label">助手回复</div><details class="trace-details"><summary>展开</summary><div class="trace-text">${this.escapeHtml((msg.content || '').slice(0, 2000))}</div></details></div></div>`);
+                }
+            }
+        }
+        return `<div class="trace-timeline">${nodes.join('')}</div>`;
     }
 
     /**
@@ -2135,12 +3367,19 @@ class TinyClawConsole {
             const channels = await response.json();
             
             const grid = document.getElementById('channelsGrid');
-            grid.innerHTML = channels.map(ch => `
+            grid.innerHTML = channels.map(ch => {
+                const stateBadge = !ch.enabled
+                    ? ''
+                    : ch.state
+                        ? `<span class="badge ${this.channelStateBadge(ch.state)}">${ch.state}</span>`
+                        : `<span class="badge ${ch.running ? 'badge-success' : 'badge-disabled'}">${ch.running ? 'Running' : 'Stopped'}</span>`;
+                return `
                 <div class="card" data-channel="${ch.name}">
                     <div class="card-header">
                         <span class="badge ${ch.enabled ? 'badge-success' : 'badge-disabled'}">
                             ${ch.enabled ? 'Enabled' : 'Disabled'}
                         </span>
+                        ${stateBadge}
                         <span class="card-title">${this.capitalize(ch.name)}</span>
                     </div>
                     <div class="card-body">
@@ -2151,10 +3390,17 @@ class TinyClawConsole {
                         <button class="btn btn-text" onclick="app.editChannel('${ch.name}')">⚙️ Settings</button>
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
         } catch (error) {
             console.error('Failed to load channels:', error);
         }
+    }
+
+    channelStateBadge(state) {
+        if (state === 'usable') return 'badge-success';
+        if (state === 'recovering') return 'badge-timeout';
+        return 'badge-error';
     }
 
     async editChannel(name) {
@@ -2349,6 +3595,7 @@ class TinyClawConsole {
                 <td class="col-visibility">${this.renderVisibilityCell(s.visibility)}</td>
                 <td class="col-action">
                     <div class="action-buttons">
+                        <button class="btn-edit" onclick="app.showSessionTrace('${this.escapeHtml(s.sessionId)}')">Trace</button>
                         <button class="btn-edit" onclick="app.viewSessionDetail('${this.escapeHtml(s.sessionId)}')">Edit</button>
                         <button class="btn-delete" onclick="app.deleteSession('${this.escapeHtml(s.sessionId)}')">Delete</button>
                     </div>
@@ -2474,6 +3721,7 @@ class TinyClawConsole {
         try {
             const response = await this.authFetch('/api/cron');
             const jobs = await response.json();
+            this.cronJobs = jobs;
             
             const list = document.getElementById('cronList');
             if (jobs.length === 0) {
@@ -2481,19 +3729,39 @@ class TinyClawConsole {
                 return;
             }
             
-            list.innerHTML = jobs.map(job => `
-                <div class="cron-item">
-                    <div class="cron-info">
-                        <div class="cron-name">${job.name}</div>
-                        <div class="cron-meta">${job.schedule} • ${job.message.substring(0, 50)}...</div>
+            list.innerHTML = jobs.map(job => {
+                const lastBadge = job.lastStatus
+                    ? `<span class="badge ${this.cronStatusBadge(job.lastStatus)}">${job.lastStatus}</span>` : '';
+                const history = job.history || [];
+                const historyRows = history.map(r => `
+                    <div class="cron-history-row">
+                        <span class="cron-history-time">${this.formatDateTime(r.startedAtMs)}</span>
+                        <span class="badge ${this.cronStatusBadge(r.status)}">${r.status}</span>
+                        <span class="cron-history-trigger">${r.trigger}</span>
+                        <span class="cron-history-duration">${(r.durationMs / 1000).toFixed(1)}s</span>
+                        <span class="cron-history-error" title="${this.escapeHtml(r.error || '')}">${this.escapeHtml(r.error || '')}</span>
+                    </div>`).join('');
+                return `
+                <div class="cron-entry">
+                    <div class="cron-item">
+                        <div class="cron-info">
+                            <div class="cron-name">${this.escapeHtml(job.name)} ${lastBadge}</div>
+                            <div class="cron-meta">${this.escapeHtml(job.schedule)} • ${this.escapeHtml(job.message.substring(0, 50))}... • last run: ${job.lastRun ? this.formatDateTime(job.lastRun) : 'never'}${job.lastError ? ' • ' + this.escapeHtml(job.lastError) : ''}</div>
+                        </div>
+                        <span class="badge ${job.enabled ? 'badge-success' : 'badge-disabled'}">${job.enabled ? 'Enabled' : 'Disabled'}</span>
+                        <div class="cron-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="app.editCronJob('${job.id}')">Edit</button>
+                            <button class="btn btn-secondary btn-sm" onclick="app.runCronJob('${job.id}')">Run</button>
+                            <button class="btn btn-secondary btn-sm" onclick="app.toggleCronHistory('${job.id}')">History (${history.length})</button>
+                            <button class="btn btn-secondary btn-sm" onclick="app.toggleCronJob('${job.id}', ${!job.enabled})">${job.enabled ? 'Disable' : 'Enable'}</button>
+                            <button class="btn btn-secondary btn-sm" onclick="app.deleteCronJob('${job.id}')">Delete</button>
+                        </div>
                     </div>
-                    <span class="badge ${job.enabled ? 'badge-success' : 'badge-disabled'}">${job.enabled ? 'Enabled' : 'Disabled'}</span>
-                    <div class="cron-actions">
-                        <button class="btn btn-secondary btn-sm" onclick="app.toggleCronJob('${job.id}', ${!job.enabled})">${job.enabled ? 'Disable' : 'Enable'}</button>
-                        <button class="btn btn-secondary btn-sm" onclick="app.deleteCronJob('${job.id}')">Delete</button>
+                    <div class="cron-history" id="cronHistory-${job.id}" style="display: none;">
+                        ${historyRows || '<p class="empty-state">No runs yet</p>'}
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         } catch (error) {
             console.error('Failed to load cron jobs:', error);
         }
@@ -2581,6 +3849,99 @@ class TinyClawConsole {
         if (!confirm('Delete this job?')) return;
         await this.authFetch(`/api/cron/${id}`, { method: 'DELETE' });
         this.loadCronJobs();
+    }
+
+    async runCronJob(id) {
+        try {
+            await this.authFetch(`/api/cron/${id}/run`, { method: 'POST' });
+            // 任务异步执行，稍延迟刷新列表以拿到执行历史
+            setTimeout(() => this.loadCronJobs(), 1000);
+        } catch (error) {
+            console.error('Failed to run cron job:', error);
+        }
+    }
+
+    editCronJob(id) {
+        const job = (this.cronJobs || []).find(j => j.id === id);
+        if (!job) return;
+        const isEvery = job.kind === 'every';
+        this.showModal('Edit Cron Job', `
+            <div class="form-group">
+                <label>Name</label>
+                <input class="form-control" id="editCronName" value="${this.escapeHtml(job.name)}">
+            </div>
+            <div class="form-group">
+                <label>Message</label>
+                <textarea class="form-control" id="editCronMessage" rows="3">${this.escapeHtml(job.message)}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Schedule Type</label>
+                <select class="form-control" id="editCronType">
+                    <option value="every" ${isEvery ? 'selected' : ''}>Every X seconds</option>
+                    <option value="cron" ${!isEvery ? 'selected' : ''}>Cron expression</option>
+                </select>
+            </div>
+            <div class="form-group" id="editCronEveryGroup" style="${isEvery ? '' : 'display:none;'}">
+                <label>Interval (seconds)</label>
+                <input class="form-control" id="editCronEvery" type="number" value="${isEvery ? Math.round((job.everyMs || 3600000) / 1000) : 3600}">
+            </div>
+            <div class="form-group" id="editCronExprGroup" style="${!isEvery ? '' : 'display:none;'}">
+                <label>Cron Expression</label>
+                <input class="form-control" id="editCronExpr" placeholder="0 8 * * *" value="${this.escapeHtml(job.expr || '')}">
+            </div>
+            <div class="form-group">
+                <label>Channel (optional)</label>
+                <input class="form-control" id="editCronChannel" value="${this.escapeHtml(job.channel || '')}">
+            </div>
+            <div class="form-group">
+                <label>To / Chat ID (optional)</label>
+                <input class="form-control" id="editCronTo" value="${this.escapeHtml(job.to || '')}">
+            </div>
+        `, async () => {
+            const data = {
+                name: document.getElementById('editCronName').value,
+                message: document.getElementById('editCronMessage').value
+            };
+            if (document.getElementById('editCronType').value === 'every') {
+                data.everySeconds = parseInt(document.getElementById('editCronEvery').value);
+            } else {
+                data.cron = document.getElementById('editCronExpr').value;
+            }
+            data.channel = document.getElementById('editCronChannel').value.trim();
+            data.to = document.getElementById('editCronTo').value.trim();
+            await this.authFetch(`/api/cron/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            this.loadCronJobs();
+        });
+        // 调度类型切换联动
+        const typeSelect = document.getElementById('editCronType');
+        typeSelect.onchange = () => {
+            document.getElementById('editCronEveryGroup').style.display = typeSelect.value === 'every' ? '' : 'none';
+            document.getElementById('editCronExprGroup').style.display = typeSelect.value === 'cron' ? '' : 'none';
+        };
+    }
+
+    toggleCronHistory(id) {
+        const el = document.getElementById('cronHistory-' + id);
+        if (el) {
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+    }
+
+    cronStatusBadge(status) {
+        if (status === 'ok') return 'badge-success';
+        if (status === 'timeout') return 'badge-timeout';
+        return 'badge-error';
+    }
+
+    formatDateTime(ms) {
+        return new Date(ms).toLocaleString([], {
+            month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+        });
     }
 
     // ==================== Workspace ====================
@@ -3290,6 +4651,7 @@ class TinyClawConsole {
                     </div>
                     <div class="provider-card-footer">
                         <button class="btn btn-text" onclick="app.editProvider('${p.name}')">✏️ Settings</button>
+                        <button class="btn btn-text" onclick="app.testProvider('${p.name}')" ${p.authorized ? '' : 'disabled'}>🔌 Test</button>
                     </div>
                 </div>
                 `;
@@ -3474,8 +4836,46 @@ class TinyClawConsole {
             }
         };
         
+        // 保存前验证连接
+        document.getElementById('testModelBtn').onclick = () => this.testCurrentModel();
+        
         // 初始化按钮状态
         checkChanges();
+    }
+
+    async testProvider(name) {
+        await this.testModelConnection({ provider: name });
+    }
+
+    async testCurrentModel() {
+        const provider = document.getElementById('providerSelect').value;
+        const model = document.getElementById('modelSelect').value;
+        if (!provider) {
+            alert('Please select a provider first');
+            return;
+        }
+        await this.testModelConnection({ provider, model });
+    }
+
+    /**
+     * 调用 /api/models/test 验证 provider/模型连接并反馈结果。
+     */
+    async testModelConnection(payload) {
+        try {
+            const response = await this.authFetch('/api/models/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(`✓ ${result.model} connected in ${result.latencyMs}ms`);
+            } else {
+                alert(`✗ ${result.model || payload.provider} failed: ${result.error || 'unknown error'}`);
+            }
+        } catch (error) {
+            alert('Test failed: ' + error.message);
+        }
     }
 
     // ==================== Environments ====================
@@ -3554,6 +4954,25 @@ class TinyClawConsole {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    /**
+     * 转义 HTML/SVG <b>属性值</b>。
+     *
+     * <p>不能直接用 {@link #escapeHtml}：它基于 {@code innerHTML}，只转义
+     * {@code & < >}，<b>不转义引号</b>。而角色名、工作流节点 id 都可能由 LLM 生成，
+     * 一个带双引号的名字就能从 {@code data-from="..."} 里逐出去，把整张 SVG 结构弄坏。</p>
+     *
+     * @param {string} value - 待转义的属性值
+     * @returns {string} 可安全放入双引号属性的字符串
+     */
+    escapeAttr(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     // ==================== Token 消耗 ====================
@@ -3842,6 +5261,436 @@ class TinyClawConsole {
             return (count / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
         }
         return String(count);
+    }
+
+    // ==================== Toast ====================
+
+    /**
+     * 轻量级站内提示，替代原生 alert。
+     * 右下角堆叠显示，2.6s 后自动淡出移除。
+     *
+     * @param {string} message - 提示文案
+     * @param {'success'|'error'|'info'} [type='info'] - 语义类型，决定配色
+     */
+    showToast(message, type = 'info') {
+        let container = document.getElementById('toastContainer');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'toastContainer';
+            container.className = 'toast-container';
+            document.body.appendChild(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.classList.add('toast-hide');
+            setTimeout(() => toast.remove(), 300);
+        }, 2600);
+    }
+
+    // ==================== Dashboard ====================
+
+    /**
+     * 加载 Dashboard 总览：并行拉取运行态 / 心跳 / 进化 / 反思 / 通道五个既有端点，
+     * 任一失败都不阻塞其余卡片渲染（Promise.allSettled）。
+     */
+    async loadDashboard() {
+        const refreshBtn = document.getElementById('dashRefreshBtn');
+        if (refreshBtn) refreshBtn.onclick = () => this.loadDashboard();
+
+        const [chatStatus, heartbeat, feedback, reflection, channels] = await Promise.allSettled([
+            this.authFetch('/api/chat/status').then(r => r.ok ? r.json() : null),
+            this.authFetch('/api/heartbeat').then(r => r.ok ? r.json() : null),
+            this.authFetch('/api/feedback').then(r => r.ok ? r.json() : null),
+            this.authFetch('/api/reflection').then(r => r.ok ? r.json() : null),
+            this.authFetch('/api/channels').then(r => r.ok ? r.json() : null)
+        ]);
+        const val = (r) => (r.status === 'fulfilled' ? r.value : null);
+
+        this.renderDashCards(val(chatStatus), val(heartbeat), val(feedback), val(reflection));
+        this.renderDashChannels(val(channels));
+        this.renderDashHealth(val(reflection));
+    }
+
+    /**
+     * 渲染 Dashboard 顶部四张状态卡：运行态 / 心跳 / 进化 / 反思。
+     */
+    renderDashCards(chatStatus, heartbeat, feedback, reflection) {
+        const grid = document.getElementById('dashGrid');
+        if (!grid) return;
+
+        const running = !!(chatStatus && chatStatus.running);
+        const runtimeCard = this.dashCard({
+            icon: running ? '🟢' : '⚪',
+            title: 'Chat Runtime',
+            badge: running ? ['badge-success', 'Running'] : ['badge-disabled', 'Idle'],
+            rows: [['Status', this.escapeHtml(running ? 'A task is executing' : 'No active task')]]
+        });
+
+        const hbEnabled = !!(heartbeat && heartbeat.enabled);
+        const lastRuns = (heartbeat && heartbeat.lastRuns) || {};
+        const runKeys = Object.keys(lastRuns);
+        const heartbeatCard = this.dashCard({
+            icon: '💓',
+            title: 'Heartbeat',
+            badge: hbEnabled ? ['badge-success', 'Enabled'] : ['badge-disabled', 'Disabled'],
+            rows: [
+                ['Agents', this.escapeHtml(String(runKeys.length))],
+                ['Last Run', this.formatHeartbeatRuns(lastRuns)]
+            ],
+            action: hbEnabled
+                ? `<button class="btn btn-secondary btn-sm" onclick="app.triggerHeartbeat()">Run Now</button>`
+                : ''
+        });
+
+        const fbEnabled = !!(feedback && feedback.feedbackEnabled);
+        const poEnabled = !!(feedback && feedback.promptOptimizationEnabled);
+        const evoCard = this.dashCard({
+            icon: '🧬',
+            title: 'Evolution',
+            badge: (fbEnabled || poEnabled) ? ['badge-success', 'Active'] : ['badge-disabled', 'Inactive'],
+            rows: [
+                ['Feedback', this.escapeHtml(fbEnabled ? 'Enabled' : 'Disabled')],
+                ['Prompt Opt.', this.escapeHtml(poEnabled ? 'Enabled' : 'Disabled')]
+            ]
+        });
+
+        const rfEnabled = !!(reflection && reflection.reflectionEnabled);
+        const summary = (reflection && reflection.healthSummary) || [];
+        const rfCard = this.dashCard({
+            icon: '🩺',
+            title: 'Reflection',
+            badge: rfEnabled ? ['badge-success', 'Enabled'] : ['badge-disabled', 'Disabled'],
+            rows: [
+                ['Tracked Tools', this.escapeHtml(String(summary.length))],
+                ['', `<a href="#tools-health" class="dash-link" onclick="app.navigateTo('tools-health')">Open Tools Health →</a>`]
+            ]
+        });
+
+        grid.innerHTML = runtimeCard + heartbeatCard + evoCard + rfCard;
+    }
+
+    /**
+     * 构造一张 Dashboard 状态卡。rows 为 [label, valueHtml] 数组，value 按已转义的 HTML 注入。
+     */
+    dashCard({ icon, title, badge, rows, action }) {
+        const badgeHtml = badge ? `<span class="badge ${badge[0]}">${this.escapeHtml(badge[1])}</span>` : '';
+        const rowsHtml = (rows || []).map(([label, valueHtml]) => `
+            <div class="dash-card-row">
+                <span class="dash-card-label">${this.escapeHtml(label)}</span>
+                <span class="dash-card-value">${valueHtml}</span>
+            </div>`).join('');
+        return `
+            <div class="card dash-card">
+                <div class="dash-card-head">
+                    <span class="dash-card-icon">${icon}</span>
+                    <span class="dash-card-title">${this.escapeHtml(title)}</span>
+                    ${badgeHtml}
+                </div>
+                <div class="dash-card-body">${rowsHtml}</div>
+                ${action ? `<div class="dash-card-actions">${action}</div>` : ''}
+            </div>`;
+    }
+
+    /**
+     * 取心跳记录中最近一次（at_ms 最大）的运行做一行摘要。
+     */
+    formatHeartbeatRuns(lastRuns) {
+        let latestKey = null, latestAt = -1;
+        for (const [key, info] of Object.entries(lastRuns || {})) {
+            const at = (info && info.at_ms) || 0;
+            if (at > latestAt) { latestAt = at; latestKey = key; }
+        }
+        if (!latestKey) return this.escapeHtml('No run recorded yet');
+        const info = lastRuns[latestKey] || {};
+        const when = latestAt > 0 ? this.timeAgo(latestAt) : 'unknown';
+        return `${this.escapeHtml(latestKey)} · ${this.escapeHtml(String(info.status || '?'))} · ${when}`;
+    }
+
+    /**
+     * 将毫秒时间戳格式化为“N s/m/h/d ago”相对时间。
+     */
+    timeAgo(ms) {
+        const diff = Date.now() - ms;
+        if (diff < 0) return 'just now';
+        const s = Math.floor(diff / 1000);
+        if (s < 60) return s + 's ago';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'm ago';
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + 'h ago';
+        return Math.floor(h / 24) + 'd ago';
+    }
+
+    /**
+     * 渲染 Dashboard 通道列表（仅启用项），复用 Channels 页的状态徽章映射。
+     */
+    renderDashChannels(channels) {
+        const box = document.getElementById('dashChannels');
+        if (!box) return;
+        const enabled = Array.isArray(channels) ? channels.filter(c => c.enabled) : [];
+        if (enabled.length === 0) {
+            box.innerHTML = '<p class="empty-state">No enabled channels</p>';
+            return;
+        }
+        box.innerHTML = enabled.map(c => {
+            const badge = c.state
+                ? `<span class="badge ${this.channelStateBadge(c.state)}">${this.escapeHtml(c.state)}</span>`
+                : `<span class="badge ${c.running ? 'badge-success' : 'badge-disabled'}">${c.running ? 'Running' : 'Stopped'}</span>`;
+            return `<div class="dash-channel">
+                <span class="dash-channel-name">${this.escapeHtml(this.capitalize(c.name))}</span>
+                ${badge}
+            </div>`;
+        }).join('');
+    }
+
+    /**
+     * 渲染 Dashboard 的工具健康 Top 表（取自 reflection.healthSummary）。
+     */
+    renderDashHealth(reflection) {
+        const body = document.getElementById('dashHealthBody');
+        if (!body) return;
+        const tools = (reflection && Array.isArray(reflection.healthSummary)) ? reflection.healthSummary : [];
+        if (tools.length === 0) {
+            body.innerHTML = '<tr><td colspan="4" class="empty-state">No tool health data</td></tr>';
+            return;
+        }
+        body.innerHTML = tools.map(t => `
+            <tr>
+                <td><strong>${this.escapeHtml(t.tool || '')}</strong></td>
+                <td>${t.totalCalls || 0}</td>
+                <td>${this.renderSuccessRate(t.successRate)}</td>
+                <td>${t.p95Ms != null ? t.p95Ms : '—'}</td>
+            </tr>`).join('');
+    }
+
+    /**
+     * 成功率百分比渲染，按阈值着色（≥95% 绿 / ≥80% 黄 / 否则红）。
+     */
+    renderSuccessRate(rate) {
+        if (rate == null) return '—';
+        const pct = rate * 100;
+        const cls = pct >= 95 ? 'rate-good' : pct >= 80 ? 'rate-warn' : 'rate-bad';
+        return `<span class="${cls}">${pct.toFixed(1)}%</span>`;
+    }
+
+    /**
+     * 手动触发一次心跳，成功后短暂延迟刷新 Dashboard 以反映最新状态。
+     */
+    async triggerHeartbeat() {
+        try {
+            const resp = await this.authFetch('/api/heartbeat/now', { method: 'POST' });
+            if (resp.ok) {
+                this.showToast('Heartbeat triggered', 'success');
+                setTimeout(() => this.loadDashboard(), 800);
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('Trigger failed (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('Network error while triggering heartbeat', 'error');
+        }
+    }
+
+    // ==================== Tools Health (Reflection 2.0) ====================
+
+    /**
+     * 加载 Tools Health 页：总览开关 + 工具健康表 + 修复提案列表。
+     * Reflection 未启用时展示引导文案，不渲染表格。
+     */
+    async loadReflection() {
+        const refreshBtn = document.getElementById('reflectionRefreshBtn');
+        if (refreshBtn) refreshBtn.onclick = () => this.loadReflection();
+
+        let overview = null;
+        try {
+            const resp = await this.authFetch('/api/reflection');
+            overview = resp.ok ? await resp.json() : null;
+        } catch (e) {
+            console.error('Failed to load reflection overview:', e);
+        }
+
+        const disabledBox = document.getElementById('reflectionDisabled');
+        const contentBox = document.getElementById('reflectionContent');
+        if (!disabledBox || !contentBox) return;
+
+        if (!overview || !overview.reflectionEnabled) {
+            disabledBox.textContent = (overview && overview.message)
+                || 'Reflection 2.0 is not enabled. Set evolution.reflection.enabled=true in config.';
+            disabledBox.style.display = 'block';
+            contentBox.style.display = 'none';
+            return;
+        }
+        disabledBox.style.display = 'none';
+        contentBox.style.display = 'block';
+
+        const [health, proposals] = await Promise.allSettled([
+            this.authFetch('/api/reflection/health').then(r => r.ok ? r.json() : null),
+            this.authFetch('/api/reflection/proposals').then(r => r.ok ? r.json() : null)
+        ]);
+        const val = (r) => (r.status === 'fulfilled' ? r.value : null);
+        this.renderHealthTable(val(health));
+        this.renderProposals(val(proposals));
+    }
+
+    /**
+     * 渲染完整工具健康表（8 列：调用/成功/失败/成功率/P50/P95/P99）。
+     */
+    renderHealthTable(health) {
+        const body = document.getElementById('healthTableBody');
+        if (!body) return;
+        const tools = (health && Array.isArray(health.tools)) ? health.tools : [];
+        if (tools.length === 0) {
+            body.innerHTML = '<tr><td colspan="8" class="empty-state">No tool health data in window</td></tr>';
+            return;
+        }
+        body.innerHTML = tools.map(t => `
+            <tr>
+                <td><strong>${this.escapeHtml(t.tool || '')}</strong></td>
+                <td>${t.totalCalls || 0}</td>
+                <td>${t.successCalls || 0}</td>
+                <td>${t.failureCalls || 0}</td>
+                <td>${this.renderSuccessRate(t.successRate)}</td>
+                <td>${t.p50Ms != null ? t.p50Ms : '—'}</td>
+                <td>${t.p95Ms != null ? t.p95Ms : '—'}</td>
+                <td>${t.p99Ms != null ? t.p99Ms : '—'}</td>
+            </tr>`).join('');
+    }
+
+    /**
+     * 渲染修复提案列表（HITL 审批入口）。
+     */
+    renderProposals(data) {
+        const box = document.getElementById('proposalList');
+        if (!box) return;
+        const proposals = (data && Array.isArray(data.proposals)) ? data.proposals : [];
+        if (proposals.length === 0) {
+            box.innerHTML = '<p class="empty-state">No repair proposals</p>';
+            return;
+        }
+        box.innerHTML = proposals.map(p => this.renderProposalCard(p)).join('');
+    }
+
+    /**
+     * 单张提案卡：状态徽章 + 工具/类型 + 摘要 + 根因 + 内容折叠 + 动作按钮。
+     */
+    renderProposalCard(p) {
+        const id = this.escapeAttr(p.proposalId);
+        const status = String(p.status || 'PENDING');
+        const actions = this.proposalActions(p, id);
+        const rootCause = p.rootCauseAnalysis
+            ? `<div class="proposal-section"><span class="proposal-section-label">Root Cause</span><div class="proposal-section-body">${this.escapeHtml(p.rootCauseAnalysis)}</div></div>`
+            : '';
+        const impact = p.impactScore != null
+            ? `<span class="proposal-impact">impact ${Number(p.impactScore).toFixed(2)}</span>` : '';
+        return `
+            <div class="proposal-card" data-status="${this.escapeAttr(status)}">
+                <div class="proposal-head">
+                    <span class="badge ${this.proposalStatusBadge(status)}">${this.escapeHtml(status)}</span>
+                    <span class="proposal-tool">${this.escapeHtml(p.toolName || '')}</span>
+                    <span class="badge badge-outline">${this.escapeHtml(p.type || '')}</span>
+                    ${impact}
+                </div>
+                <div class="proposal-summary">${this.escapeHtml(p.summary || '(no summary)')}</div>
+                ${rootCause}
+                ${this.renderProposalDiff(p)}
+                ${actions ? `<div class="proposal-actions">${actions}</div>` : ''}
+            </div>`;
+    }
+
+    /**
+     * 提案状态 → 徽章样式映射。
+     */
+    proposalStatusBadge(status) {
+        switch (String(status).toUpperCase()) {
+            case 'PENDING': return 'badge-timeout';
+            case 'APPROVED': return 'badge-outline';
+            case 'APPLIED': return 'badge-success';
+            case 'REJECTED': return 'badge-error';
+            default: return 'badge-disabled';
+        }
+    }
+
+    /**
+     * 依状态给出可用动作：PENDING→审批/拒绝；APPROVED→应用；其余仅查看。
+     */
+    proposalActions(p, id) {
+        const status = String(p.status || '').toUpperCase();
+        const view = `<button class="btn btn-text" onclick="app.viewProposal('${id}')">Details</button>`;
+        if (status === 'PENDING') {
+            return view
+                + `<button class="btn btn-text" onclick="app.proposalAction('${id}','approve')">✓ Approve</button>`
+                + `<button class="btn btn-text btn-danger" onclick="app.proposalAction('${id}','reject')">✗ Reject</button>`;
+        }
+        if (status === 'APPROVED') {
+            return view + `<button class="btn btn-text" onclick="app.proposalAction('${id}','apply')">▶ Apply</button>`;
+        }
+        return view;
+    }
+
+    /**
+     * 折叠展示提案的原始内容与拟改内容。
+     */
+    renderProposalDiff(p) {
+        if (!p.proposedContent) return '';
+        const original = p.originalContent
+            ? `<div class="diff-block diff-old"><span class="diff-label">Original</span><pre>${this.escapeHtml(p.originalContent)}</pre></div>`
+            : '';
+        const proposed = `<div class="diff-block diff-new"><span class="diff-label">Proposed</span><pre>${this.escapeHtml(p.proposedContent)}</pre></div>`;
+        return `<details class="proposal-diff"><summary>View content</summary>${original}${proposed}</details>`;
+    }
+
+    /**
+     * 弹窗查看单个提案的完整详情。
+     */
+    async viewProposal(id) {
+        try {
+            const resp = await this.authFetch('/api/reflection/proposals');
+            const data = resp.ok ? await resp.json() : null;
+            const list = (data && Array.isArray(data.proposals)) ? data.proposals : [];
+            const p = list.find(x => String(x.proposalId) === String(id));
+            if (!p) { this.showToast('Proposal not found', 'error'); return; }
+            this.showModal(`Proposal: ${p.toolName || id}`, `
+                <div class="proposal-detail">
+                    <div><strong>Status:</strong> ${this.escapeHtml(String(p.status || ''))}</div>
+                    <div><strong>Type:</strong> ${this.escapeHtml(String(p.type || ''))}</div>
+                    <div><strong>Impact:</strong> ${p.impactScore != null ? Number(p.impactScore).toFixed(2) : '—'}</div>
+                    <div><strong>Summary:</strong> ${this.escapeHtml(p.summary || '')}</div>
+                    ${p.rootCauseAnalysis ? `<div><strong>Root Cause:</strong><pre class="proposal-pre">${this.escapeHtml(p.rootCauseAnalysis)}</pre></div>` : ''}
+                    ${p.originalContent ? `<div><strong>Original:</strong><pre class="proposal-pre">${this.escapeHtml(p.originalContent)}</pre></div>` : ''}
+                    ${p.proposedContent ? `<div><strong>Proposed:</strong><pre class="proposal-pre">${this.escapeHtml(p.proposedContent)}</pre></div>` : ''}
+                </div>`, null);
+            document.getElementById('modalConfirm').style.display = 'none';
+        } catch (e) {
+            console.error('Failed to load proposal:', e);
+            this.showToast('Failed to load proposal', 'error');
+        }
+    }
+
+    /**
+     * 对提案执行 approve/reject/apply 动作，成功后刷新列表。
+     */
+    async proposalAction(id, action) {
+        if (action === 'apply' && !confirm('Apply this approved repair? It will modify tool configuration.')) return;
+        if (action === 'reject' && !confirm('Reject this proposal?')) return;
+        try {
+            const resp = await this.authFetch(`/api/reflection/proposals/${encodeURIComponent(id)}/${action}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                this.showToast(data.message || `${action} succeeded`, 'success');
+                this.loadReflection();
+            } else {
+                this.showToast(data.error || `${action} failed (${resp.status})`, 'error');
+            }
+        } catch (e) {
+            this.showToast(`Network error during ${action}`, 'error');
+        }
     }
 }
 

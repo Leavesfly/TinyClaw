@@ -19,11 +19,15 @@ public class ChannelsHandler extends BaseHandler {
 
     private static final TinyClawLogger logger = TinyClawLogger.getLogger("web");
 
+    private final io.leavesfly.tinyclaw.channels.ChannelManager channelManager;
+
     /**
-     * 构造 ChannelsHandler，注入全局配置与安全中间件。
+     * 构造 ChannelsHandler，注入全局配置、安全中间件与通道管理器（可为 null，降级为仅配置态）。
      */
-    public ChannelsHandler(Config config, SecurityMiddleware security) {
+    public ChannelsHandler(Config config, SecurityMiddleware security,
+                           io.leavesfly.tinyclaw.channels.ChannelManager channelManager) {
         super(config, security);
+        this.channelManager = channelManager;
     }
 
     /**
@@ -94,12 +98,18 @@ public class ChannelsHandler extends BaseHandler {
     }
 
     /**
-     * 向 channels 数组追加一个包含 name 与 enabled 字段的节点。
+     * 向 channels 数组追加一个包含 name、enabled 及实时连接状态的节点。
      */
     private void addChannelInfo(ArrayNode channels, String name, boolean enabled) {
         ObjectNode channel = WebUtils.MAPPER.createObjectNode();
         channel.put("name", name);
         channel.put("enabled", enabled);
+        if (channelManager != null) {
+            channelManager.getChannel(name).ifPresent(ch -> {
+                channel.put("running", ch.isRunning());
+                channel.put("state", ch.connectionState());
+            });
+        }
         channels.add(channel);
     }
 

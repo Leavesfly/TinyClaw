@@ -342,6 +342,96 @@ public class SessionManager implements SessionProgressSink {
         }
     }
 
+    // ==================== 派生（fork） ====================
+
+    /**
+     * 从源会话的某个截断点派生一个独立的新会话，用于「重新生成 / 回溯重发」。
+     *
+     * <p>严格遵循不可变转录原则：源会话只读不改，新会话复制 {@code [0, cutIndex)} 区间的
+     * 消息（每条克隆为全新 id，避免跨会话 id 撞车破坏搜索去重），并复制落在该区间内的
+     * 工具调用记录、身份归属与压缩标记。派生会话作为一个独立分支存在，源会话历史完整保留。
+     * 由于新会话从空转录起步，其落盘水位为 0，复制进去的消息会被 {@code persistDelta}
+     * 当作全新增量 append 到新的 JSONL 文件，与源会话文件互不影响。</p>
+     *
+     * @param sourceKey 源会话 key
+     * @param cutIndex  截断点（完整转录中的绝对下标，复制严格小于该值的消息）；
+     *                  会被夹取到 {@code [0, history.size()]}
+     * @param newKey    新会话 key；为空则由本方法基于源 key 生成唯一分支 key
+     * @return 新会话的 key；源会话不存在时返回 null
+     */
+    public String forkSession(String sourceKey, int cutIndex, String newKey) {
+        Session source = getExisting(sourceKey);
+        if (source == null) {
+            return null;
+        }
+        List<Message> history = source.getHistory();
+        int cut = Math.max(0, Math.min(cutIndex, history.size()));
+        String targetKey = (newKey != null && !newKey.isBlank())
+                ? newKey : generateForkKey(sourceKey);
+
+        Session fork = getOrCreate(targetKey);
+        // 复制截断点之前的消息：克隆为全新身份，保留原时间戳以维持 Trace 时序连续
+        for (int i = 0; i < cut; i++) {
+            fork.addFullMessage(cloneForFork(history.get(i)));
+        }
+        // 复制落在保留区间内的工具调用记录：messageIndex 在等长前缀复制后仍然对齐
+        for (ToolCallRecord record : source.getToolCallRecords()) {
+            if (record != null && record.getMessageIndex() < cut) {
+                fork.addToolCallRecord(record);
+            }
+        }
+        // 身份与可见性：分支继承源会话归属，避免派生会话在列表里变成无主 legacy
+        fork.setOwner(source.getOwner());
+        fork.setVisibility(source.getVisibility());
+        fork.setMembers(source.getMembers());
+        // 压缩标记：仅当上下文起点落在保留区间内才继承，否则分支从头开始（起点归零）
+        if (source.getContextStartIndex() <= cut) {
+            String summary = source.getSummary();
+            if (summary != null && !summary.isBlank()) {
+                fork.setSummary(summary);
+            }
+            fork.setContextStartIndex(source.getContextStartIndex());
+        }
+        save(fork);
+        logger.info("Forked session", Map.of(
+                "source", sourceKey,
+                "fork", targetKey,
+                "copied_messages", cut));
+        return targetKey;
+    }
+
+    /**
+     * 为 fork 克隆一条消息：复制全部语义字段并保留原时间戳，但故意把 id 留空，
+     * 让 {@link Session#addFullMessage} 补齐为全新 id，避免源会话与分支共享消息 id。
+     */
+    private Message cloneForFork(Message src) {
+        Message copy = new Message();
+        copy.setRole(src.getRole());
+        copy.setContent(src.getContent());
+        copy.setThinking(src.getThinking());
+        copy.setToolCallId(src.getToolCallId());
+        if (src.getImages() != null) {
+            copy.setImages(new ArrayList<>(src.getImages()));
+        }
+        if (src.getToolCalls() != null) {
+            copy.setToolCalls(new ArrayList<>(src.getToolCalls()));
+        }
+        copy.setTimestamp(src.getTimestamp());
+        return copy;
+    }
+
+    /**
+     * 基于源 key 生成唯一的分支 key：{@code <base>-r<36 进制时间戳>}。
+     *
+     * <p>先剥离源 key 上已有的 {@code -r…} 分支后缀，避免对分支再派生时 key 无限增长；
+     * 由于源 key 以 {@code web:} 之类前缀开头，追加后缀不会破坏前缀语义
+     * （如 ExecTool 的 HITL 审批门控依赖 {@code web} 前缀）。</p>
+     */
+    private String generateForkKey(String sourceKey) {
+        String base = sourceKey.replaceAll("-r[0-9a-z]+$", "");
+        return base + "-r" + Long.toString(System.currentTimeMillis(), 36);
+    }
+
     // ==================== 读取 ====================
 
     /**

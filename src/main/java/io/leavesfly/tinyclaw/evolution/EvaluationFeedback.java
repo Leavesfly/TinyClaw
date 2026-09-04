@@ -42,7 +42,12 @@ public class EvaluationFeedback {
         /**
          * LLM 评判（使用 LLM 对回复质量进行评估）
          */
-        LLM_JUDGE
+        LLM_JUDGE,
+
+        /**
+         * 用户显式评价（如 Web 控制台的 👍/👎），信号最强，直接反映满意度
+         */
+        USER_EXPLICIT
     }
 
     // ==================== 核心字段 ====================

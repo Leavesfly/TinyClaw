@@ -123,6 +123,9 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
                 String prompt = buildRoundPrompt(config, context, speaker, i, speakerCount);
                 String response = speakWithStream(speaker, context, prompt);
                 addMessageWithStream(context, speaker.getAgentId(), speaker.getRoleName(), response);
+                // 实时拓扑：节点 id 与拓扑中的角色节点一致（即 roleName）
+                context.reportNodeStatus(speaker.getRoleName(), speaker.getRoleName(),
+                        CollaborationTopology.NodeStatus.COMPLETED);
 
                 logger.info("Agent 发言", Map.of(
                         "round", context.getCurrentRound(),
@@ -229,6 +232,8 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
                     "说明哪一方论据更有说服力，并给出最终结论。";
             String judgeConclusion = speakWithStream(judge, context, judgePrompt);
             addMessageWithStream(context, judge.getAgentId(), judge.getRoleName(), judgeConclusion);
+            context.reportNodeStatus(judge.getRoleName(), judge.getRoleName(),
+                    CollaborationTopology.NodeStatus.COMPLETED);
             return judgeConclusion;
         }
         return "=== 辩论总结 ===\n\n主题：" + context.getTopic() +
@@ -389,6 +394,9 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
 
             String response = speakWithStream(selectedAgent, context, null);
             addMessageWithStream(context, selectedAgent.getAgentId(), selectedAgent.getRoleName(), response);
+            // 被点名的角色发言完毕，点亮对应节点；Router 自身可能不在初始拓扑里，终版会补上
+            context.reportNodeStatus(selectedAgent.getRoleName(), selectedAgent.getRoleName(),
+                    CollaborationTopology.NodeStatus.COMPLETED);
 
             logger.info("Agent 发言", Map.of(
                     "round", context.getCurrentRound(),
@@ -402,6 +410,8 @@ public class DiscussionStrategy extends AbstractCollaborationStrategy {
                 + "要求：1. 概述核心议题 2. 总结各方主要观点 3. 给出综合结论和建议";
         String conclusion = speakWithStream(routerAgent, context, summaryPrompt);
         addMessageWithStream(context, routerAgent.getAgentId(), routerAgent.getRoleName(), conclusion);
+        context.reportNodeStatus(routerAgent.getRoleName(), routerAgent.getRoleName(),
+                CollaborationTopology.NodeStatus.COMPLETED);
         context.setFinalConclusion(conclusion);
 
         logger.info("动态路由讨论完成", Map.of(

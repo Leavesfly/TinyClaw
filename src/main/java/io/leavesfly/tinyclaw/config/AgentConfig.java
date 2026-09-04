@@ -91,6 +91,13 @@ public class AgentConfig {
     private List<String> commandBlacklist;
 
     /**
+     * 危险命令人工审批（HITL）开关
+     * <p>默认开启：命中安全黑名单的命令在交互式 Web 会话中不再直接拒绝，
+     * 而是在 Web 控制台弹出审批卡片，用户批准后执行。非 Web 通道无审批 UI，维持硬拦截。</p>
+     */
+    private boolean hitlApprovalEnabled = true;
+
+    /**
      * 进化能力配置
      * <p>包含反馈收集和 Prompt 优化功能配置</p>
      */
@@ -304,6 +311,24 @@ public class AgentConfig {
      */
     public void setRestrictToWorkspace(boolean restrictToWorkspace) {
         this.restrictToWorkspace = restrictToWorkspace;
+    }
+
+    /**
+     * 是否启用危险命令人工审批（HITL）
+     *
+     * @return 启用时返回 true
+     */
+    public boolean isHitlApprovalEnabled() {
+        return hitlApprovalEnabled;
+    }
+
+    /**
+     * 设置危险命令人工审批开关
+     *
+     * @param hitlApprovalEnabled 是否启用
+     */
+    public void setHitlApprovalEnabled(boolean hitlApprovalEnabled) {
+        this.hitlApprovalEnabled = hitlApprovalEnabled;
     }
 
     /**

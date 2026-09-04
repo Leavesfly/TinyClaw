@@ -22,6 +22,16 @@ public class WorkflowEngine {
     /** 重试基础等待时间（毫秒），指数退避基数 */
     private static final long RETRY_BASE_DELAY_MS = 500;
 
+    /**
+     * {@link SharedContext} meta 中存放本次执行 {@link WorkflowContext} 的键。
+     *
+     * <p>{@link WorkflowContext} 是引擎的内部状态，但它持有的节点终态
+     * （COMPLETED / FAILED / SKIPPED）是画协同拓扑图必需的信息，而 {@code execute}
+     * 只返回结论文本。透出引用而非拷贝一份状态，是为了让执行被中断（超时、达到
+     * 节点上限、抛异常）时，协同记录依然能拿到当时已跑完的那部分节点状态。</p>
+     */
+    public static final String META_WORKFLOW_CONTEXT = "workflowContext";
+
     /** 公共线程池（由 AgentOrchestrator 统一管理生命周期） */
     private final ExecutorService executor;
 
@@ -66,6 +76,11 @@ public class WorkflowEngine {
 
         // 初始化执行上下文
         WorkflowContext context = new WorkflowContext(sharedContext, workflow.getVariables());
+
+        // 立刻透出引用：后续无论正常结束还是中途中断，构建协同记录时都能读到当时的节点状态
+        if (sharedContext != null) {
+            sharedContext.setMeta(META_WORKFLOW_CONTEXT, context);
+        }
 
         // 载入检查点：上一轮异常中断留下的已完成节点不再重跑
         WorkflowCheckpointStore checkpoints =
@@ -227,6 +242,7 @@ public class WorkflowEngine {
         // 从检查点恢复的节点直接跳过：续跑的全部语义就靠这一句——已有完成结果就不重算
         if (context.isNodeCompleted(node.getId())) {
             logger.info("节点已有完成结果，跳过重跑", Map.of("nodeId", node.getId()));
+            reportNodeStatus(context, node, NodeResult.Status.COMPLETED);
             return;
         }
 
@@ -236,6 +252,7 @@ public class WorkflowEngine {
             skipped.markSkipped("未被激活的条件分支");
             context.setNodeResult(node.getId(), skipped);
             logger.info("节点被条件分支跳过", Map.of("nodeId", node.getId()));
+            reportNodeStatus(context, node, NodeResult.Status.SKIPPED);
             return;
         }
 
@@ -254,6 +271,7 @@ public class WorkflowEngine {
                     rejected.markSkipped("人类审批拒绝: " + approvalResult.getFeedback());
                     context.setNodeResult(node.getId(), rejected);
                     logger.info("节点被人类审批拒绝", Map.of("nodeId", node.getId(), "feedback", approvalResult.getFeedback()));
+                    reportNodeStatus(context, node, NodeResult.Status.SKIPPED);
                     return;
                 }
                 logger.info("节点通过人类审批", Map.of("nodeId", node.getId()));
@@ -267,6 +285,7 @@ public class WorkflowEngine {
             NodeResult skipped = new NodeResult(node.getId());
             skipped.markSkipped("依赖节点执行失败");
             context.setNodeResult(node.getId(), skipped);
+            reportNodeStatus(context, node, NodeResult.Status.SKIPPED);
             return;
         }
 
@@ -297,6 +316,7 @@ public class WorkflowEngine {
             }
 
             result.markStarted();
+            reportNodeStatus(context, node, NodeResult.Status.RUNNING);
 
             try {
                 executeNodeOnce(node, result, context, executionContext);
@@ -322,6 +342,8 @@ public class WorkflowEngine {
         }
 
         context.setNodeResult(node.getId(), result);
+        // 终态上报（COMPLETED / FAILED / SKIPPED）：实时拓扑的最后一次闪烁
+        reportNodeStatus(context, node, result.getStatus());
 
         // 记录到共享上下文
         if (result.isSuccess()) {
@@ -330,6 +352,26 @@ public class WorkflowEngine {
                     node.getName() != null ? node.getName() : node.getId(),
                     result.getResult()
             );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 实时拓扑上报
+    // -------------------------------------------------------------------------
+
+    /**
+     * 向共享上下文上报节点状态，驱动 Web 控制台的实时拓扑图。
+     *
+     * <p>两个状态枚举取值一致（PENDING/RUNNING/COMPLETED/FAILED/SKIPPED），
+     * 用 {@code valueOf} 直转；任一环节没有回调时 {@code reportNodeStatus} 内部自会静默。</p>
+     */
+    private void reportNodeStatus(WorkflowContext context, WorkflowNode node,
+                                  NodeResult.Status status) {
+        SharedContext shared = context.getSharedContext();
+        if (shared != null && status != null) {
+            shared.reportNodeStatus(node.getId(),
+                    node.getName() != null ? node.getName() : node.getId(),
+                    CollaborationTopology.NodeStatus.valueOf(status.name()));
         }
     }
 

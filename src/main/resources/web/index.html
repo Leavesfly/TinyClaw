@@ -8,7 +8,18 @@
     <meta http-equiv="Expires" content="0">
     <title>TinyClaw Console</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
-    <link rel="stylesheet" href="/css/style.css?v=20260321e">
+    <link rel="stylesheet" href="/css/style.css?v=20260903h">
+    <script>
+        // 首屏渲染前应用已保存的主题，避免错误主题闪烁；默认浅色
+        (function () {
+            try {
+                var t = localStorage.getItem('tinyclaw_theme');
+                document.documentElement.dataset.theme = (t === 'dark') ? 'dark' : 'light';
+            } catch (e) {
+                document.documentElement.dataset.theme = 'light';
+            }
+        })();
+    </script>
 </head>
 <body>
     <div class="app">
@@ -21,82 +32,104 @@
             </div>
             
             <div class="nav-section">
+                <div class="nav-group" data-group="overview">
+                    <div class="nav-group-header" title="Overview">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-label">Overview</span>
+                        <span class="nav-arrow">▾</span>
+                    </div>
+                    <div class="nav-group-items">
+                        <a href="#dashboard" class="nav-item" data-page="dashboard">
+                            <span class="nav-icon">🏠</span>
+                            <span class="nav-label">Dashboard</span>
+                        </a>
+                    </div>
+                </div>
+
                 <div class="nav-group" data-group="chat">
-                    <div class="nav-group-header">
+                    <div class="nav-group-header" title="Chat">
                         <span class="nav-icon">💬</span>
-                        <span>Chat</span>
+                        <span class="nav-label">Chat</span>
                         <span class="nav-arrow">▾</span>
                     </div>
                     <div class="nav-group-items">
                         <a href="#chat" class="nav-item active" data-page="chat">
                             <span class="nav-icon">○</span>
-                            <span>Chat</span>
+                            <span class="nav-label">Chat</span>
                         </a>
                     </div>
                 </div>
                 
                 <div class="nav-group" data-group="control">
-                    <div class="nav-group-header">
+                    <div class="nav-group-header" title="Control">
                         <span class="nav-icon">📡</span>
-                        <span>Control</span>
+                        <span class="nav-label">Control</span>
                         <span class="nav-arrow">▾</span>
                     </div>
                     <div class="nav-group-items">
                         <a href="#channels" class="nav-item" data-page="channels">
                             <span class="nav-icon">📶</span>
-                            <span>Channels</span>
+                            <span class="nav-label">Channels</span>
                         </a>
                         <a href="#sessions" class="nav-item" data-page="sessions">
                             <span class="nav-icon">👤</span>
-                            <span>Sessions</span>
+                            <span class="nav-label">Sessions</span>
                         </a>
                         <a href="#cron" class="nav-item" data-page="cron">
                             <span class="nav-icon">⏰</span>
-                            <span>Cron Jobs</span>
+                            <span class="nav-label">Cron Jobs</span>
                         </a>
                     </div>
                 </div>
                 
                 <div class="nav-group" data-group="agent">
-                    <div class="nav-group-header">
+                    <div class="nav-group-header" title="Agent">
                         <span class="nav-icon">⚡</span>
-                        <span>Agent</span>
+                        <span class="nav-label">Agent</span>
                         <span class="nav-arrow">▾</span>
                     </div>
                     <div class="nav-group-items">
                         <a href="#workspace" class="nav-item" data-page="workspace">
                             <span class="nav-icon">📁</span>
-                            <span>Workspace</span>
+                            <span class="nav-label">Workspace</span>
                         </a>
                         <a href="#skills" class="nav-item" data-page="skills">
                             <span class="nav-icon">🧩</span>
-                            <span>Skills</span>
+                            <span class="nav-label">Skills</span>
                         </a>
                         <a href="#mcp" class="nav-item" data-page="mcp">
                             <span class="nav-icon">🔌</span>
-                            <span>MCP</span>
+                            <span class="nav-label">MCP</span>
+                        </a>
+                        <a href="#tools-health" class="nav-item" data-page="tools-health">
+                            <span class="nav-icon">🩺</span>
+                            <span class="nav-label">Tools Health</span>
+                        </a>
+                        <a href="#memory" class="nav-item" data-page="memory">
+                            <span class="nav-icon">🧠</span>
+                            <span class="nav-label">Memory</span>
                         </a>
                     </div>
                 </div>
                 
                 <div class="nav-group" data-group="settings">
-                    <div class="nav-group-header">
+                    <div class="nav-group-header" title="Settings">
                         <span class="nav-icon">⚙️</span>
-                        <span>Settings</span>
+                        <span class="nav-label">Settings</span>
                         <span class="nav-arrow">▾</span>
                     </div>
                     <div class="nav-group-items">
                         <a href="#models" class="nav-item" data-page="models">
                             <span class="nav-icon">🤖</span>
-                            <span>Models</span>
+                            <span class="nav-label">Models</span>
                         </a>
                         <a href="#environments" class="nav-item" data-page="environments">
                             <span class="nav-icon">🌍</span>
-                            <span>Environments</span>
+                            <span class="nav-label">Environments</span>
                         </a>
                         <a href="#token-usage" class="nav-item" data-page="token-usage">
                             <span class="nav-icon">📊</span>
-                            <span>Token Usage</span>
+                            <span class="nav-label">Token Usage</span>
                         </a>
                     </div>
                 </div>
@@ -106,10 +139,42 @@
         <!-- 主内容区 -->
         <main class="main-content">
             <header class="page-header">
-                <h1 class="page-title" id="pageTitle">Chat</h1>
+                <div class="page-header-left">
+                    <button class="sidebar-toggle" id="sidebarToggle" title="折叠 / 展开导航栏"></button>
+                    <h1 class="page-title" id="pageTitle">Chat</h1>
+                </div>
+                <div class="page-header-right">
+                    <button class="theme-toggle" id="themeToggle" title="切换深色 / 浅色主题"></button>
+                </div>
             </header>
             
             <div class="page-content">
+                <!-- Dashboard 页面 -->
+                <div id="page-dashboard" class="page">
+                    <p class="page-desc">System overview — chat runtime, heartbeat, evolution, tool health and channels.</p>
+                    <div class="dash-toolbar">
+                        <button class="btn btn-secondary btn-sm" id="dashRefreshBtn" title="Refresh">↻ Refresh</button>
+                    </div>
+                    <div class="dash-grid" id="dashGrid"></div>
+                    <div class="dash-section">
+                        <h3 class="section-title">Channels</h3>
+                        <div class="dash-channels" id="dashChannels"><p class="empty-state">Loading...</p></div>
+                    </div>
+                    <div class="dash-section">
+                        <h3 class="section-title">Tool Health (Top 10)</h3>
+                        <div class="sessions-table-container">
+                            <table class="sessions-table">
+                                <thead>
+                                    <tr><th>Tool</th><th>Calls</th><th>Success Rate</th><th>P95 (ms)</th></tr>
+                                </thead>
+                                <tbody id="dashHealthBody">
+                                    <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Chat 页面 -->
                 <div id="page-chat" class="page active">
                     <div class="chat-container">
@@ -159,6 +224,7 @@
                                 <div class="chat-input-row">
                                     <button class="btn btn-icon btn-upload" id="uploadBtn" title="Upload Image">📎</button>
                                     <input type="file" id="imageUpload" accept="image/*" multiple style="display: none;">
+                                    <button class="btn btn-icon btn-artifacts" id="artifactsBtn" title="本次会话产生的文件">🗂<span class="artifacts-badge" id="artifactsBadge" style="display:none;">0</span></button>
                                     <textarea class="chat-input" id="chatInput" placeholder="Type your message... (Ctrl+Enter to send)" rows="1"></textarea>
                                     <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
                                 </div>
@@ -301,6 +367,45 @@
                     </div>
                 </div>
                 
+                <!-- Tools Health (Reflection 2.0) 页面 -->
+                <div id="page-tools-health" class="page">
+                    <p class="page-desc">Reflection 2.0 — tool health wall and repair proposal review (Human-In-The-Loop).</p>
+                    <div id="reflectionDisabled" class="empty-state" style="display:none;"></div>
+                    <div id="reflectionContent" style="display:none;">
+                        <div class="dash-section">
+                            <div class="section-head">
+                                <h3 class="section-title">Repair Proposals</h3>
+                                <button class="btn btn-secondary btn-sm" id="reflectionRefreshBtn" title="Refresh">↻ Refresh</button>
+                            </div>
+                            <div class="proposal-list" id="proposalList"></div>
+                        </div>
+                        <div class="dash-section">
+                            <h3 class="section-title">Tool Health</h3>
+                            <div class="sessions-table-container">
+                                <table class="sessions-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Tool</th><th>Calls</th><th>OK</th><th>Fail</th>
+                                            <th>Success Rate</th><th>P50</th><th>P95</th><th>P99</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="healthTableBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Memory 页面 -->
+                <div id="page-memory" class="page">
+                    <p class="page-desc">View, edit and delete the agent's long-term memory entries.</p>
+                    <div class="cron-toolbar">
+                        <button class="btn btn-primary" id="addMemoryBtn">+ Add Memory</button>
+                        <button class="btn btn-secondary" id="refreshMemoryBtn">↻ Refresh</button>
+                    </div>
+                    <div class="memory-list" id="memoryList"><p class="empty-state">Loading...</p></div>
+                </div>
+                
                 <!-- Models 页面 -->
                 <div id="page-models" class="page">
                     <div class="section">
@@ -329,6 +434,9 @@
                                         <select class="form-control" id="modelSelect">
                                             <option value="">Select a model</option>
                                         </select>
+                                    </div>
+                                    <div class="form-group form-group-btn">
+                                        <button class="btn btn-secondary" id="testModelBtn">Test</button>
                                     </div>
                                     <div class="form-group form-group-btn">
                                         <button class="btn btn-success" id="saveModelBtn" disabled>
@@ -512,6 +620,6 @@
     
     <!-- Markdown 渲染：放在 app.js 之前确保同步加载顺序 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="/js/app.js?v=20260321b"></script>
+    <script src="/js/app.js?v=20260903h"></script>
 </body>
 </html>

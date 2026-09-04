@@ -145,7 +145,7 @@ API 密钥:
 ## 5.6 `cron` — 定时任务
 
 ```bash
-tinyclaw cron <list|add|remove|enable|disable> [args]
+tinyclaw cron <list|add|edit|remove|enable|disable> [args]
 ```
 
 ### 5.6.1 列出任务
@@ -178,13 +178,23 @@ tinyclaw cron add \
   --to "open_id:xxx"
 ```
 
-### 5.6.3 启用/禁用/删除
+### 5.6.3 编辑任务
+
+```bash
+tinyclaw cron edit <job_id> --message "新的消息" --cron "0 10 * * *"
+```
+
+未提供的参数保留原值（name/message/every/cron/channel/to）。
+
+### 5.6.4 启用/禁用/删除
 
 ```bash
 tinyclaw cron enable  <job_id>
 tinyclaw cron disable <job_id>
 tinyclaw cron remove  <job_id>
 ```
+
+`cron list` 输出含上次运行时间与结果状态（ok/error/timeout）。
 
 **存储位置**：`~/.tinyclaw/workspace/cron/jobs.json`（`CronStore` 统一持久化）。
 
