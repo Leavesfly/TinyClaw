@@ -177,7 +177,9 @@ public class ExecTool implements Tool, StreamAwareTool, ToolContextAware {
         // 危险命令：交互式 Web 会话且启用 HITL 时转人工审批，否则硬拦截
         if (canRequestApproval()) {
             LLMProvider.EnhancedStreamCallback cb = this.streamCallback;
-            boolean approved = broker.requestApproval(cb, command, blockReason, APPROVAL_TIMEOUT_SECONDS);
+            // 先读局部变量避免并发覆写；sessionKey 供 P1 刷新后重建审批卡
+            String session = this.sessionKey;
+            boolean approved = broker.requestApproval(cb, session, command, blockReason, APPROVAL_TIMEOUT_SECONDS);
             if (approved) {
                 logger.warn("Dangerous command APPROVED via HITL, proceeding",
                         Map.of("command", command, "session", String.valueOf(sessionKey)));

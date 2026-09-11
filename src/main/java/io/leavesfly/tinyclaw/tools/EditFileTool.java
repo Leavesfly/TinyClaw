@@ -36,9 +36,13 @@ import java.util.Map;
  * - 如果 old_text 出现多次，需要提供更多上下文使其唯一
  * - 建议先用 read_file 查看文件内容，再进行编辑
  */
-public class EditFileTool implements Tool {
+public class EditFileTool implements Tool, ToolContextAware {
     
     private final SecurityGuard securityGuard;
+
+    // P3：会话上下文与成果登记回调（每次执行前由 ReActExecutor.setToolContext 覆写）
+    private volatile String sessionKey;
+    private volatile ArtifactRecorder artifactRecorder;
     
     /**
      * 创建带 SecurityGuard 的编辑工具。
@@ -50,6 +54,21 @@ public class EditFileTool implements Tool {
             throw new IllegalArgumentException("SecurityGuard is required for EditFileTool");
         }
         this.securityGuard = securityGuard;
+    }
+
+    /** P3：注入成果登记回调（可为 null：未启用时保持旧行为）。 */
+    public void setArtifactRecorder(ArtifactRecorder artifactRecorder) {
+        this.artifactRecorder = artifactRecorder;
+    }
+
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        // 文件编辑不关心投递目标，仅会话归属（见 setSessionContext）
+    }
+
+    @Override
+    public void setSessionContext(String sessionKey) {
+        this.sessionKey = sessionKey;
     }
     
     @Override
@@ -161,6 +180,13 @@ public class EditFileTool implements Tool {
         // 写入文件
         try {
             Files.writeString(resolvedPath, newContent);
+            // P3：实际写盘成功后登记成果（回调失败不影响工具结果）
+            ArtifactRecorder recorder = this.artifactRecorder;
+            if (recorder != null) {
+                try {
+                    recorder.record(sessionKey, resolvedPath.toAbsolutePath().normalize().toString());
+                } catch (Exception ignored) { /* 登记不影响编辑结果 */ }
+            }
             return "成功编辑 " + path;
         } catch (IOException e) {
             throw new ToolException("写入文件失败: " + e.getMessage(), e);

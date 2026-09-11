@@ -8,6 +8,7 @@ import io.leavesfly.tinyclaw.config.Config;
 import io.leavesfly.tinyclaw.session.Session;
 import io.leavesfly.tinyclaw.session.SessionManager;
 import io.leavesfly.tinyclaw.session.SessionMeta;
+import io.leavesfly.tinyclaw.session.SessionFlagsStore;
 import io.leavesfly.tinyclaw.session.SessionProgress;
 import io.leavesfly.tinyclaw.session.SessionSearchHit;
 import io.leavesfly.tinyclaw.session.ToolCallRecord;
@@ -33,6 +34,10 @@ public class SessionsHandler extends BaseHandler {
 
     private final SessionManager sessionManager;
     private final String collaborationDir;
+    /** P4：会话整理标记（标题/置顶/归档），可为 null（未启用）。 */
+    private final SessionFlagsStore flagsStore;
+    /** P4：项目存储（projectId 存在性校验），可为 null（项目能力未启用）。 */
+    private io.leavesfly.tinyclaw.web.project.ProjectStore projectStore;
 
     /**
      * 构造 SessionsHandler，注入全局配置、会话管理器与安全中间件。
@@ -44,10 +49,27 @@ public class SessionsHandler extends BaseHandler {
      */
     public SessionsHandler(Config config, SessionManager sessionManager,
                            SecurityMiddleware security, String workspacePath) {
+        this(config, sessionManager, security, workspacePath, null);
+    }
+
+    /**
+     * 构造 SessionsHandler（P4：附带整理标记存储）。
+     */
+    public SessionsHandler(Config config, SessionManager sessionManager,
+                           SecurityMiddleware security, String workspacePath,
+                           SessionFlagsStore flagsStore) {
         super(config, security);
         this.sessionManager = sessionManager;
         this.collaborationDir = workspacePath != null
                 ? Paths.get(workspacePath, "collaboration").toString() : null;
+        this.flagsStore = flagsStore;
+    }
+
+    /**
+     * 注入项目存储（P4 装配时调用；null 表示项目能力未启用，projectId 校验跳过）。
+     */
+    public void setProjectStore(io.leavesfly.tinyclaw.web.project.ProjectStore projectStore) {
+        this.projectStore = projectStore;
     }
 
     /**
@@ -64,8 +86,14 @@ public class SessionsHandler extends BaseHandler {
         if (WebUtils.API_SESSIONS.equals(path) && WebUtils.HTTP_METHOD_GET.equals(method)) {
             // 只读元信息索引：列表查询不能把整个 sessions 目录的正文读进内存
             String viewer = queryParam(exchange, "viewer");
+            // P4：按项目过滤（只显示归属某项目的会话； projectId 为 "none" 时过滤无项目会话）
+            String projectFilter = queryParam(exchange, "projectId");
             ArrayNode sessions = WebUtils.MAPPER.createArrayNode();
             for (SessionMeta meta : sessionManager.listMeta(viewer)) {
+                // P4：项目过滤在合并标记前判断（未启用 flagsStore 时无项目标记，仅 "none" 可命中）
+                if (projectFilter != null && !matchesProjectFilter(meta.getKey(), projectFilter)) {
+                    continue;
+                }
                 ObjectNode session = WebUtils.MAPPER.createObjectNode();
                 session.put("key", meta.getKey());
                 session.put("messageCount", meta.getMessageCount());
@@ -75,6 +103,21 @@ public class SessionsHandler extends BaseHandler {
                 session.put("owner", meta.getOwner() != null ? meta.getOwner() : "");
                 session.put("visibility", meta.getVisibility() != null
                         ? meta.getVisibility().name() : "");
+                // P4：整理标记合并（displayTitle 覆盖默认摘要标题；pinned/archived 排序与过滤用）
+                // P5：memoryMode 供聊天页展示与切换「不使用长期记忆」
+                if (flagsStore != null) {
+                    SessionFlagsStore.Flags f = flagsStore.get(meta.getKey());
+                    if (f.displayTitle != null) {
+                        session.put("displayTitle", f.displayTitle);
+                    }
+                    session.put("pinned", f.pinned);
+                    session.put("archived", f.archived);
+                    session.put("memoryMode", f.memoryMode != null ? f.memoryMode
+                            : SessionFlagsStore.MEMORY_MODE_DEFAULT);
+                    if (f.projectId != null) {
+                        session.put("projectId", f.projectId);
+                    }
+                }
                 if (meta.getProgress() != null) {
                     session.set("progress", progressNode(meta.getProgress()));
                 }
@@ -255,12 +298,110 @@ public class SessionsHandler extends BaseHandler {
             String key = URLDecoder.decode(
                     path.substring(WebUtils.API_SESSIONS.length() + 1), StandardCharsets.UTF_8);
             sessionManager.deleteSession(key);
+            // P4：同步清理整理标记
+            if (flagsStore != null) {
+                flagsStore.remove(key);
+            }
             WebUtils.sendJson(exchange, 200, WebUtils.successJson("Session deleted"), corsOrigin);
+
+        } else if (path.startsWith(WebUtils.API_SESSIONS + "/")
+                && path.endsWith("/flags") && WebUtils.HTTP_METHOD_PATCH.equals(method)) {
+            // P4：会话整理标记（displayTitle / pinned / archived）
+            String key = URLDecoder.decode(
+                    path.substring(WebUtils.API_SESSIONS.length() + 1, path.length() - "/flags".length()),
+                    StandardCharsets.UTF_8);
+            handlePatchFlags(exchange, corsOrigin, key);
 
         } else {
             return false;
         }
         return true;
+    }
+
+    /**
+     * P4：PATCH /api/sessions/{key}/flags —— 设置自定义标题 / 置顶 / 归档。
+     * P5：扩展 memoryMode（DEFAULT / OFF），OFF 关闭该会话长期记忆自动检索与自动提取。
+     * 请求体：{displayTitle?, pinned?, archived?, memoryMode?}（可选字段，仅更新出现的字段）。
+     * 归档不删除任何资源；标题仅覆盖展示，不修改转录。
+     */
+    private void handlePatchFlags(HttpExchange exchange, String corsOrigin, String sessionKey) throws IOException {
+        if (flagsStore == null) {
+            WebUtils.sendJson(exchange, 501, WebUtils.errorJson("Session flags not enabled"), corsOrigin);
+            return;
+        }
+        if (sessionKey == null || sessionKey.isBlank() || sessionKey.contains("/") || sessionKey.contains("..")) {
+            WebUtils.sendJson(exchange, 400, WebUtils.errorJson("invalid sessionKey"), corsOrigin);
+            return;
+        }
+        String body = WebUtils.readRequestBodyLimited(exchange);
+        JsonNode json = WebUtils.MAPPER.readTree(body);
+
+        if (json.has("displayTitle")) {
+            String title = json.path("displayTitle").asText("");
+            if (title.length() > 100) {
+                title = title.substring(0, 100);
+            }
+            flagsStore.setDisplayTitle(sessionKey, title);
+        }
+        if (json.has("pinned")) {
+            flagsStore.setPinned(sessionKey, json.path("pinned").asBoolean(false));
+        }
+        if (json.has("archived")) {
+            flagsStore.setArchived(sessionKey, json.path("archived").asBoolean(false));
+        }
+        if (json.has("memoryMode")) {
+            try {
+                flagsStore.setMemoryMode(sessionKey, json.path("memoryMode").asText(null));
+            } catch (IllegalArgumentException e) {
+                WebUtils.sendJson(exchange, 400, WebUtils.errorJson(e.getMessage()), corsOrigin);
+                return;
+            }
+        }
+        // P4：所属项目（一旦产生消息，归属固定；迁移需 fork 新会话，避免旧上下文跨项目残留）
+        if (json.has("projectId")) {
+            String newProjectId = json.path("projectId").asText(null);
+            if (newProjectId != null && newProjectId.isBlank()) {
+                newProjectId = null;
+            }
+            if (newProjectId != null && projectStore != null && !projectStore.exists(newProjectId)) {
+                WebUtils.sendJson(exchange, 404, WebUtils.errorJson("project not found: " + newProjectId), corsOrigin);
+                return;
+            }
+            String current = flagsStore.get(sessionKey).projectId;
+            if (newProjectId != null && !newProjectId.equals(current)
+                    && sessionManager.getOrCreate(sessionKey).messageCount() > 0) {
+                WebUtils.sendJson(exchange, 409, WebUtils.errorJson(
+                        "session already has messages; project association is fixed. "
+                                + "Use fork to create a new session for another project"), corsOrigin);
+                return;
+            }
+            flagsStore.setProjectId(sessionKey, newProjectId);
+        }
+
+        SessionFlagsStore.Flags f = flagsStore.get(sessionKey);
+        ObjectNode result = WebUtils.MAPPER.createObjectNode();
+        result.put("sessionKey", sessionKey);
+        result.put("displayTitle", f.displayTitle != null ? f.displayTitle : "");
+        result.put("pinned", f.pinned);
+        result.put("archived", f.archived);
+        result.put("memoryMode", f.memoryMode != null ? f.memoryMode : SessionFlagsStore.MEMORY_MODE_DEFAULT);
+        result.put("projectId", f.projectId != null ? f.projectId : "");
+        WebUtils.sendJson(exchange, 200, result, corsOrigin);
+    }
+
+    /**
+     * P4：项目过滤判断。projectId="none" 匹配无项目会话；其余精确匹配归属标记。
+     * 项目已被删除的残留标记视为无项目（不匹配任何具体 id，匹配 "none"）。
+     */
+    private boolean matchesProjectFilter(String sessionKey, String projectFilter) {
+        String pid = flagsStore != null ? flagsStore.get(sessionKey).projectId : null;
+        if (pid != null && projectStore != null && !projectStore.exists(pid)) {
+            pid = null;
+        }
+        if ("none".equals(projectFilter)) {
+            return pid == null;
+        }
+        return projectFilter.equals(pid);
     }
 
     // ==================== 路径与参数辅助 ====================

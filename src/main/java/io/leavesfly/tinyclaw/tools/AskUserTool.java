@@ -97,7 +97,8 @@ public class AskUserTool implements Tool, StreamAwareTool, ToolContextAware {
             return "错误: ask_user 仅在交互式 Web 会话中可用；当前会话无法向用户提问，请基于已有信息继续。";
         }
 
-        String response = broker.requestUserInput(cb, question, options, TIMEOUT_SECONDS);
+        // sessionKey 供 P1 刷新后重建提问卡；旧调用方走无会话重载
+        String response = broker.requestUserInput(cb, session, question, options, TIMEOUT_SECONDS);
         if (response == null || response.isBlank()) {
             return "用户未在超时时间内回答该问题，请基于现有信息继续，或换一种方式推进。";
         }

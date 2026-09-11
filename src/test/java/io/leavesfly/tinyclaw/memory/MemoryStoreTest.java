@@ -196,6 +196,74 @@ class MemoryStoreTest {
         assertTrue(index.contains("Total: 1 entries"), "统计量仍应保留");
     }
 
+    // ==================== P5：buildMemorySelection 同源与选中收集 ====================
+
+    @Test
+    void buildMemorySelection_TextSameAsGetMemoryContext() {
+        MemoryStore store = new MemoryStore(workspace.toString());
+        store.addEntry(MemoryScope.GLOBAL, "用户偏好深色主题", 0.9, List.of("preference"), "user_explicit");
+        store.addEntry(MemoryScope.GLOBAL, "部署流水线用 Maven", 0.7, List.of("tooling"), "evolution");
+
+        String context = store.getMemoryContext("深色主题偏好", 2048, MemoryScope.globalOnly());
+        MemorySelection selection = store.buildMemorySelection("深色主题偏好", 2048, MemoryScope.globalOnly());
+
+        assertEquals(context, selection.text,
+                "buildMemorySelection 与 getMemoryContext 必须同源：选中清单与真实注入文本来自同一次计算");
+        assertTrue(selection.text.contains("深色主题"), "匹配关键词的记忆应被注入");
+        assertFalse(selection.disabled, "启用会话的选择不得标记 disabled");
+        assertTrue(selection.estimatedTokens > 0, "估算 token 应为正数");
+    }
+
+    @Test
+    void buildMemorySelection_CollectsSelectedEntries() {
+        MemoryStore store = new MemoryStore(workspace.toString());
+        store.addEntry(MemoryScope.GLOBAL, "User prefers dark mode", 0.9, List.of("preference"), "user_explicit");
+        // 无关条目：不应进入选中清单
+        store.addEntry(MemoryScope.ofUser("feishu", "bob"), "Bob 的私人记忆", 0.9, List.of(), "user_explicit");
+
+        MemorySelection selection = store.buildMemorySelection("dark mode preference",
+                4096, MemoryScope.globalOnly());
+
+        assertTrue(selection.entries.size() >= 1, "至少选中一条全局记忆");
+        MemorySelection.Item first = selection.entries.get(0);
+        assertEquals("User prefers dark mode", first.content);
+        assertEquals(MemoryScope.GLOBAL, first.scope);
+        assertEquals("user_explicit", first.source);
+        assertTrue(first.importance > 0, "选中条目应携带完整字段（importance），供聊天内纠正直接编辑");
+        assertTrue(first.tags.contains("preference"), "选中条目应携带 tags");
+        // 选中清单与注入文本一致：清单里的每条都应出现在文本中
+        for (MemorySelection.Item item : selection.entries) {
+            assertTrue(selection.text.contains(item.content),
+                    "选中条目必须出现在注入文本中（同源保证）：" + item.content);
+        }
+        // 其他用户域的条目不进入选中清单
+        assertFalse(selection.entries.stream().anyMatch(i -> i.content.contains("Bob")),
+                "不可见域的条目不得进入选中清单");
+    }
+
+    @Test
+    void buildMemorySelection_EmptyWhenNoMatch() {
+        MemoryStore store = new MemoryStore(workspace.toString());
+
+        MemorySelection selection = store.buildMemorySelection(null, 1024, MemoryScope.globalOnly());
+
+        assertEquals("", selection.text, "无记忆时文本为空串而非 null");
+        assertTrue(selection.entries.isEmpty());
+        assertTrue(selection.topics.isEmpty());
+        assertEquals(0, selection.estimatedTokens);
+    }
+
+    @Test
+    void memorySelectionDisabled_Semantics() {
+        MemorySelection disabled = MemorySelection.disabled();
+
+        assertTrue(disabled.disabled);
+        assertEquals("", disabled.text);
+        assertTrue(disabled.entries.isEmpty());
+        assertTrue(disabled.topics.isEmpty());
+        assertEquals(0, disabled.estimatedTokens);
+    }
+
     private List<Path> listCorruptBackups(Path memoryDir) throws IOException {
         try (Stream<Path> stream = Files.list(memoryDir)) {
             return stream

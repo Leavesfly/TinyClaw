@@ -89,6 +89,23 @@
             <version>9.2.1</version>
         </dependency>
 
+        <!-- P2 附件定向解析：CSV / 文本型 PDF / DOCX（不引入全量 Tika） -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.11.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.3.0</version>
+        </dependency>
+
         <!-- Environment Variables -->
         <dependency>
             <groupId>io.github.cdimascio</groupId>

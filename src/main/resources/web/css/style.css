@@ -379,7 +379,8 @@ body {
 }
 
 .page-content {
-    padding: 24px 32px;
+    /* 顶部 padding 减半（24→12）：缩小 header 与首个交互元素间的空白带 */
+    padding: 12px 32px 24px;
 }
 
 .page {
@@ -608,11 +609,11 @@ body {
 }
 
 /* Chat */
-/* 高度 = 视口 - header - page-content 上下 padding(24+24) - 底部余量(2px)，
+/* 高度 = 视口 - header - page-content 上下 padding(12+24) - 底部余量(2px)，
    使输入栏下方的留白收敛为约一个 padding 的宽度 */
 .chat-container {
     display: flex;
-    height: calc(100vh - var(--header-height) - 50px);
+    height: calc(100vh - var(--header-height) - 38px);
     background: var(--card);
     border-radius: 12px;
     border: 1px solid var(--border);
@@ -622,7 +623,9 @@ body {
 .chat-sidebar {
     width: 240px;
     border-right: 1px solid var(--border);
-    padding: 16px;
+    /* 顶部 padding 减半（16→8）：与 page-content 顶部 12px 叠加后，
+       New Chat 按钮上方空白由 49px 收敛为约 21px（减半） */
+    padding: 8px 16px 16px;
     display: flex;
     flex-direction: column;
 }
@@ -762,7 +765,9 @@ body {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 24px;
+    /* 顶部 padding 减半（24→12）：与 page-content 顶部 12px 叠加后，
+       首条消息上方空白由 48px 收敛为 24px */
+    padding: 12px 24px 24px;
 }
 
 .chat-welcome {
@@ -1151,10 +1156,7 @@ body {
 }
 
 /* ==================== Artifacts（会话产物） ==================== */
-.btn-artifacts {
-    position: relative;
-}
-
+/* 徽标锚点在 .chat-tool-btn（position: relative）上 */
 .artifacts-badge {
     position: absolute;
     top: -4px;
@@ -1298,11 +1300,11 @@ body {
 
 .chat-input-container {
     position: relative;
-    padding: 16px 24px;
-    border-top: 1px solid var(--border);
+    /* 输入卡自带边框，去掉 border-top 避免双重分隔线 */
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
 }
 
 /* Slash Command Menu */
@@ -1403,20 +1405,39 @@ body {
     color: var(--text-secondary);
 }
 
+/* 输入卡：主输入行与工具栏统一收纳，focus 时高亮整卡 */
+.chat-input-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.chat-input-shell:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px var(--primary-light);
+}
+
 .chat-input-row {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     align-items: flex-end;
 }
 
 .chat-input {
     flex: 1;
-    padding: 12px 16px;
-    background: var(--card);
+    min-width: 0;
+    padding: 9px 12px;
+    background: transparent;
     color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    border: none;
+    border-radius: 10px;
     font-size: 14px;
+    line-height: 1.5;
     resize: none;
     max-height: 120px;
     font-family: inherit;
@@ -1424,20 +1445,19 @@ body {
 
 .chat-input:focus {
     outline: none;
-    border-color: var(--primary);
 }
 
 .chat-input.drag-over {
-    border-color: var(--primary);
     background: var(--primary-light);
 }
 
 .btn-send {
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
     padding: 0;
     border-radius: 50%;
-    font-size: 18px;
+    font-size: 16px;
+    flex: none;
 }
 
 .btn-send.loading {
@@ -1457,32 +1477,51 @@ body {
     background: #dc2626;
 }
 
-/* 图片上传按钮 */
-.btn-upload {
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border-radius: 50%;
-    font-size: 18px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    cursor: pointer;
+/* 输入卡工具栏：左侧附件/产物/定时工具组，右侧全局配置 chips */
+.chat-input-toolbar {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.chat-input-tools {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* 工具图标按钮：统一 32×32 规格与悬停反馈 */
+.chat-tool-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
+    position: relative; /* artifacts 徽标锚点 */
+    transition: background 0.15s ease, color 0.15s ease;
 }
 
-.btn-upload:hover {
+.chat-tool-btn:hover {
     background: var(--bg-dark);
-    border-color: var(--primary);
+    color: var(--text);
 }
 
-/* 图片预览区域 */
+/* 图片预览区域：收纳在输入卡内部顶部 */
 .chat-image-preview {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    padding: 8px 0;
+    padding: 2px 2px 0;
 }
 
 .preview-item {
@@ -1857,6 +1896,71 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* P6：历史行内交互——会话跳转与成果预览（生成成功≠消息已送达，分开展示） */
+.cron-history-session {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--primary);
+    cursor: pointer;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cron-history-session:hover {
+    text-decoration: underline;
+}
+
+.cron-history-artifact {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1px 8px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.cron-history-artifact:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+/* P6：调度预览结果（未来 5 次执行点，服务端同源计算） */
+.cron-preview-result {
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.cron-preview-list {
+    margin: 6px 0 0;
+    padding-left: 20px;
+    color: var(--text-secondary);
+}
+
+.cron-preview-list li {
+    padding: 2px 0;
+}
+
+.cron-preview-error {
+    color: var(--error);
+}
+
+/* P6：从会话创建周期任务时的项目资料勾选 */
+.cron-resource-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 4px 0;
+    cursor: pointer;
 }
 
 .cron-info {
@@ -2324,6 +2428,11 @@ body {
     width: 100%;
     padding: 10px;
     font-size: 15px;
+}
+
+/* 登录按钮：与上方表单字段留出间距（margin 不进 .btn-block 工具类，
+   避免误伤 Chat 侧栏顶部的 New Chat 按钮） */
+#loginBtn {
     margin-top: 8px;
 }
 
@@ -3944,8 +4053,27 @@ body {
         margin-left: 60px;
     }
     
+    /* 小屏不再隐藏会话侧栏：改为抽屉滑出，保留新建/搜索/历史切换入口 */
     .chat-sidebar {
-        display: none;
+        display: flex;
+        position: fixed;
+        left: 60px;
+        top: 0;
+        bottom: 0;
+        width: min(280px, calc(100vw - 100px));
+        background: var(--card);
+        z-index: 200;
+        transform: translateX(-110%);
+        transition: transform 0.22s ease;
+        box-shadow: var(--shadow-card);
+    }
+
+    .chat-sidebar.drawer-open {
+        transform: translateX(0);
+    }
+
+    .chat-drawer-btn {
+        display: flex;
     }
     
     .form-row {
@@ -4366,4 +4494,558 @@ body {
 
 .trace-tool.trace-fail .trace-label {
     color: var(--error);
+}
+
+/* ==================== P0：滚动指示 / 输入区信息 / 移动端抽屉 ==================== */
+
+/* chat-main 为抽屉按钮/回到最新按钮提供定位上下文 */
+.chat-main {
+    position: relative;
+}
+
+/* 回到最新消息按钮：用户上滑阅读时浮现于消息区右下角 */
+.back-to-bottom {
+    position: absolute;
+    right: 20px;
+    bottom: 130px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-card);
+    z-index: 30;
+}
+
+.back-to-bottom.visible {
+    display: flex;
+}
+
+.back-to-bottom:hover {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+/* 新消息计数徽标（用户不在底部时点亮） */
+.b2b-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--error);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 输入卡工具栏右侧：全局模型与思考配置提示 */
+.chat-input-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 12px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    background: var(--card);
+    border: 1px solid var(--border);
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+button.meta-chip {
+    cursor: pointer;
+    font-family: inherit;
+}
+
+button.meta-chip:hover {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-light);
+}
+
+.meta-chip-static {
+    cursor: default;
+}
+
+/* 移动端会话抽屉入口：仅小屏显示 */
+.chat-drawer-btn {
+    display: none;
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 16px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    z-index: 25;
+}
+
+.chat-drawer-btn:hover {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+/* 移动端抽屉遮罩：覆盖内容区，点击关闭抽屉 */
+.chat-drawer-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 199;
+}
+
+.chat-drawer-backdrop.visible {
+    display: block;
+}
+
+/* ==================== P2：通用附件 chip ==================== */
+
+.chat-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 2px 2px 0;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 260px;
+    height: 28px;
+    padding: 0 8px 0 10px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-dark);
+    font-size: 12px;
+    color: var(--text);
+}
+
+.attachment-chip.att-ready {
+    border-color: var(--success);
+}
+
+.attachment-chip.att-failed {
+    border-color: var(--error);
+    background: var(--danger-bg);
+}
+
+.att-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.attachment-chip.att-ready .att-status {
+    color: var(--success);
+}
+
+.attachment-chip.att-failed .att-status {
+    color: var(--error);
+}
+
+.att-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.att-truncated {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    color: var(--warning);
+    border: 1px solid var(--warning);
+    border-radius: 8px;
+    padding: 0 5px;
+    height: 16px;
+    line-height: 15px;
+}
+
+.att-remove {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.att-remove:hover {
+    background: var(--danger-bg);
+    color: var(--error);
+}
+
+/* ==================== P3：成果面板与版本预览 ==================== */
+
+.artifact-item .artifact-rev {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: 8px;
+    padding: 0 6px;
+    height: 18px;
+    line-height: 17px;
+}
+
+.artifact-item.artifact-missing {
+    opacity: 0.65;
+}
+
+.artifact-missing-tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--warning);
+}
+
+.artifact-item.artifact-local .artifact-path {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.artifact-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.artifact-viewer-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.artifact-version-select {
+    width: auto;
+    min-width: 110px;
+    height: 30px;
+    font-size: 12.5px;
+}
+
+.artifact-preview-md {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    max-height: 420px;
+    overflow: auto;
+    background: var(--card);
+}
+
+/* ==================== P4：会话整理（置顶/归档徽标与整理菜单） ==================== */
+
+.history-pinned {
+    font-size: 11px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.history-archived {
+    font-size: 11px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.chat-history-item.item-archived {
+    opacity: 0.7;
+}
+
+.history-menu {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+.chat-history-item:hover .history-menu {
+    display: flex;
+}
+
+.history-menu:hover {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+/* ==================== P5：记忆筛选 / 分页 / 来源会话 ==================== */
+
+.memory-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.memory-filter-q {
+    flex: 1 1 200px;
+    min-width: 160px;
+}
+
+.memory-filter-select {
+    flex: 0 0 auto;
+    min-width: 120px;
+    max-width: 180px;
+}
+
+.memory-pagination {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 16px;
+}
+
+.memory-page-info {
+    color: var(--text-secondary);
+    font-size: 13px;
+    min-width: 90px;
+    text-align: center;
+}
+
+.memory-origin {
+    border: 1px solid var(--primary-light);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--primary);
+    font-size: 12px;
+    padding: 2px 8px;
+    cursor: pointer;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-origin:hover {
+    background: var(--primary-light);
+}
+
+.form-hint {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin: 4px 0 8px;
+}
+
+/* ==================== P5：本轮上下文透明化（聊天页） ==================== */
+
+.context-used-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 8px;
+}
+
+.ctx-used-chip {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    line-height: 1;
+    cursor: default;
+}
+
+button.ctx-used-chip {
+    cursor: pointer;
+}
+
+button.ctx-used-chip:hover {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+.ctx-used-off {
+    border-color: var(--warning, #d99a2b);
+    color: var(--warning, #d99a2b);
+}
+
+.ctx-used-detail {
+    border: 1px solid var(--border-light, rgba(128, 128, 128, .2));
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ctx-used-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ctx-used-est {
+    font-style: italic;
+}
+
+.ctx-used-topics {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ctx-used-item {
+    border: 1px solid var(--border-light, rgba(128, 128, 128, .18));
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ctx-used-item-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ctx-used-meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.ctx-used-content {
+    font-size: 13px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.ctx-used-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* ==================== P4：项目空间 ==================== */
+
+.project-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.project-item {
+    border: 1px solid var(--border-light, rgba(128, 128, 128, .2));
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.project-item.item-archived {
+    opacity: 0.7;
+}
+
+.project-item-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.project-name {
+    font-weight: 600;
+    font-size: 15px;
+}
+
+.project-meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.project-instructions pre {
+    background: var(--bg-secondary, rgba(128, 128, 128, .08));
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 6px 0 0;
+}
+
+.project-instructions summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.project-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.project-session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.project-session-list .chat-history-item {
+    cursor: pointer;
+    padding: 8px 10px;
 }

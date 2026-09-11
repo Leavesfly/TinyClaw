@@ -131,6 +131,7 @@ public final class RuntimeAssembly {
         agentRuntime.registerTool(new WriteFileTool(securityGuard));
         agentRuntime.registerTool(new ListDirTool(securityGuard));
         agentRuntime.registerTool(new EditFileTool(securityGuard));
+        // P3：成果登记回调由 GatewayBootstrap 在创建 ArtifactStore 后注入（见 injectArtifactRecorder）
 
         // HITL 交互登记处：危险命令审批与 ask_user 提问共用，Web 层通过 AgentRuntime 回传用户决策
         InteractionBroker interactionBroker = new InteractionBroker();

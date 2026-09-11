@@ -9,12 +9,16 @@
 
 ### 14.1.1 能力
 
-- **Cron 表达式**：5 字段（分 时 日 月 周），由 `cron-utils 9.2` 解析（Unix 风格）
+- **Cron 表达式**：5 字段（分 时 日 月 周），由 `cron-utils 9.2` 解析（Unix 风格）；**支持时区**（`schedule.tz`，非法值回退服务器默认并告警）
 - **固定间隔（EVERY）**：每 N 毫秒执行，支持 **misfire 补跑**（见 14.7）
 - **单次定时（AT）**：在指定时间点执行一次
-- **执行历史**：每次运行记录 `CronRunRecord`（状态 ok/error/timeout、触发方式 schedule/misfire/manual、耗时、错误、结果摘要），每任务保留最近 20 条，随 `jobs.json` 持久化
+- **调度预览**：`CronService.previewNextRuns(schedule, count)`（上限 10）与 `POST /api/cron/preview`——复用同一套调度计算（含时区），预览即真实
+- **执行模式**：`runMode=NEW_SESSION`（默认，每次新建专用会话）或 `CONTINUE_SESSION`（继续同一专用会话，忙碌时跳过本轮）
+- **非失败性跳过**：JobHandler 返回 `[SKIPPED] ` 前缀 → 历史记录 `STATUS_SKIPPED`，不触发误告警
+- **执行详情回传**：`RunDetailCollector` 侧表机制合入 runId/sessionKey/artifactIds/deliveryStatus（生成成功≠消息已送达，分开展示）
+- **执行历史**：每次运行记录 `CronRunRecord`（状态 ok/error/timeout/skipped、触发方式 schedule/misfire/manual、耗时、错误、结果摘要、会话 key、成果 id 列表、投递状态），每任务保留最近 20 条，随 `jobs.json` 持久化
 - **手动触发**：`CronService.runJobNow(jobId)` / Web `POST /api/cron/{id}/run`，异步执行不阻塞调用方
-- **持久化**：任务变更即落盘 `workspace/cron/jobs.json`，含 `state.lastRunAtMs` 用于重启补跑判断
+- **持久化**：任务变更即落盘 `workspace/cron/jobs.json`，含 `state.lastRunAtMs` 用于重启补跑判断；扩展字段（runMode/projectId/attachmentIds/outputTarget 等）经 `persistJob` 合入后落盘，重启不丢
 - **并发安全**：`ReentrantReadWriteLock` 保护任务列表
 - **系统内置 job**：以 `__` 前后缀命名（`__heartbeat__`、`__memory_evolution__`），由 `GatewayBootstrap` 的复合 onJob handler 按名称分发
 
@@ -25,8 +29,8 @@
 | `CronJob` | 任务实体：ID、名称、payload、schedule、启用状态、创建/更新时间 |
 | `CronSchedule` | 调度策略：`kind=cron/every/at`，`cron` 表达式、`everyMs`、`at` 时间点 |
 | `CronJobState` | 运行态：`lastRunAtMs` / `nextRunAtMs` / `lastStatus` / `lastError` / `history` |
-| `CronRunRecord` | 单次执行记录：`startedAtMs` / `durationMs` / `status` / `trigger` / `error` / `result` |
-| `CronPayload` | 任务内容：`kind` + `message`（消息文本）+ 目标 `channel` / `to` |
+| `CronRunRecord` | 单次执行记录：`startedAtMs` / `durationMs` / `status`（ok/error/timeout/skipped）/ `trigger` / `error` / `result` / `runId` / `sessionKey` / `artifactIds` / `deliveryStatus` |
+| `CronPayload` | 任务内容：`kind` + `message` + 目标 `channel` / `to` + `runMode` / `projectId` / `sourceSessionKey` / `attachmentIds` / `outputTarget` |
 
 ### 14.1.3 运行流程
 
@@ -54,7 +58,7 @@
 
 - **CLI**：`tinyclaw cron list|add|edit|remove|enable|disable ...`（list 含上次运行状态）
 - **工具**：`cron` 工具（Agent 可自主创建任务）
-- **Web**：`CronHandler`（REST + UI）：列表含 `lastStatus`/`history`；`POST /api/cron/{id}/run` 手动触发；`PUT /api/cron/{id}` 编辑任务；Cron 页面支持 Edit / Run / History
+- **Web**：`CronHandler`（REST + UI）：列表含 `lastStatus`/`history`/扩展字段；`POST /api/cron/{id}/run` 手动触发；`PUT /api/cron/{id}` 编辑任务；`POST /api/cron/preview` 调度预览（未来 5 次）；Cron 页面支持 Edit / Run / History，历史行可跳转执行会话与预览成果；聊天页「⏰ 设为周期任务」从会话创建（见 [17 · Web 控制台 §17.11h](17-web-console.md)）
 
 三路入口最终都落到同一个 `CronService` API。
 
@@ -62,6 +66,26 @@
 
 - 若 `payload.channel == null` → 回到原调用通道（工具调用的上下文）
 - 否则 → 直接推送到指定通道（如定时发送飞书提醒给某用户）
+
+### 14.1.6 用户 job 的执行编排（P6 自动化闭环）
+
+用户自建 job（非 `__` 内置）由 `GatewayBootstrap.executeUserCronJob` 编排，不只是一次消息投递：
+
+```text
+executeUserCronJob(job)
+   │
+   ├── 会话决策：runMode=CONTINUE_SESSION → 复用 cron-<jobId>（isTaskRunning 忙碌 → [SKIPPED]）
+   │             runMode=NEW_SESSION   → cron-<jobId>-<hex 时间戳>
+   ├── 项目归属：flagsStore.setProjectId(sessionKey, projectId)（存在时）
+   ├── 任务指令 = payload.message + 资料块(attachmentIds) + [输出要求] outputTarget
+   ├── CronTool.executeJobInSession(job, sessionKey, message)
+   └── 成果差集：执行前后 sessionArtifactIds 差 → CronRunEnvelope 侧表
+                 → RunDetailCollector 回传 → appendHistory 合入（runId/sessionKey/
+                    artifactIds/deliveryStatus；生成成功≠消息已送达）
+```
+
+- 每次运行的会话 key 与产出成果 id 都可从 Web Cron 页历史行直接点击回看（会话以 Trace 时间线展示）
+- 从聊天创建的任务记录 `sourceSessionKey`，不复制聊天历史——只携带确认的任务指令与勾选资料
 
 ---
 

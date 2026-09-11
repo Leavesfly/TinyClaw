@@ -65,7 +65,9 @@ public class StreamEvent {
         /** 结构化提问（HITL）：向用户征询信息/决策并等待回答 */
         ASK_USER,
         /** 任务计划清单（Plan/Todo）：展示多步任务的分解与进度 */
-        PLAN
+        PLAN,
+        /** 执行开始（P1）：SSE 首个结构化事件，下发 runId 与幂等标记，供前端恢复与去重 */
+        RUN_STARTED
     }
     
     private final EventType type;
@@ -239,6 +241,24 @@ public class StreamEvent {
         meta.put("todos", todos != null ? todos : java.util.List.of());
         return new StreamEvent(EventType.PLAN, null, meta);
     }
+
+    /**
+     * 创建执行开始事件（P1）：SSE 流的首个结构化事件。
+     *
+     * <p>前端据此记录 runId，刷新后可凭会话查询执行状态与待确认交互；
+     * {@code duplicated} 表示 clientRequestId 幂等命中既有执行（本次不会重跑工具）。</p>
+     *
+     * @param runId           服务端生成的执行 id
+     * @param clientRequestId 客户端幂等键（可为空）
+     * @param duplicated      是否幂等命中既有执行
+     */
+    public static StreamEvent runStarted(String runId, String clientRequestId, boolean duplicated) {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("runId", safe(runId));
+        meta.put("clientRequestId", safe(clientRequestId));
+        meta.put("duplicated", duplicated);
+        return new StreamEvent(EventType.RUN_STARTED, null, meta);
+    }
     
     /**
      * 为嵌套执行（子代理 / 协同角色）产生的过程事件补上归属标识。
@@ -372,6 +392,7 @@ public class StreamEvent {
                 int n = (todos instanceof java.util.List<?> l) ? l.size() : 0;
                 yield "\n📋 任务计划已更新（" + n + " 项）\n";
             }
+            case RUN_STARTED -> ""; // 执行身份元事件：CLI 无需展示
         };
     }
     
@@ -523,6 +544,14 @@ public class StreamEvent {
                     if (todos != null) {
                         node.set("todos", MAPPER.valueToTree(todos));
                     }
+                }
+                case RUN_STARTED -> {
+                    String runId = getMeta("runId");
+                    String clientRequestId = getMeta("clientRequestId");
+                    Boolean duplicated = getMeta("duplicated");
+                    node.put("runId", runId != null ? runId : "");
+                    node.put("clientRequestId", clientRequestId != null ? clientRequestId : "");
+                    node.put("duplicated", Boolean.TRUE.equals(duplicated));
                 }
             }
 

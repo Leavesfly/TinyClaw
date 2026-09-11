@@ -322,7 +322,24 @@ public class CronTool implements Tool, ToolContextAware {
     public String executeJob(CronJob job) {
         String jobChannel = getJobChannel(job);
         String jobChatId = getJobChatId(job);
-        return executeJobThroughAgent(job, jobChannel, jobChatId);
+        return executeJobThroughAgent(job, "cron-" + job.getId(),
+                job.getPayload().getMessage(), jobChannel, jobChatId);
+    }
+    
+    /**
+     * 在指定会话中执行任务（P6：网关编排方使用）。
+     * 
+     * <p>编排方（GatewayBootstrap）已决定会话键（NEW_SESSION 每次新建 /
+     * CONTINUE_SESSION 复用专用会话）并完成了资料注入与输出要求拼接，
+     * 本方法只负责通道解析与 Agent 调用。</p>
+     * 
+     * @param job 定时任务（通道信息来源）
+     * @param sessionKey 本次执行使用的会话键
+     * @param message 已拼接资料块与输出要求的任务消息
+     * @return 执行结果摘要（Agent 响应文本）
+     */
+    public String executeJobInSession(CronJob job, String sessionKey, String message) {
+        return executeJobThroughAgent(job, sessionKey, message, getJobChannel(job), getJobChatId(job));
     }
     
     /**
@@ -355,13 +372,12 @@ public class CronTool implements Tool, ToolContextAware {
      * @param jobChatId 聊天 ID
      * @return 执行结果
      */
-    private String executeJobThroughAgent(CronJob job, String jobChannel, String jobChatId) {
-        String sessionKey = "cron-" + job.getId();
-        
+    private String executeJobThroughAgent(CronJob job, String sessionKey, String message,
+                                          String jobChannel, String jobChatId) {
         try {
             // 响应会通过 MessageBus 由 AgentRuntime 自动发送，返回值作为执行结果摘要
             return executor.processDirectWithChannel(
-                    job.getPayload().getMessage(),
+                    message,
                     sessionKey,
                     jobChannel,
                     jobChatId

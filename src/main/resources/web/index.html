@@ -8,7 +8,7 @@
     <meta http-equiv="Expires" content="0">
     <title>TinyClaw Console</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
-    <link rel="stylesheet" href="/css/style.css?v=20260903h">
+    <link rel="stylesheet" href="/css/style.css?v=20260911a">
     <script>
         // 首屏渲染前应用已保存的主题，避免错误主题闪烁；默认浅色
         (function () {
@@ -109,6 +109,10 @@
                             <span class="nav-icon">🧠</span>
                             <span class="nav-label">Memory</span>
                         </a>
+                        <a href="#projects" class="nav-item" data-page="projects">
+                            <span class="nav-icon">🗂</span>
+                            <span class="nav-label">Projects</span>
+                        </a>
                     </div>
                 </div>
                 
@@ -190,6 +194,10 @@
                             <div class="chat-history" id="chatHistory"></div>
                         </div>
                         <div class="chat-main">
+                            <!-- 移动端会话抽屉入口（小屏显示，恢复新建/搜索/历史切换） -->
+                            <button class="chat-drawer-btn" id="chatDrawerBtn" title="会话列表" aria-label="打开会话列表">☰</button>
+                            <!-- 回到最新消息：用户上滑阅读历史时显示 -->
+                            <button class="back-to-bottom" id="backToBottomBtn" title="回到最新消息" aria-label="回到最新消息">↓<span class="b2b-badge" id="backToBottomBadge" style="display: none;"></span></button>
                             <div class="chat-messages" id="chatMessages">
                                 <div class="chat-welcome">
                                     <div class="welcome-icon">🦞</div>
@@ -220,14 +228,32 @@
                                 </div>
                             </div>
                             <div class="chat-input-container">
-                                <div class="chat-image-preview" id="chatImagePreview" style="display: none;"></div>
-                                <div class="chat-input-row">
-                                    <button class="btn btn-icon btn-upload" id="uploadBtn" title="Upload Image">📎</button>
-                                    <input type="file" id="imageUpload" accept="image/*" multiple style="display: none;">
-                                    <button class="btn btn-icon btn-artifacts" id="artifactsBtn" title="本次会话产生的文件">🗂<span class="artifacts-badge" id="artifactsBadge" style="display:none;">0</span></button>
-                                    <textarea class="chat-input" id="chatInput" placeholder="Type your message... (Ctrl+Enter to send)" rows="1"></textarea>
-                                    <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
+                                <!-- 输入卡：主输入行（textarea + 发送）与工具栏（附件工具 / 全局配置 chips）统一收纳 -->
+                                <div class="chat-input-shell">
+                                    <div class="chat-image-preview" id="chatImagePreview" style="display: none;"></div>
+                                    <!-- P2 通用附件区：文档/数据文件（解析状态轮询，就绪后随消息发送） -->
+                                    <div class="chat-attachments" id="chatAttachments" style="display: none;"></div>
+                                    <div class="chat-input-row">
+                                        <textarea class="chat-input" id="chatInput" placeholder="Type your message... (Ctrl+Enter to send)" rows="1"></textarea>
+                                        <button class="btn btn-primary btn-send" id="sendBtn">↑</button>
+                                    </div>
+                                    <!-- 工具区与状态区分左右两组：左为附件/产物/定时，右为全局模型与思考配置 -->
+                                    <div class="chat-input-toolbar">
+                                        <div class="chat-input-tools">
+                                            <button class="chat-tool-btn" id="uploadBtn" title="上传图片" aria-label="上传图片">📎</button>
+                                            <input type="file" id="imageUpload" accept="image/*" multiple style="display: none;">
+                                            <button class="chat-tool-btn" id="fileUploadBtn" title="附加文档（TXT/Markdown/CSV/PDF/DOCX）" aria-label="附加文档">📄</button>
+                                            <input type="file" id="fileUpload" multiple style="display: none;"
+                                                   accept=".txt,.md,.markdown,.csv,.tsv,.pdf,.docx,.json,.xml,.yml,.yaml,.log,.java,.py,.js,.ts,.tsx,.jsx,.go,.rs,.c,.cpp,.h,.hpp,.cs,.rb,.php,.sql,.sh,.bat,.css,.html,.htm">
+                                            <button class="chat-tool-btn" id="artifactsBtn" title="本次会话产生的文件" aria-label="会话产物">🗂<span class="artifacts-badge" id="artifactsBadge" style="display:none;">0</span></button>
+                                            <!-- P6：把本轮对话设为周期任务（预填本轮消息，可选项目资料） -->
+                                            <button class="chat-tool-btn" id="scheduleBtn" title="把本轮任务设为周期任务" aria-label="设为周期任务">⏰</button>
+                                        </div>
+                                        <div class="chat-input-meta" id="chatInputMeta"></div>
+                                    </div>
                                 </div>
+                                <!-- P5 本轮上下文透明化：实际使用的长期记忆（可展开纠正/删除）与会话记忆模式 -->
+                                <div class="context-used-bar" id="contextUsedBar" style="display:none;"></div>
                             </div>
                         </div>
                     </div>
@@ -399,13 +425,40 @@
                 <!-- Memory 页面 -->
                 <div id="page-memory" class="page">
                     <p class="page-desc">View, edit and delete the agent's long-term memory entries.</p>
+                    <div class="memory-filter-bar">
+                        <input type="text" id="memorySearchInput" class="form-control memory-filter-q" placeholder="Search content or tags…">
+                        <select id="memoryScopeSelect" class="form-control memory-filter-select">
+                            <option value="">All scopes</option>
+                        </select>
+                        <select id="memorySourceSelect" class="form-control memory-filter-select">
+                            <option value="">All sources</option>
+                        </select>
+                        <select id="memoryPageSizeSelect" class="form-control memory-filter-select">
+                            <option value="20">20 / page</option>
+                            <option value="50" selected>50 / page</option>
+                            <option value="100">100 / page</option>
+                        </select>
+                        <button class="btn btn-secondary" id="memoryFilterBtn">Filter</button>
+                        <button class="btn btn-text" id="memoryFilterResetBtn">Reset</button>
+                    </div>
                     <div class="cron-toolbar">
                         <button class="btn btn-primary" id="addMemoryBtn">+ Add Memory</button>
                         <button class="btn btn-secondary" id="refreshMemoryBtn">↻ Refresh</button>
                     </div>
                     <div class="memory-list" id="memoryList"><p class="empty-state">Loading...</p></div>
+                    <div class="memory-pagination" id="memoryPagination"></div>
                 </div>
                 
+                <!-- Projects 页面（P4：项目空间——名称/指令/资料引用/归属会话） -->
+                <div id="page-projects" class="page">
+                    <p class="page-desc">Projects organize long-running work: instructions and shared resources for their sessions.</p>
+                    <div class="cron-toolbar">
+                        <button class="btn btn-primary" id="addProjectBtn">+ New Project</button>
+                        <button class="btn btn-secondary" id="refreshProjectsBtn">↻ Refresh</button>
+                    </div>
+                    <div class="project-list" id="projectList"><p class="empty-state">Loading...</p></div>
+                </div>
+
                 <!-- Models 页面 -->
                 <div id="page-models" class="page">
                     <div class="section">
@@ -579,7 +632,10 @@
             </div>
         </main>
     </div>
-    
+
+    <!-- 移动端会话抽屉遮罩（小屏点击外部关闭抽屉） -->
+    <div class="chat-drawer-backdrop" id="chatDrawerBackdrop"></div>
+
     <!-- Login Modal -->
     <div class="login-overlay" id="loginOverlay">
         <div class="login-modal">
@@ -618,8 +674,8 @@
         </div>
     </div>
     
-    <!-- Markdown 渲染：放在 app.js 之前确保同步加载顺序 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="/js/app.js?v=20260903h"></script>
+    <!-- Markdown 渲染：本地零依赖实现（白名单转义防 XSS），断网可用，不依赖 CDN -->
+    <script src="/js/markdown.js?v=20260910a"></script>
+    <script src="/js/app.js?v=20260911a"></script>
 </body>
 </html>

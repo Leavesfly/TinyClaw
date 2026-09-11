@@ -182,8 +182,11 @@ class ProviderManager {
         reActExecutor.setTokenUsageStore(tokenUsageStore);
         reActExecutor.setHookDispatcher(hookDispatcher);
 
+        // P5：传稳定委托（每次判断时重读 ContextBuilder 当前门），
+        // 避免热切换 Provider 重建 Summarizer 时固化旧 gate 引用
         SessionSummarizer summarizer = new SessionSummarizer(
-                sessions, effective, model, contextWindow, memoryStore, memoryEvolver);
+                sessions, effective, model, contextWindow, memoryStore, memoryEvolver,
+                contextBuilder::isMemoryEnabled);
 
         // 热切换 Provider 时先关闭旧组件的摘要线程池，避免线程残留
         ProviderComponents old = this.components;

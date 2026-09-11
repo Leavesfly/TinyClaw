@@ -110,9 +110,25 @@ public class MemoryStore {
      * @param source     来源标识（如 session_summary, per_turn, evolution, user_explicit）
      */
     public void addEntry(String scope, String content, double importance, List<String> tags, String source) {
+        addEntry(scope, content, importance, tags, source, null);
+    }
+
+    /**
+     * 添加一条归属指定域的结构化记忆，并记录可选的来源会话键。
+     *
+     * @param scope            归属域，见 {@link MemoryScope}
+     * @param content          记忆内容
+     * @param importance       重要性评分 (0.0 ~ 1.0)
+     * @param tags             标签列表
+     * @param source           来源标识（如 session_summary, per_turn, evolution, user_explicit）
+     * @param sourceSessionKey 来源会话键（可为 null；仅用于回溯导航，不参与评分）
+     */
+    public void addEntry(String scope, String content, double importance, List<String> tags, String source,
+                          String sourceSessionKey) {
         writeLock.lock();
         try {
             MemoryEntry entry = new MemoryEntry(scope, content, importance, tags, source);
+            entry.setSourceSessionKey(sourceSessionKey);
             entries.add(entry);
             saveEntries();
             logger.debug("Added memory entry", Map.of(
@@ -458,6 +474,21 @@ public class MemoryStore {
      * @return 格式化的记忆上下文
      */
     public String getMemoryContext(String currentMessage, int tokenBudget, Set<String> visibleScopes) {
+        return buildMemorySelection(currentMessage, tokenBudget, visibleScopes).text;
+    }
+
+    /**
+     * 构建记忆选择快照（P5：上下文透明度）：返回注入文本与实际选中的条目/主题清单。
+     *
+     * <p>与 {@link #getMemoryContext(String, int, Set)} 完全同源——同一函数体产出文本与选中清单，
+     * 保证「本轮使用」与真实模型输入一致，不做访问次数推断。</p>
+     *
+     * @param currentMessage 当前用户消息，用于相关性匹配
+     * @param tokenBudget    记忆部分的 token 预算上限（<=0 时取默认值）
+     * @param visibleScopes  本次请求可见的归属域集合，null 或空时退化为仅全局域
+     * @return 选择快照（无内容时 text 为空串、清单为空）
+     */
+    public MemorySelection buildMemorySelection(String currentMessage, int tokenBudget, Set<String> visibleScopes) {
         if (tokenBudget <= 0) {
             tokenBudget = DEFAULT_MEMORY_TOKEN_BUDGET;
         }
@@ -467,6 +498,8 @@ public class MemoryStore {
 
         List<String> keywords = extractKeywords(currentMessage);
         List<String> parts = new ArrayList<>();
+        List<MemorySelection.Item> selectedEntries = new ArrayList<>();
+        List<String> selectedTopics = new ArrayList<>();
 
         // 索引层：始终注入，不计入预算
         String indexContent = readIndex();
@@ -476,23 +509,21 @@ public class MemoryStore {
 
         // 主题文件：按关键词匹配，占 50% 预算
         int topicsBudget = (int) (tokenBudget * TOPICS_TOKEN_RATIO);
-        String topicsSection = buildTopicsSection(scopes, keywords, topicsBudget);
+        String topicsSection = buildTopicsSection(scopes, keywords, topicsBudget, selectedTopics);
         if (StringUtils.isNotBlank(topicsSection)) {
             parts.add(topicsSection);
         }
 
         // 结构化记忆：按评分排序，占 50% 预算
         int structuredBudget = (int) (tokenBudget * STRUCTURED_MEMORY_TOKEN_RATIO);
-        String structuredSection = buildStructuredMemorySection(scopes, keywords, structuredBudget);
+        String structuredSection = buildStructuredMemorySection(scopes, keywords, structuredBudget, selectedEntries);
         if (StringUtils.isNotBlank(structuredSection)) {
             parts.add(structuredSection);
         }
 
-        if (parts.isEmpty()) {
-            return "";
-        }
-
-        return String.join("\n\n---\n\n", parts);
+        String text = parts.isEmpty() ? "" : String.join("\n\n---\n\n", parts);
+        return new MemorySelection(text, selectedEntries, selectedTopics, false,
+                StringUtils.estimateTokens(text));
     }
 
     /**
@@ -511,8 +542,10 @@ public class MemoryStore {
 
     /**
      * 构建主题文件部分。遍历所有可见域，按关键词匹配相关主题，按 token 预算加载。
+     * selectedTopics 非空时收集实际注入的主题名（含截断注入的部分）。
      */
-    private String buildTopicsSection(Set<String> scopes, List<String> keywords, int tokenBudget) {
+    private String buildTopicsSection(Set<String> scopes, List<String> keywords, int tokenBudget,
+                                      List<String> selectedTopics) {
         if (tokenBudget <= 0) {
             return "";
         }
@@ -554,6 +587,9 @@ public class MemoryStore {
                     }
                     section.append("### ").append(scored.topicName()).append("\n\n");
                     section.append(truncated).append("\n\n_(truncated)_\n\n");
+                    if (selectedTopics != null) {
+                        selectedTopics.add(scored.topicName() + " (truncated)");
+                    }
                 }
                 break;
             }
@@ -561,6 +597,9 @@ public class MemoryStore {
             section.append("### ").append(scored.topicName()).append("\n\n");
             section.append(content).append("\n\n");
             usedTokens += contentTokens;
+            if (selectedTopics != null) {
+                selectedTopics.add(scored.topicName());
+            }
         }
 
         return section.toString();
@@ -593,8 +632,10 @@ public class MemoryStore {
 
     /**
      * 构建结构化记忆部分。先按可见域过滤，再按综合得分排序选取。
+     * selectedEntries 非空时收集实际注入的条目摘要（按注入顺序）。
      */
-    private String buildStructuredMemorySection(Set<String> scopes, List<String> keywords, int tokenBudget) {
+    private String buildStructuredMemorySection(Set<String> scopes, List<String> keywords, int tokenBudget,
+                                                 List<MemorySelection.Item> selectedEntries) {
         if (entries.isEmpty() || tokenBudget <= 0) {
             return "";
         }
@@ -639,6 +680,11 @@ public class MemoryStore {
             section.append(entryText).append("\n");
             usedTokens += entryTokens;
             selectedCount++;
+            if (selectedEntries != null) {
+                selectedEntries.add(new MemorySelection.Item(scored.entry().getId(),
+                        scored.entry().getContent(), scored.entry().getScope(), scored.entry().getSource(),
+                        scored.entry().getImportance(), scored.entry().getTags()));
+            }
 
             // 仅更新内存状态，落盘由 autoDream 的 flush() 周期性完成，
             // 避免读路径上无锁写文件与持锁写入交叉损坏 JSON

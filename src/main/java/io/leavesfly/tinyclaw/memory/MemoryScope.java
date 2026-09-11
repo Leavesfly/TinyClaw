@@ -12,11 +12,13 @@ import java.util.Set;
  * 任意用户在任意聊天里产生的记忆都会被注入到其他用户的系统提示词中。归属域把"谁的记忆"
  * 显式落到条目上，读取时只取当前请求可见的那几个域。</p>
  *
- * <p>三类域：</p>
+ * <p>四类域：</p>
  * <ul>
  *   <li>{@link #GLOBAL}：Agent 自身的全局知识，对所有会话可见；未标注域的历史条目也归入此域</li>
  *   <li>用户域 {@code u:<channel>:<senderId>}：归属某个发言人，同一人跨聊天、跨会话可见</li>
  *   <li>聊天域 {@code c:<channel>:<chatId>}：归属某个聊天（群或私聊），仅该聊天内可见</li>
+ *   <li>项目域 {@code p:<projectId>}（P4）：归属某个项目，仅该项目的会话可见；
+ *       不默认注入其他项目域</li>
  * </ul>
  *
  * <p>前缀用于隔离命名空间：某些平台的 senderId 与 chatId 取值可能相同，无前缀会误判为同一域。</p>
@@ -28,6 +30,7 @@ public final class MemoryScope {
 
     private static final String USER_PREFIX = "u:";
     private static final String CHAT_PREFIX = "c:";
+    private static final String PROJECT_PREFIX = "p:";
 
     private MemoryScope() {
     }
@@ -71,6 +74,23 @@ public final class MemoryScope {
             return GLOBAL;
         }
         return ofChat(parts[0], parts[1]);
+    }
+
+    /**
+     * 构造项目域（P4）：仅该项目的会话可见。
+     *
+     * <p>projectId 仅保留安全字符（字母数字/下划线/连字符），其余字符替换为下划线，
+     * 防止项目 id 把域标识拼接出越权形式。projectId 缺失时返回 null（无项目域可加）。</p>
+     */
+    public static String projectDomain(String projectId) {
+        if (StringUtils.isBlank(projectId)) {
+            return null;
+        }
+        String safe = projectId.trim().replaceAll("[^a-zA-Z0-9_-]", "_");
+        if (safe.isEmpty()) {
+            return null;
+        }
+        return PROJECT_PREFIX + safe;
     }
 
     /**

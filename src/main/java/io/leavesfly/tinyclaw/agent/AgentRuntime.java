@@ -344,6 +344,13 @@ public class AgentRuntime {
         return contextBuilder.getMemoryStore();
     }
 
+    /**
+     * 获取上下文构建器实例（P5）：装配方注入会话记忆模式门、Web 端查询本轮记忆选择时使用。
+     */
+    public ContextBuilder getContextBuilder() {
+        return contextBuilder;
+    }
+
     /** 获取会话管理器，供外部组件（如 WebConsoleServer）共享同一实例，避免内存状态不一致 */
     public SessionManager getSessionManager() {
         return sessions;

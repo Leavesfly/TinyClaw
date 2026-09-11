@@ -9,9 +9,12 @@ import io.leavesfly.tinyclaw.logger.TinyClawLogger;
 import io.leavesfly.tinyclaw.providers.LLMException;
 import io.leavesfly.tinyclaw.providers.LLMProvider;
 import io.leavesfly.tinyclaw.providers.StreamEvent;
+import io.leavesfly.tinyclaw.session.RunRecord;
+import io.leavesfly.tinyclaw.session.RunRegistry;
 import io.leavesfly.tinyclaw.tools.InteractionBroker;
 import io.leavesfly.tinyclaw.web.SecurityMiddleware;
 import io.leavesfly.tinyclaw.web.WebUtils;
+import io.leavesfly.tinyclaw.web.attachment.AttachmentStore;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -30,12 +33,32 @@ public class ChatHandler extends BaseHandler {
 
     private final AgentRuntime agentRuntime;
 
+    /** 执行登记处（P1，可选）：幂等提交、状态机与刷新恢复。 */
+    private RunRegistry runRegistry;
+
+    /** 附件存储（P2，可选）：attachmentIds 注入上下文。 */
+    private AttachmentStore attachmentStore;
+
     /**
      * 构造 ChatHandler，注入全局配置、Agent 循环执行器与安全中间件。
      */
     public ChatHandler(Config config, AgentRuntime agentRuntime, SecurityMiddleware security) {
         super(config, security);
         this.agentRuntime = agentRuntime;
+    }
+
+    /**
+     * 注入执行登记处（bootstrap 装配时调用；null 表示 P1 能力未启用，保持旧行为）。
+     */
+    public void setRunRegistry(RunRegistry runRegistry) {
+        this.runRegistry = runRegistry;
+    }
+
+    /**
+     * 注入附件存储（P2 装配时调用；null 表示附件能力未启用，attachmentIds 被忽略）。
+     */
+    public void setAttachmentStore(AttachmentStore attachmentStore) {
+        this.attachmentStore = attachmentStore;
     }
 
     /**
@@ -69,6 +92,20 @@ public class ChatHandler extends BaseHandler {
         String corsOrigin = config.getGateway().getCorsOrigin();
         try {
             String sessionId = readOptionalSessionId(exchange);
+            // P1：停止先进入 CANCELLING，并唤醒该会话的待审批 Future，
+            // 避免停止请求被审批等待卡住；执行器真正退出后才进入 CANCELLED（由流结束制改写）
+            if (runRegistry != null && sessionId != null) {
+                for (RunRecord r : runRegistry.listBySession(sessionId, 1)) {
+                    if (!r.isTerminal()) {
+                        runRegistry.transition(r.id, RunRecord.Status.CANCELLING);
+                    }
+                    break;
+                }
+            }
+            InteractionBroker broker = agentRuntime != null ? agentRuntime.getInteractionBroker() : null;
+            if (broker != null && sessionId != null) {
+                broker.abortSession(sessionId);
+            }
             boolean aborted = agentRuntime.abortCurrentTask(sessionId);
             ObjectNode result = WebUtils.MAPPER.createObjectNode();
             result.put("success", aborted);
@@ -192,23 +229,75 @@ public class ChatHandler extends BaseHandler {
     /**
      * 处理流式聊天请求（SSE）：设置响应头并逐递将 Agent 输出推送到客户端。
      * 支持多模态内容，可以接收图片路径列表。
+     *
+     * <p>P1：请求可携带可选 {@code clientRequestId} 实现幂等——同一请求重复提交
+     * 返回既有执行信息（SSE 首事件 RUN_STARTED 带 {@code duplicated=true}），
+     * 不再运行工具；首个结构化事件下发 {@code runId}，刷新后凭会话查询恢复。</p>
      */
     private void handleChatStream(HttpExchange exchange) throws IOException {
         String body = WebUtils.readRequestBodyLimited(exchange);
         JsonNode json = WebUtils.MAPPER.readTree(body);
         String message = json.path("message").asText();
         String sessionId = json.path("sessionId").asText(WebUtils.DEFAULT_SESSION_ID);
+        String clientRequestId = json.path("clientRequestId").asText(null);
+        if (clientRequestId != null && clientRequestId.isBlank()) {
+            clientRequestId = null;
+        }
+
+        // P2：附件 ID 列表 → 解析文本注入消息正文（带来源标记，随会话持久化可追溯）
+        List<String> attachmentIds = parseAttachmentIds(json);
+        if (attachmentIds != null && attachmentStore != null) {
+            String attachmentBlock = attachmentStore.buildContextBlock(attachmentIds);
+            if (attachmentBlock != null) {
+                message = message + "\n" + attachmentBlock;
+            }
+        }
         
         // 解析图片列表（多模态支持）
         List<String> images = parseImages(json);
+
+        // P1：原子登记（幂等 / 会话忙碌约束）；忙碌时不建立 SSE，直接以 JSON 拒绝
+        String runId = null;
+        RunRegistry.BeginResult begin = null;
+        if (runRegistry != null) {
+            begin = runRegistry.beginRun(clientRequestId, sessionId, message);
+            runId = begin.record.id;
+            if (begin.isRejected()) {
+                ObjectNode rejected = WebUtils.MAPPER.createObjectNode();
+                rejected.put("error", begin.rejection);
+                rejected.put("busy", true);
+                rejected.put("runId", runId);
+                rejected.put("status", begin.record.status);
+                WebUtils.sendJson(exchange, 409, rejected, config.getGateway().getCorsOrigin());
+                return;
+            }
+        }
 
         setupSSEHeaders(exchange);
         exchange.sendResponseHeaders(200, 0);
 
         OutputStream os = exchange.getResponseBody();
         try {
-            streamAgentResponse(message, images, sessionId, os);
+            // 首个结构化事件：执行身份（runId / 幂等标记），前端刷新后凭此恢复
+            if (runId != null) {
+                writeSSEJson(os, StreamEvent.runStarted(runId, clientRequestId, begin.duplicated));
+                if (begin.duplicated) {
+                    // 幂等命中：既有执行仍在跑，本次不重跑工具，直接结束流
+                    writeSSEDone(os);
+                    return;
+                }
+                runRegistry.transition(runId, RunRecord.Status.RUNNING);
+            }
+            boolean executedNormally = streamAgentResponse(message, images, sessionId, os);
             writeSSEDone(os);
+            // 最终状态由执行结果确定，不把 [DONE] 当作业务成功
+            if (runId != null) {
+                if (executedNormally) {
+                    runRegistry.completeRun(runId);
+                } else {
+                    runRegistry.failRun(runId, "执行失败，详见会话内错误信息");
+                }
+            }
         } catch (Exception e) {
             logger.error("Chat stream error", Map.of(
                     "session", sessionId,
@@ -216,6 +305,9 @@ public class ChatHandler extends BaseHandler {
                     "root_cause", LLMException.rootCauseMessage(e)
             ), e);
             writeSSEError(os, e.getMessage());
+            if (runId != null) {
+                runRegistry.failRun(runId, LLMException.rootCauseMessage(e));
+            }
         } finally {
             // 响应头已发出，此处再抛异常会让外层 handle() 试图二次 sendResponseHeaders，
             // 客户端提前断开时 close() 报错属于正常情形，吸掉即可
@@ -228,6 +320,25 @@ public class ChatHandler extends BaseHandler {
         }
     }
     
+    /**
+     * 从请求 JSON 中解析附件 ID 列表（P2）。
+     * ID 超过 5 个时截断（每轮最多 5 个附件）；非法字符过滤由 AttachmentStore 校验。
+     */
+    private List<String> parseAttachmentIds(JsonNode json) {
+        JsonNode node = json.path("attachmentIds");
+        if (!node.isArray() || node.isEmpty()) {
+            return null;
+        }
+        List<String> ids = new ArrayList<>();
+        for (JsonNode item : node) {
+            String id = item.asText("").trim();
+            if (!id.isEmpty() && ids.size() < 5) {
+                ids.add(id);
+            }
+        }
+        return ids.isEmpty() ? null : ids;
+    }
+
     /**
      * 从请求 JSON 中解析图片路径列表。
      * 支持 images 字段为字符串数组（图片路径）。
@@ -265,8 +376,11 @@ public class ChatHandler extends BaseHandler {
      * 调用 AgentRuntime 流式接口，将每个事件序列化为 JSON 后写入 SSE 流。
      * 使用 EnhancedStreamCallback 接收结构化事件（工具调用、子代理、普通内容等），
      * 前端通过 JSON 中的 type 字段区分事件类型并渲染不同 UI 组件。
+     *
+     * @return {@code true} 执行正常结束；{@code false} 执行链路抛异常（错误已降级写入 SSE）。
+     *         调用方据此决定 RunRecord 的终态，不能把流结束当作业务成功。
      */
-    private void streamAgentResponse(String message, List<String> images, String sessionId, OutputStream os) {
+    private boolean streamAgentResponse(String message, List<String> images, String sessionId, OutputStream os) {
         LLMProvider.EnhancedStreamCallback enhancedCallback = event -> {
             try {
                 writeSSEJson(os, event);
@@ -277,6 +391,7 @@ public class ChatHandler extends BaseHandler {
 
         try {
             agentRuntime.processDirectStream(message, images, sessionId, enhancedCallback);
+            return true;
         } catch (Exception e) {
             logger.error("Agent stream processing error", Map.of(
                     "session", sessionId,
@@ -289,6 +404,7 @@ public class ChatHandler extends BaseHandler {
                 logger.error("Failed to write error to SSE stream",
                         Map.of("error", ioException.getMessage()));
             }
+            return false;
         }
     }
 

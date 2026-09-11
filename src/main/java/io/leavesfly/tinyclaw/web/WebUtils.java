@@ -41,7 +41,7 @@ public class WebUtils {
     public static final String HEADER_CORS_HEADERS    = "Access-Control-Allow-Headers";
     public static final String HEADER_CORS_METHODS    = "Access-Control-Allow-Methods";
     public static final String HEADER_CORS_HEADERS_VALUE = "Content-Type, Authorization";
-    public static final String HEADER_CORS_METHODS_VALUE = "GET, POST, PUT, DELETE, OPTIONS";
+    public static final String HEADER_CORS_METHODS_VALUE = "GET, POST, PUT, DELETE, PATCH, OPTIONS";
     public static final String HEADER_AUTHORIZATION   = "Authorization";
     public static final String HEADER_NO_CACHE        = "no-cache";
     public static final String HEADER_KEEP_ALIVE      = "keep-alive";
@@ -104,6 +104,7 @@ public class WebUtils {
     public static final String API_REFLECTION      = "/api/reflection";
     public static final String API_HEARTBEAT       = "/api/heartbeat";
     public static final String API_MEMORY          = "/api/memory";
+    public static final String API_PROJECTS        = "/api/projects";
 
     // ==================== HTTP Methods ====================
     public static final String HTTP_METHOD_GET     = "GET";
@@ -111,6 +112,7 @@ public class WebUtils {
     public static final String HTTP_METHOD_PUT     = "PUT";
     public static final String HTTP_METHOD_DELETE  = "DELETE";
     public static final String HTTP_METHOD_OPTIONS = "OPTIONS";
+    public static final String HTTP_METHOD_PATCH   = "PATCH";
 
     // ==================== Session ====================
     public static final String DEFAULT_SESSION_ID  = "web:default";

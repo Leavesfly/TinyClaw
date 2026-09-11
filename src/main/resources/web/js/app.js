@@ -224,6 +224,7 @@ class TinyClawConsole {
             mcp: 'MCP Servers',
             'tools-health': 'Tools Health',
             memory: 'Memory',
+            projects: 'Projects',
             models: 'Models',
             environments: 'Environments',
             'token-usage': 'Token Usage'
@@ -265,7 +266,7 @@ class TinyClawConsole {
     loadPageData(page) {
         switch (page) {
             case 'dashboard': this.loadDashboard(); break;
-            case 'chat': this.loadChatHistory(); this.loadChatSessions(); break;
+            case 'chat': this.loadChatHistory(); this.loadChatSessions(); this.loadChatInputMeta(); break;
             case 'channels': this.loadChannels(); break;
             case 'sessions': this.loadSessions(); break;
             case 'cron': this.loadCronJobs(); break;
@@ -274,6 +275,7 @@ class TinyClawConsole {
             case 'mcp': this.loadMcpServers(); break;
             case 'tools-health': this.loadReflection(); break;
             case 'memory': this.loadMemory(); break;
+            case 'projects': this.loadProjects(); break;
             case 'models': this.loadProviders(); this.loadCurrentModel(); break;
             case 'environments': this.loadAgentConfig(); break;
             case 'token-usage': this.loadTokenUsage(); break;
@@ -284,12 +286,22 @@ class TinyClawConsole {
 
     // 待上传的图片列表（存储 Base64 数据）
     pendingImages = [];
+    // P2 待发送的文档附件列表：{ id, name, status, truncated, parseError }
+    pendingAttachments = [];
+    // P2 附件状态轮询定时器
+    _attachmentPollTimer = null;
     // fork 重新生成时，原始提问已上传的图片路径（跳过 base64 重传，由 sendMessage 消费）
     _replayImagePaths = null;
     // 本次会话中 Agent 通过 write_file/edit_file 触达的文件（Artifacts 面板）
     sessionArtifacts = [];
     // 当前正在执行的任务的 AbortController（用于中断）
     currentAbortController = null;
+    // 会话历史加载序号：切换会话后旧异步响应不再写入新会话 DOM
+    _chatHistoryLoadSeq = 0;
+    // 草稿防抖定时器（输入停顿后落盘 localStorage）
+    _draftSaveTimer = null;
+    // 流式新消息计数：用户上滑阅读时收到新内容则点亮“回到最新”徽标
+    _newMsgCount = 0;
     // Slash command menu state
     slashMenuVisible = false;
     slashMenuIndex = -1;
@@ -355,9 +367,21 @@ class TinyClawConsole {
         uploadBtn.addEventListener('click', () => imageUpload.click());
         imageUpload.addEventListener('change', (e) => this.handleImageSelect(e));
 
+        // P2 文档附件按钮：逐文件二进制上传，解析状态轮询
+        const fileUploadBtn = document.getElementById('fileUploadBtn');
+        const fileUpload = document.getElementById('fileUpload');
+        if (fileUploadBtn && fileUpload) {
+            fileUploadBtn.addEventListener('click', () => fileUpload.click());
+            fileUpload.addEventListener('change', (e) => this.handleDocumentSelect(e));
+        }
+
         // Artifacts（本次会话产生的文件）按钮
         const artifactsBtn = document.getElementById('artifactsBtn');
         if (artifactsBtn) artifactsBtn.addEventListener('click', () => this.openArtifactsPanel());
+
+        // P6：把本轮对话设为周期任务（入口在聊天输入区，先发一次消息再操作）
+        const scheduleBtn = document.getElementById('scheduleBtn');
+        if (scheduleBtn) scheduleBtn.addEventListener('click', () => this.showScheduleFromChat());
 
         // 支持拖拽上传
         input.addEventListener('dragover', (e) => {
@@ -376,6 +400,12 @@ class TinyClawConsole {
 
         // 绑定初始的快捷提示语
         this.bindQuickPrompts();
+
+        // P0 体验基础：草稿、滚动指示、移动端抽屉、输入区模型信息
+        this.bindDrafts();
+        this.bindScrollIndicators();
+        this.bindChatDrawer();
+        this.loadChatInputMeta();
     }
 
     /**
@@ -431,6 +461,8 @@ class TinyClawConsole {
      * 确保刷新页面后新会话仍出现在历史列表中。
      */
     async createNewChatSession() {
+        // 保存旧会话草稿，新会话从空白输入开始
+        this.saveCurrentInputAsDraft();
         const newSessionId = 'web:' + Date.now();
         try {
             await this.authFetch('/api/sessions', {
@@ -447,6 +479,8 @@ class TinyClawConsole {
         this.bindQuickPrompts();
         this.loadChatSessions();
         this.clearPendingImages();
+        this.restoreDraft();
+        this.closeChatDrawer();
     }
 
     // ==================== 图片上传相关 ====================
@@ -609,19 +643,583 @@ class TinyClawConsole {
         this.updateImagePreview();
     }
 
+    // ==================== P2：通用文档附件 ====================
+
+    /**
+     * 文件选择：逐文件上传（原始二进制），加入待发送列表并开始状态轮询。
+     * 单份失败不影响其他附件；超过 5 个时提示并拒绝追加。
+     */
+    handleDocumentSelect(e) {
+        const files = e.target.files;
+        if (files) {
+            this.uploadDocuments(Array.from(files));
+        }
+        e.target.value = '';
+    }
+
+    /**
+     * 逐文件上传文档：POST /api/attachments（二进制体）。
+     */
+    async uploadDocuments(files) {
+        for (const file of files) {
+            if (this.pendingAttachments.length >= 5) {
+                this.showToast('每轮最多 5 个附件', 'info');
+                break;
+            }
+            if (file.size > 10 * 1024 * 1024) {
+                this.showToast(`${file.name} 超过 10 MiB 上限，未上传`, 'error');
+                continue;
+            }
+            // 先以 UPLOADING 占位，上传响应后替换
+            const placeholder = { id: null, name: file.name, status: 'UPLOADING', truncated: false, parseError: '' };
+            this.pendingAttachments.push(placeholder);
+            this.updateAttachmentChips();
+            try {
+                const resp = await this.authFetch('/api/attachments?sessionId='
+                    + encodeURIComponent(this.chatSessionId)
+                    + '&name=' + encodeURIComponent(file.name), {
+                    method: 'POST',
+                    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+                    body: file
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+                Object.assign(placeholder, {
+                    id: data.id,
+                    name: data.name,
+                    status: data.status,
+                    truncated: !!data.truncated,
+                    parseError: data.parseError || ''
+                });
+            } catch (err) {
+                placeholder.status = 'FAILED';
+                placeholder.parseError = err.message;
+                this.showToast(`${file.name} 上传失败：${err.message}`, 'error');
+            }
+            this.updateAttachmentChips();
+        }
+        this.startAttachmentPolling();
+    }
+
+    /**
+     * 轮询未就绪附件的解析状态（800ms 间隔；全部终态后停止）。
+     */
+    startAttachmentPolling() {
+        clearInterval(this._attachmentPollTimer);
+        this._attachmentPollTimer = setInterval(async () => {
+            const pending = this.pendingAttachments.filter(a => a.id && a.status === 'PARSING');
+            if (pending.length === 0) {
+                clearInterval(this._attachmentPollTimer);
+                this._attachmentPollTimer = null;
+                return;
+            }
+            for (const att of pending) {
+                try {
+                    const resp = await this.authFetch('/api/attachments/' + att.id);
+                    if (!resp.ok) continue;
+                    const data = await resp.json();
+                    att.status = data.status;
+                    att.truncated = !!data.truncated;
+                    att.parseError = data.parseError || '';
+                    if (data.status === 'FAILED' && att.parseError) {
+                        this.showToast(`附件「${att.name}」解析失败：${att.parseError}`, 'error');
+                    }
+                } catch (e) { /* 单次轮询失败不中断 */ }
+            }
+            this.updateAttachmentChips();
+        }, 800);
+    }
+
+    /**
+     * 移除一个待发送附件（不因一份失败清空其他）。
+     */
+    removePendingAttachment(index) {
+        this.pendingAttachments.splice(index, 1);
+        this.updateAttachmentChips();
+    }
+
+    /**
+     * 渲染附件 chip 区：状态图标（解析中旋转/就绪✓/失败✗）、截断标记、移除按钮。
+     */
+    updateAttachmentChips() {
+        const box = document.getElementById('chatAttachments');
+        if (!box) return;
+        if (this.pendingAttachments.length === 0) {
+            box.style.display = 'none';
+            box.innerHTML = '';
+            return;
+        }
+        box.style.display = 'flex';
+        box.innerHTML = this.pendingAttachments.map((att, idx) => {
+            const statusIcon = att.status === 'READY' ? '✓'
+                : att.status === 'FAILED' ? '✗'
+                    : att.status === 'PARSING' ? '<span class="tool-call-spinner"></span>'
+                        : '⬆';
+            const statusCls = att.status === 'READY' ? 'att-ready'
+                : att.status === 'FAILED' ? 'att-failed' : 'att-pending';
+            const truncatedTag = att.truncated ? '<span class="att-truncated" title="内容过长已截断">截断</span>' : '';
+            const failedTip = att.status === 'FAILED' && att.parseError
+                ? ` title="${this.escapeAttr(att.parseError)}"` : '';
+            return `<div class="attachment-chip ${statusCls}"${failedTip}>
+                <span class="att-status">${statusIcon}</span>
+                <span class="att-name" title="${this.escapeAttr(att.name)}">${this.escapeHtml(att.name)}</span>
+                ${truncatedTag}
+                <button class="att-remove" data-idx="${idx}" title="移除">×</button>
+            </div>`;
+        }).join('');
+        box.querySelectorAll('.att-remove').forEach(btn => {
+            btn.addEventListener('click', () => this.removePendingAttachment(Number(btn.dataset.idx)));
+        });
+    }
+
+    /**
+     * 取就绪附件的 ID 列表（发送时用；未就绪/失败的被跳过并在发送后提示）。
+     */
+    readyAttachmentIds() {
+        return this.pendingAttachments.filter(a => a.status === 'READY' && a.id).map(a => a.id);
+    }
+
+    /**
+     * 清空待发送附件。
+     */
+    clearPendingAttachments() {
+        this.pendingAttachments = [];
+        clearInterval(this._attachmentPollTimer);
+        this._attachmentPollTimer = null;
+        this.updateAttachmentChips();
+    }
+
+    // ==================== P0：草稿 / 滚动 / 抽屉 / 输入区信息 ====================
+
+    /**
+     * 草稿存储键：按当前会话隔离（同一浏览器即同一实例，localStorage 天然按实例分隔）。
+     * 只存正文文本；尚未上传的图片不落盘，刷新后提示重新选择，不伪称已保存。
+     */
+    draftKey() {
+        return 'tinyclaw_draft:' + this.chatSessionId;
+    }
+
+    /**
+     * 防抖保存草稿：输入停顿 300ms 后落盘，避免逐键写 localStorage。
+     */
+    bindDrafts() {
+        const input = document.getElementById('chatInput');
+        if (!input) return;
+        input.addEventListener('input', () => {
+            clearTimeout(this._draftSaveTimer);
+            this._draftSaveTimer = setTimeout(() => this.saveDraft(input.value), 300);
+        });
+        // 初始恢复当前会话草稿
+        this.restoreDraft();
+    }
+
+    /**
+     * 保存草稿（仅正文；空文本直接清除存储）。
+     */
+    saveDraft(text) {
+        try {
+            if (text && text.trim()) {
+                localStorage.setItem(this.draftKey(), text);
+            } else {
+                localStorage.removeItem(this.draftKey());
+            }
+        } catch (e) {
+            console.warn('Failed to save draft:', e);
+        }
+    }
+
+    /**
+     * 恢复草稿到输入框（有草稿时调整自适应高度）。
+     */
+    restoreDraft() {
+        const input = document.getElementById('chatInput');
+        if (!input) return;
+        let draft = '';
+        try {
+            draft = localStorage.getItem(this.draftKey()) || '';
+        } catch (e) { /* 存储不可用时降级为无草稿 */ }
+        input.value = draft;
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    }
+
+    /**
+     * 清除草稿：仅服务端确认接收后调用。
+     */
+    clearDraft() {
+        clearTimeout(this._draftSaveTimer);
+        try {
+            localStorage.removeItem(this.draftKey());
+        } catch (e) { /* 忽略 */ }
+    }
+
+    /**
+     * 发送失败时把正文放回输入框并保存草稿。
+     * 注意不自动重发：连接中断时消息可能已送达，重发前需用户确认。
+     */
+    restoreFailedInput(message) {
+        if (!message) return;
+        const input = document.getElementById('chatInput');
+        if (input) {
+            input.value = message;
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+            input.focus();
+        }
+        this.saveDraft(message);
+    }
+
+    /**
+     * 统一读取 API 错误体：兼容 {error} / {message} / 空体，区分失败与可重试。
+     */
+    async readApiError(resp) {
+        let detail = '';
+        try {
+            const data = await resp.json();
+            detail = data.error || data.message || '';
+        } catch (e) { /* 无 JSON 体时使用状态码 */ }
+        const retryable = resp.status >= 500 || resp.status === 429;
+        const suffix = retryable ? '，可稍后重试' : '';
+        return (detail || ('请求失败 (' + resp.status + ')')) + suffix;
+    }
+
+    /**
+     * 判断用户是否停留在消息区底部（阈值 120px）。
+     * 流式输出仅在底部时自动滚动，阅读历史不被新 token 强制拉到底。
+     */
+    isNearBottom(el, threshold = 120) {
+        return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    }
+
+    /**
+     * 绑定滚动指示：用户上滑时显示“回到最新”按钮，用户不在底部时新内容点亮徽标。
+     */
+    bindScrollIndicators() {
+        const messagesDiv = document.getElementById('chatMessages');
+        const btn = document.getElementById('backToBottomBtn');
+        if (!messagesDiv || !btn) return;
+        messagesDiv.addEventListener('scroll', () => {
+            const near = this.isNearBottom(messagesDiv);
+            btn.classList.toggle('visible', !near);
+            if (near) this.hideNewMsgBadge();
+        }, { passive: true });
+        btn.addEventListener('click', () => {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            btn.classList.remove('visible');
+            this.hideNewMsgBadge();
+        });
+    }
+
+    /**
+     * 流式输出到达但用户不在底部：徽标计一条新消息。
+     */
+    notifyNewStreamContent() {
+        const messagesDiv = document.getElementById('chatMessages');
+        const btn = document.getElementById('backToBottomBtn');
+        if (!messagesDiv || !btn) return;
+        if (this.isNearBottom(messagesDiv)) {
+            this.hideNewMsgBadge();
+            return;
+        }
+        this._newMsgCount++;
+        const badge = document.getElementById('backToBottomBadge');
+        if (badge) {
+            badge.style.display = '';
+            badge.textContent = this._newMsgCount > 9 ? '9+' : String(this._newMsgCount);
+        }
+    }
+
+    /**
+     * 清零新消息徽标。
+     */
+    hideNewMsgBadge() {
+        this._newMsgCount = 0;
+        const badge = document.getElementById('backToBottomBadge');
+        if (badge) {
+            badge.style.display = 'none';
+            badge.textContent = '';
+        }
+    }
+
+    /**
+     * 绑定移动端会话抽屉：小屏下恢复新建/搜索/历史入口。
+     * Escape 关闭并归还焦点；backdrop 点击关闭；会话项支持 Enter 键导航。
+     */
+    bindChatDrawer() {
+        const btn = document.getElementById('chatDrawerBtn');
+        const backdrop = document.getElementById('chatDrawerBackdrop');
+        if (!btn) return;
+        btn.addEventListener('click', () => this.openChatDrawer());
+        if (backdrop) {
+            backdrop.addEventListener('click', () => this.closeChatDrawer());
+        }
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const sidebar = document.querySelector('.chat-sidebar');
+                if (sidebar && sidebar.classList.contains('drawer-open')) {
+                    e.preventDefault();
+                    this.closeChatDrawer();
+                }
+            }
+        });
+    }
+
+    /**
+     * 打开移动端抽屉：焦点移入搜索框，便于键盘导航。
+     */
+    openChatDrawer() {
+        const sidebar = document.querySelector('.chat-sidebar');
+        const backdrop = document.getElementById('chatDrawerBackdrop');
+        if (!sidebar) return;
+        sidebar.classList.add('drawer-open');
+        if (backdrop) backdrop.classList.add('visible');
+        const search = document.getElementById('chatSearchInput');
+        if (search) search.focus();
+    }
+
+    /**
+     * 关闭移动端抽屉：焦点返回触发按钮。
+     */
+    closeChatDrawer() {
+        const sidebar = document.querySelector('.chat-sidebar');
+        const backdrop = document.getElementById('chatDrawerBackdrop');
+        if (!sidebar || !sidebar.classList.contains('drawer-open')) return;
+        sidebar.classList.remove('drawer-open');
+        if (backdrop) backdrop.classList.remove('visible');
+        const btn = document.getElementById('chatDrawerBtn');
+        if (btn) btn.focus();
+    }
+
+    /**
+     * 加载输入区全局模型与思考配置提示。
+     * 明确其全局作用范围（非会话级），点击 chip 跳转 Models 设置页。
+     */
+    async loadChatInputMeta() {
+        const metaDiv = document.getElementById('chatInputMeta');
+        if (!metaDiv) return;
+        try {
+            const [modelResp, agentResp] = await Promise.allSettled([
+                this.authFetch('/api/config/model'),
+                this.authFetch('/api/config/agent')
+            ]);
+            const model = modelResp.status === 'fulfilled' && modelResp.value.ok
+                ? await modelResp.value.json() : {};
+            const agent = agentResp.status === 'fulfilled' && agentResp.value.ok
+                ? await agentResp.value.json() : {};
+            const modelName = model.model || '未设置';
+            const providerName = model.provider || '';
+            const label = providerName ? `${providerName} / ${modelName}` : modelName;
+            // P5：缓存模型标签（本轮上下文摘要面板展示用）
+            this._currentModelLabel = label;
+            const thinking = agent.thinkingEnabled === true ? '思考开' : '思考关';
+            // 作用范围（全局）信息收进 title 提示，避免第三个独立 chip 拼接 clutter
+            metaDiv.innerHTML =
+                `<button class="meta-chip" id="modelMetaChip" title="全局模型配置，对所有会话生效，点击前往设置">🤖 ${this.escapeHtml(label)}</button>`
+                + `<span class="meta-chip meta-chip-static" title="全局思考模式配置，对所有会话生效">✦ ${thinking}</span>`;
+            const chip = document.getElementById('modelMetaChip');
+            if (chip) {
+                chip.addEventListener('click', () => this.navigateTo('models'));
+            }
+        } catch (e) {
+            metaDiv.innerHTML = '<span class="meta-chip meta-chip-static" title="全局模型配置">模型配置未加载</span>';
+        }
+    }
+
+    // ==================== P5：本轮上下文透明化与会话记忆模式 ====================
+
+    /** 当前会话记忆模式缓存（loadChatSessions 时更新）。 */
+    _sessionMemoryMode = 'DEFAULT';
+
+    /** 本轮使用记忆面板展开状态。 */
+    _contextUsedExpanded = false;
+
+    /** 最近一次 context-used 数据（展开/收起重渲染用）。 */
+    _lastContextUsed = null;
+
+    /** 会话是否存在压缩摘要（loadChatHistory 时更新）。 */
+    _sessionHasSummary = false;
+
+    /** 全局模型标签缓存（loadChatInputMeta 时更新，上下文摘要面板展示用）。 */
+    _currentModelLabel = '';
+
+    /**
+     * 拉取当前会话最近一次记忆选择（本轮使用）：
+     * 与真实注入系统提示词的文本来自同一次服务端计算，不做访问次数推断。
+     * 每轮流结束与切换会话后刷新。
+     */
+    async loadMemoryUsed() {
+        const bar = document.getElementById('contextUsedBar');
+        if (!bar) return;
+        try {
+            const resp = await this.authFetch('/api/memory/context-used?sessionId='
+                + encodeURIComponent(this.chatSessionId));
+            if (!resp.ok) {
+                bar.style.display = 'none';
+                return;
+            }
+            const data = await resp.json();
+            this._lastContextUsed = data;
+            this.renderContextUsedBar();
+        } catch (e) {
+            // 网络错误时静默隐藏，不打断聊天
+            bar.style.display = 'none';
+        }
+    }
+
+    /**
+     * 渲染本轮上下文条：使用记忆数/主题数/token 估算 + 会话记忆模式徽标；
+     * 展开后列出实际使用的记忆（可纠正/删除，仅影响后续轮次）与上下文构成摘要。
+     */
+    renderContextUsedBar() {
+        const bar = document.getElementById('contextUsedBar');
+        if (!bar) return;
+        const data = this._lastContextUsed;
+        const memoryOff = this._sessionMemoryMode === 'OFF';
+        if (!data || !data.available) {
+            // 尚无登记（未发过消息）：仅在 OFF 时展示模式徽标
+            if (memoryOff) {
+                bar.style.display = 'flex';
+                bar.innerHTML = '<span class="ctx-used-chip ctx-used-off">'
+                    + '不使用长期记忆 · 聊天历史仍会保存</span>';
+            } else {
+                bar.style.display = 'none';
+            }
+            return;
+        }
+        bar.style.display = 'flex';
+        const off = memoryOff || data.disabled === true;
+        let head;
+        if (off) {
+            head = '<span class="ctx-used-chip ctx-used-off">'
+                + '不使用长期记忆 · 本轮未注入任何长期记忆</span>';
+        } else {
+            const topicsPart = data.topicCount ? ` · 主题 ${data.topicCount} 个` : '';
+            const tokenPart = data.estimatedTokens ? ` · ≈${data.estimatedTokens} tokens（估算）` : '';
+            head = `<button class="ctx-used-chip ctx-used-toggle" title="展开查看实际使用的记忆">`
+                + `🧠 本轮使用记忆 ${data.memoryCount || 0} 条${topicsPart}${tokenPart}`
+                + `${this._contextUsedExpanded ? ' ▴' : ' ▾'}</button>`;
+        }
+        let detail = '';
+        if (this._contextUsedExpanded && !off) {
+            detail = this.renderContextUsedDetail(data);
+        }
+        bar.innerHTML = head + detail;
+        const toggle = bar.querySelector('.ctx-used-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', () => {
+                this._contextUsedExpanded = !this._contextUsedExpanded;
+                this.renderContextUsedBar();
+            });
+        }
+        this.bindContextUsedActions();
+    }
+
+    /** 展开区：实际使用的记忆列表（纠正/删除）+ 上下文构成摘要。 */
+    renderContextUsedDetail(data) {
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        const topics = Array.isArray(data.topics) ? data.topics : [];
+        const listHtml = entries.length
+            ? entries.map(e => `
+                <div class="ctx-used-item" data-mem-id="${this.escapeAttr(e.id)}">
+                    <div class="ctx-used-item-head">
+                        <span class="badge badge-outline">${this.escapeHtml(e.scope || 'global')}</span>
+                        <span class="ctx-used-meta">${this.escapeHtml(e.source || '')}</span>
+                    </div>
+                    <div class="ctx-used-content">${this.escapeHtml(e.content || '')}</div>
+                    <div class="ctx-used-actions">
+                        <button class="btn btn-text btn-sm" data-act="correct">纠正</button>
+                        <button class="btn btn-text btn-danger btn-sm" data-act="forget">删除</button>
+                    </div>
+                </div>`).join('')
+            : '<p class="empty-state">本轮没有选中任何结构化记忆</p>';
+        const topicsHtml = topics.length
+            ? `<div class="ctx-used-topics">主题文件：${topics.map(t => `<span class="memory-tag">${this.escapeHtml(t)}</span>`).join('')}</div>`
+            : '';
+        // 上下文构成摘要（事项 7）：模型 / 附件 / 摘要 / 记忆，估算值与实际用量分开标注
+        const attachCount = (this.pendingAttachments || []).length;
+        const summaryState = this._sessionHasSummary ? '使用压缩摘要' : '无压缩摘要';
+        const modelLabel = this._currentModelLabel || '未设置';
+        return `
+            <div class="ctx-used-detail">
+                <div class="ctx-used-summary">
+                    <span class="ctx-used-summary-item">模型：${this.escapeHtml(modelLabel)}</span>
+                    <span class="ctx-used-summary-item">待发附件：${attachCount} 个</span>
+                    <span class="ctx-used-summary-item">${summaryState}</span>
+                    <span class="ctx-used-summary-item ctx-used-est" title="估算值，与 Provider 返回的实际 Token 用量分开标注">记忆部分 ≈${data.estimatedTokens || 0} tokens（估算）</span>
+                </div>
+                ${topicsHtml}
+                ${listHtml}
+                <p class="form-hint">纠正或删除仅影响后续轮次；已发送的上下文与历史转录不会被追溯抹除。</p>
+            </div>`;
+    }
+
+    /** 绑定展开区条目的纠正/删除事件（仅影响后续轮次）。 */
+    bindContextUsedActions() {
+        const bar = document.getElementById('contextUsedBar');
+        if (!bar) return;
+        const data = this._lastContextUsed;
+        if (!data) return;
+        bar.querySelectorAll('.ctx-used-item').forEach(item => {
+            const id = item.dataset.memId;
+            const entry = (data.entries || []).find(x => String(x.id) === String(id));
+            if (!entry) return;
+            const correctBtn = item.querySelector('[data-act="correct"]');
+            const forgetBtn = item.querySelector('[data-act="forget"]');
+            if (correctBtn) correctBtn.addEventListener('click', () => {
+                this.showMemoryForm({
+                    id: entry.id,
+                    content: entry.content,
+                    importance: entry.importance != null ? entry.importance : 0.5,
+                    tags: Array.isArray(entry.tags) ? entry.tags : [],
+                    scope: entry.scope,
+                    source: entry.source,
+                    sourceSessionKey: ''
+                });
+            });
+            if (forgetBtn) forgetBtn.addEventListener('click', () => this.forgetMemoryFromChat(id));
+        });
+    }
+
+    /** 聊天内删除一条记忆：确认时明示只影响后续轮次。 */
+    async forgetMemoryFromChat(id) {
+        if (!confirm('删除这条记忆？仅影响后续轮次，已发送的上下文不会被追溯抹除。')) return;
+        try {
+            const resp = await this.authFetch(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            if (resp.ok) {
+                this.showToast('记忆已删除（后续轮次生效）', 'success');
+                this.loadMemoryUsed();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('删除失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误，删除失败', 'error');
+        }
+    }
+
     /**
      * 加载当前 session 的聊天历史。
      * 连续的 assistant 消息会合并成一个气泡，避免多轮工具调用产生的碎片感。
      */
     async loadChatHistory() {
-        // 切换/重载会话时重置 Artifacts（它们是当前会话实时交互的产物）
+        // 加载序号守卫：切换会话后，旧请求的响应不得写入新会话 DOM
+        const loadSeq = ++this._chatHistoryLoadSeq;
+        // 切换/重载会话时重置本地 Artifacts 即时追踪（P3：服务端登记为准，本地仅即时提示）
         this.sessionArtifacts = [];
         this.updateArtifactsBadge();
+        // P3：从服务端加载该会话的持久化成果登记（切会话/刷新均可找回）
+        this.loadSessionArtifacts(loadSeq);
+        // P5：切会话后刷新本轮使用记忆（含会话记忆模式状态）
+        this.loadMemoryUsed();
         try {
             const response = await this.authFetch(`/api/sessions/${encodeURIComponent(this.chatSessionId)}`);
+            if (loadSeq !== this._chatHistoryLoadSeq) return; // 已切走：丢弃过期响应
             if (!response.ok) return;
             
             const messages = await response.json();
+            if (loadSeq !== this._chatHistoryLoadSeq) return; // 已切走：丢弃过期响应
+            // P5：检测是否存在压缩摘要（本轮上下文构成摘要展示用）
+            this._sessionHasSummary = (messages || []).some(m => m && m.role === 'summary');
             // 过滤出有实际内容的 user/assistant 消息
             // 注意：assistant 消息即使 content 为空，只要有 toolCallRecords 也需要保留，
             // 否则工具调用卡片会因找不到对应消息而丢失
@@ -632,7 +1230,6 @@ class TinyClawConsole {
                 const hasToolCalls = msg.role === 'assistant' && msg.toolCallRecords && msg.toolCallRecords.length > 0;
                 return hasContent || hasToolCalls;
             });
-            if (visibleMessages.length === 0) return;
 
             // 将连续的 assistant 消息合并，减少碎片气泡
             const mergedMessages = [];
@@ -673,9 +1270,14 @@ class TinyClawConsole {
             }
             
             const messagesDiv = document.getElementById('chatMessages');
-            // 清除欢迎消息，渲染历史记录
+            // 先清空旧内容：避免切换到空会话时残留上一会话的消息
             messagesDiv.innerHTML = '';
-            for (const msg of mergedMessages) {
+            if (mergedMessages.length === 0) {
+                // 空会话：展示欢迎屏（后续运行状态检查仍需执行）
+                messagesDiv.innerHTML = this.getWelcomeHtml();
+                this.bindQuickPrompts();
+            } else {
+                for (const msg of mergedMessages) {
                 // 摘要消息：渲染为折叠提示卡片，告知用户前面有内容已被压缩
                 if (msg.role === 'summary') {
                     const summaryDiv = document.createElement('div');
@@ -727,6 +1329,7 @@ class TinyClawConsole {
                     }
                 }
             }
+            }
             // 历史回放完成后滚到顶部，让用户从头阅读完整会话
             messagesDiv.scrollTop = 0;
 
@@ -738,51 +1341,213 @@ class TinyClawConsole {
             }
             
             // 检查后端是否有任务正在运行（刷新页面后恢复运行状态）
-            this.checkAndRestoreRunningState();
+            this.checkAndRestoreRunningState(loadSeq);
         } catch (error) {
             console.error('Failed to load chat history:', error);
         }
     }
 
     /**
+     * 生成 P1 幂等键：优先 crypto.randomUUID，降级为时间戳 + 随机串。
+     * 同一提交（含双击/断线重发）复用同一 id，服务端据此去重。
+     */
+    newClientRequestId() {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            try { return crypto.randomUUID(); } catch (e) { /* 降级 */ }
+        }
+        return 'cr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    /**
      * 检查后端是否有任务正在运行，如果有则恢复前端的运行状态指示。
      * 用于刷新页面后恢复运行状态，避免用户误以为任务已丢失。
+     *
+     * <p>P1：优先走 /api/runs 执行记录接口（含状态与待确认交互，可重建审批卡）；
+     * 接口不可用（旧版本 / 未启用）时回退旧 /api/chat/status。</p>
      */
-    async checkAndRestoreRunningState() {
+    async checkAndRestoreRunningState(loadSeq) {
+        // P1 路径：执行记录 + 待确认交互
+        try {
+            const resp = await this.authFetch('/api/runs?sessionId=' + encodeURIComponent(this.chatSessionId));
+            if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
+            if (resp.ok) {
+                const data = await resp.json();
+                if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
+                if (data.enabled !== false) {
+                    const runs = data.runs || [];
+                    const active = runs.find(r => r.running);
+                    if (active) {
+                        this._activeRunId = active.id;
+                        this.renderRunningBanner(active.status);
+                        await this.restorePendingInteractions(loadSeq);
+                        this.pollTaskCompletion();
+                        return;
+                    }
+                    // 无活动执行：终态记录（如重启后的 INTERRUPTED）给出可见提示
+                    const latest = runs[0];
+                    if (latest && latest.status === 'INTERRUPTED' && !this._interruptNotified) {
+                        this._interruptNotified = true;
+                        this.showToast('服务曾重启，上次任务已中断；可查看已保存的会话内容后重新发起。', 'info');
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to query runs, falling back to legacy status:', e);
+        }
+
+        // 回退路径：旧 /api/chat/status（P1 未启用时仍可恢复基本运行态）
         try {
             const response = await this.authFetch(this.chatStatusUrl());
+            // 已切走会话：丢弃过期响应，不写入新会话 DOM
+            if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
             if (!response.ok) return;
             const status = await response.json();
+            if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
             if (status.running) {
-                const sendBtn = document.getElementById('sendBtn');
-                if (sendBtn) {
-                    sendBtn.classList.add('loading');
-                    sendBtn.innerHTML = '⏹';
-                    sendBtn.title = '点击中断任务';
-                }
-                // 创建一个 AbortController 以支持中断
-                this.currentAbortController = new AbortController();
-                // 在消息区域底部添加运行中提示（内嵌停止按钮，避免用户找不到变形后的发送按钮）
-                const messagesDiv = document.getElementById('chatMessages');
-                const banner = document.createElement('div');
-                banner.className = 'running-task-banner';
-                banner.id = 'runningTaskBanner';
-                banner.innerHTML = `<span class="running-task-icon"><span class="tool-call-spinner"></span></span><span class="running-task-text">有任务正在后台运行中，SSE 连接已断开。任务完成后界面自动恢复。</span><button class="running-task-stop-btn" id="runningTaskStopBtn" title="中断后台任务">⏹ 停止任务</button>`;
-                messagesDiv.appendChild(banner);
-                const stopBtn = banner.querySelector('#runningTaskStopBtn');
-                if (stopBtn) {
-                    stopBtn.addEventListener('click', () => this.stopRunningTask(stopBtn));
-                }
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                // 立即拉一次进度，把“SSE 断开”这种技术描述换成用户看得懂的阶段
-                this.fetchSessionProgress(this.chatSessionId)
-                    .then(progress => this.renderProgressIntoBanner(progress));
-                // 轮询等待任务完成
+                this.renderRunningBanner('RUNNING');
                 this.pollTaskCompletion();
             }
         } catch (error) {
             console.warn('Failed to check running state:', error);
         }
+    }
+
+    /**
+     * 渲染运行中横幅（提取自旧 checkAndRestoreRunningState，含状态文案）。
+     */
+    renderRunningBanner(runStatus) {
+        const sendBtn = document.getElementById('sendBtn');
+        if (sendBtn) {
+            sendBtn.classList.add('loading');
+            sendBtn.innerHTML = '⏹';
+            sendBtn.title = '点击中断任务';
+        }
+        // 创建一个 AbortController 以支持中断
+        this.currentAbortController = new AbortController();
+        const messagesDiv = document.getElementById('chatMessages');
+        const banner = document.createElement('div');
+        banner.className = 'running-task-banner';
+        banner.id = 'runningTaskBanner';
+        const statusText = runStatus === 'WAITING_USER'
+            ? '任务正在等待你的确认（见下方审批/提问卡）。'
+            : runStatus === 'CANCELLING'
+                ? '正在停止任务，等待执行器退出…'
+                : '任务正在后台运行中，连接已断开。任务完成后界面自动恢复。';
+        banner.innerHTML = `<span class="running-task-icon"><span class="tool-call-spinner"></span></span><span class="running-task-text">${statusText}</span><button class="running-task-stop-btn" id="runningTaskStopBtn" title="中断后台任务">⏹ 停止任务</button>`;
+        messagesDiv.appendChild(banner);
+        const stopBtn = banner.querySelector('#runningTaskStopBtn');
+        if (stopBtn) {
+            stopBtn.addEventListener('click', () => this.stopRunningTask(stopBtn));
+        }
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        // 立即拉一次进度，把状态描述换成用户看得懂的阶段
+        this.fetchSessionProgress(this.chatSessionId)
+            .then(progress => this.renderProgressIntoBanner(progress));
+    }
+
+    /**
+     * P1：拉取当前会话的待确认交互并重建审批/提问卡（刷新恢复）。
+     * 已存在的交互卡不重复渲染（按 requestId 幂等）。
+     */
+    async restorePendingInteractions(loadSeq) {
+        try {
+            const resp = await this.authFetch('/api/runs/pending?sessionId=' + encodeURIComponent(this.chatSessionId));
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
+            const messagesDiv = document.getElementById('chatMessages');
+            for (const info of (data.interactions || [])) {
+                if (messagesDiv.querySelector(`[data-interaction-id="${this.escapeAttr(info.requestId)}"]`)) {
+                    continue; // 幂等：同一交互不重复建卡
+                }
+                messagesDiv.appendChild(info.type === 'APPROVAL'
+                    ? this.buildRestoredApprovalCard(info)
+                    : this.buildRestoredAskCard(info));
+            }
+            if ((data.interactions || []).length > 0) {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+        } catch (e) {
+            console.warn('Failed to restore pending interactions:', e);
+        }
+    }
+
+    /**
+     * 构造恢复的审批卡（复用 hitl-card 样式；决策仍走 submitInteraction）。
+     */
+    buildRestoredApprovalCard(info) {
+        const card = document.createElement('div');
+        card.className = 'hitl-card hitl-approval';
+        card.dataset.interactionId = info.requestId;
+        card.innerHTML = `
+            <div class="hitl-head"><span class="hitl-icon">⚠️</span><span class="hitl-title">待审批（刷新前发起）</span></div>
+            ${info.reason ? `<div class="hitl-reason">${this.escapeHtml(info.reason)}</div>` : ''}
+            <pre class="hitl-command">${this.escapeHtml(info.prompt || '')}</pre>
+            <div class="hitl-actions">
+                <button class="btn btn-sm btn-danger" data-decision="deny">拒绝</button>
+                <button class="btn btn-sm btn-primary" data-decision="approve">批准执行</button>
+            </div>
+            <div class="hitl-status" style="display:none;"></div>`;
+        const setStatus = (text, cls) => {
+            const statusEl = card.querySelector('.hitl-status');
+            card.querySelectorAll('.hitl-actions button').forEach(b => { b.disabled = true; });
+            statusEl.textContent = text;
+            statusEl.className = 'hitl-status ' + (cls || '');
+            statusEl.style.display = 'block';
+        };
+        card.querySelectorAll('.hitl-actions button').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const approved = btn.dataset.decision === 'approve';
+                setStatus(approved ? '已批准，继续执行…' : '已拒绝', approved ? 'hitl-ok' : 'hitl-deny');
+                const ok = await this.submitInteraction(info.requestId, approved, null);
+                if (!ok) setStatus('审批已失效（可能已超时）', 'hitl-deny');
+            });
+        });
+        return card;
+    }
+
+    /**
+     * 构造恢复的提问卡（自由输入 + 选项按钮，决策走 submitInteraction）。
+     */
+    buildRestoredAskCard(info) {
+        const card = document.createElement('div');
+        card.className = 'hitl-card hitl-ask';
+        card.dataset.interactionId = info.requestId;
+        const options = Array.isArray(info.options) ? info.options : [];
+        const inputId = 'askuser_r_' + info.requestId;
+        const optionBtns = options.map((o, i) =>
+            `<button class="hitl-option" data-opt="${this.escapeAttr(String(i))}">${this.escapeHtml(o)}</button>`).join('');
+        card.innerHTML = `
+            <div class="hitl-head"><span class="hitl-icon">❓</span><span class="hitl-title">Agent 想向你确认（刷新前发起）</span></div>
+            <div class="hitl-question">${this.escapeHtml(info.prompt || '')}</div>
+            ${optionBtns ? `<div class="hitl-options">${optionBtns}</div>` : ''}
+            <div class="hitl-input-row">
+                <input type="text" class="form-control" id="${inputId}" placeholder="输入你的回答…" autocomplete="off">
+                <button class="btn btn-sm btn-primary" data-send="1">发送</button>
+            </div>
+            <div class="hitl-status" style="display:none;"></div>`;
+        const inputEl = card.querySelector('#' + inputId);
+        const setStatus = (text, cls) => {
+            const statusEl = card.querySelector('.hitl-status');
+            card.querySelectorAll('button, input').forEach(el => { el.disabled = true; });
+            statusEl.textContent = text;
+            statusEl.className = 'hitl-status ' + (cls || '');
+            statusEl.style.display = 'block';
+        };
+        const send = async (text) => {
+            if (!text || !text.trim()) return;
+            setStatus('已回答：' + text, 'hitl-ok');
+            const ok = await this.submitInteraction(info.requestId, true, text);
+            if (!ok) setStatus('提问已失效（可能已超时）', 'hitl-deny');
+        };
+        card.querySelectorAll('.hitl-option').forEach(btn => {
+            btn.addEventListener('click', () => send(options[Number(btn.dataset.opt)]));
+        });
+        card.querySelector('[data-send]').addEventListener('click', () => send(inputEl.value));
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); send(inputEl.value); }
+        });
+        return card;
     }
 
     /**
@@ -843,16 +1608,22 @@ class TinyClawConsole {
     async pollTaskCompletion() {
         const pollInterval = 3000;
         const maxConsecutiveFailures = 10;
+        // 会话快照：轮询针对创建时的会话；用户切走后停止操作 DOM，
+        // 切回时 loadChatHistory → checkAndRestoreRunningState 会重建运行横幅
+        const sessionKey = this.chatSessionId;
+        const statusUrl = '/api/chat/status?sessionId=' + encodeURIComponent(sessionKey);
         let failures = 0;
         const poll = async () => {
+            if (sessionKey !== this.chatSessionId) return; // 已切走：停止轮询
             try {
-                const response = await this.authFetch(this.chatStatusUrl());
+                const response = await this.authFetch(statusUrl);
                 if (!response.ok) {
                     throw new Error('status request failed: ' + response.status);
                 }
                 failures = 0;
                 const status = await response.json();
                 if (!status.running) {
+                    if (sessionKey !== this.chatSessionId) return; // 已切走：不动 DOM
                     // 任务已完成，恢复按钮状态
                     this.restoreChatInputAfterTask();
                     // 移除运行中提示
@@ -863,7 +1634,7 @@ class TinyClawConsole {
                     return;
                 }
                 // 任务仍在跑：同步刷一次阶段，让长任务的进展可见
-                this.fetchSessionProgress(this.chatSessionId)
+                this.fetchSessionProgress(sessionKey)
                     .then(progress => this.renderProgressIntoBanner(progress));
                 // 继续轮询
                 setTimeout(poll, pollInterval);
@@ -1618,17 +2389,31 @@ class TinyClawConsole {
     }
 
     /**
-     * 加载左侧历史聊天会话列表，按天分组折叠显示
+     * 加载左侧历史聊天会话列表，按天分组折叠显示。
+     * P4：置顶优先、归档默认隐藏（可切换显示）、自定义标题覆盖摘要标题。
      */
     async loadChatSessions() {
         try {
             const response = await this.authFetch('/api/sessions');
             const sessions = await response.json();
             
-            // 只显示 web: 开头的会话，按时间戳降序排列
+            // P5：缓存当前会话记忆模式（本轮上下文条与切换入口展示用）
+            const currentSession = sessions.find(s => s.key === this.chatSessionId);
+            const newMemoryMode = currentSession
+                ? (currentSession.memoryMode || 'DEFAULT') : 'DEFAULT';
+            if (newMemoryMode !== this._sessionMemoryMode) {
+                this._sessionMemoryMode = newMemoryMode;
+                // 模式变化（如别处切换后刷新列表）时同步重渲染本轮上下文条
+                if (this._lastContextUsed) this.renderContextUsedBar();
+            }
+            
+            // 只显示 web: 开头的会话；置顶 > 时间戳降序；归档默认隐藏（开关见侧栏底部）
+            const showArchived = this._showArchivedSessions === true;
             const webSessions = sessions
                 .filter(s => s.key.startsWith('web:'))
+                .filter(s => showArchived || !s.archived)
                 .sort((a, b) => {
+                    if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1; // 置顶优先
                     const tsA = parseInt(a.key.substring(4)) || 0;
                     const tsB = parseInt(b.key.substring(4)) || 0;
                     return tsB - tsA;
@@ -1664,7 +2449,8 @@ class TinyClawConsole {
                         <div class="chat-history-group-items">
                             ${groupSessions.map(s => {
                                 const isActive = s.key === this.chatSessionId;
-                                const title = this.extractChatTitle(s.key, s.firstMessage);
+                                // P4：自定义标题 > localStorage 缓存首条 > 摘要标题
+                                const title = s.displayTitle || this.extractChatTitle(s.key, s.firstMessage);
                                 // 后端在会话索引里带上了进度，侧栏据此直接标出“哪个会话在跑”
                                 const runningBadge = s.progress
                                     ? `<span class="history-running" title="${this.escapeHtml(s.progress.phase || '运行中')}"></span>`
@@ -1672,11 +2458,18 @@ class TinyClawConsole {
                                 const sharedBadge = s.visibility === 'SHARED'
                                     ? '<span class="history-shared" title="共享会话">◍</span>'
                                     : '';
+                                const pinnedBadge = s.pinned
+                                    ? '<span class="history-pinned" title="已置顶">📌</span>'
+                                    : '';
+                                const archivedBadge = s.archived
+                                    ? '<span class="history-archived" title="已归档">🗄</span>'
+                                    : '';
                                 return `
-                                    <div class="chat-history-item ${isActive ? 'active' : ''}" data-session="${this.escapeHtml(s.key)}">
-                                        ${runningBadge}
+                                    <div class="chat-history-item ${isActive ? 'active' : ''}${s.archived ? ' item-archived' : ''}" data-session="${this.escapeHtml(s.key)}">
+                                        ${pinnedBadge}${runningBadge}
                                         <span class="history-title">${this.escapeHtml(title)}</span>
-                                        ${sharedBadge}
+                                        ${archivedBadge}${sharedBadge}
+                                        <button class="history-menu" onclick="event.stopPropagation(); app.showSessionMenu('${this.escapeHtml(s.key)}', event)" title="整理选项">⋯</button>
                                         <button class="history-delete" onclick="event.stopPropagation(); app.deleteChatSession('${this.escapeHtml(s.key)}')" title="Delete">×</button>
                                     </div>
                                 `;
@@ -1705,11 +2498,18 @@ class TinyClawConsole {
                 });
             }
 
-            // 绑定点击事件
+            // 绑定点击与键盘事件（移动端抽屉内支持 Enter 键导航）
             historyDiv.querySelectorAll('.chat-history-item').forEach(item => {
+                item.setAttribute('tabindex', '0');
                 item.addEventListener('click', () => {
                     const sessionKey = item.dataset.session;
                     this.switchChatSession(sessionKey);
+                });
+                item.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.switchChatSession(item.dataset.session);
+                    }
                 });
             });
         } catch (error) {
@@ -1761,13 +2561,29 @@ class TinyClawConsole {
     }
 
     /**
+     * 把输入框当前正文保存为当前会话草稿（切走前调用，两会话草稿互不串写）。
+     */
+    saveCurrentInputAsDraft() {
+        const input = document.getElementById('chatInput');
+        if (input) this.saveDraft(input.value);
+    }
+
+    /**
      * 切换到指定聊天会话
      */
     switchChatSession(sessionKey) {
+        if (sessionKey === this.chatSessionId) return;
+        // 先保存旧会话草稿再切换，待上传图片/附件不跨会话残留
+        this.saveCurrentInputAsDraft();
         this.chatSessionId = sessionKey;
         localStorage.setItem('tinyclaw_chat_session', this.chatSessionId);
+        this.clearPendingImages();
+        this.clearPendingAttachments();
+        this.restoreDraft();
         this.loadChatHistory();
         this.loadChatSessions();
+        // 小屏抽屉中选中会话后自动收起
+        this.closeChatDrawer();
     }
 
     /**
@@ -1777,8 +2593,9 @@ class TinyClawConsole {
         if (!confirm('Delete this chat?')) return;
         try {
             await this.authFetch(`/api/sessions/${encodeURIComponent(key)}`, { method: 'DELETE' });
-            // 清除该会话缓存的标题
+            // 清除该会话缓存的标题与草稿
             localStorage.removeItem(`tinyclaw_title_${key}`);
+            try { localStorage.removeItem('tinyclaw_draft:' + key); } catch (e) { /* 忽略 */ }
             // 如果删除的是当前会话，切换到新会话
             if (key === this.chatSessionId) {
                 this.chatSessionId = 'web:default';
@@ -1789,6 +2606,171 @@ class TinyClawConsole {
             this.loadChatSessions();
         } catch (error) {
             console.error('Failed to delete chat session:', error);
+        }
+    }
+
+    // ==================== P4：会话整理（标题/置顶/归档） ====================
+
+    /** 归档可见开关（默认隐藏归档会话）。 */
+    _showArchivedSessions = false;
+
+    /**
+     * 会话整理菜单（重命名 / 置顶 / 归档 / 删除 / 记忆模式）：原生 confirm/prompt 保持零依赖。
+     */
+    async showSessionMenu(key) {
+        const memoryOff = (this._sessionMemoryMode === 'OFF' && key === this.chatSessionId);
+        const choice = prompt(`会话整理——输入序号：\n1 重命名\n2 置顶/取消置顶\n3 归档/取消归档\n4 查看/隐藏归档会话\n5 ${memoryOff ? '恢复使用长期记忆' : '不使用长期记忆（聊天历史仍会保存）'}\n6 设置/清除项目归属\n\n（删除请用条目右侧 ×）`, '');
+        if (choice === null) return;
+        const c = choice.trim();
+        if (c === '1') {
+            this.renameChatSession(key);
+        } else if (c === '2') {
+            await this.toggleSessionFlag(key, 'pinned');
+        } else if (c === '3') {
+            await this.toggleSessionFlag(key, 'archived');
+        } else if (c === '4') {
+            this._showArchivedSessions = !this._showArchivedSessions;
+            this.loadChatSessions();
+            this.showToast(this._showArchivedSessions ? '显示归档会话' : '隐藏归档会话', 'info');
+        } else if (c === '5') {
+            await this.toggleSessionMemoryMode(key);
+        } else if (c === '6') {
+            await this.assignSessionProject(key);
+        } else {
+            this.showToast('请输入 1-6 的序号', 'info');
+        }
+    }
+
+    /**
+     * P4：设置/清除会话的项目归属。一旦产生消息，归属固定（迁移需 fork 新会话）；
+     * 归属后项目指令与项目记忆域随会话注入。
+     */
+    async assignSessionProject(key) {
+        let projects = [];
+        try {
+            const resp = await this.authFetch('/api/projects');
+            if (resp.ok) {
+                const data = await resp.json();
+                projects = data.projects || [];
+            }
+        } catch (e) { /* 项目能力未启用时走空列表，仅支持清除归属 */ }
+        if (!projects.length) {
+            const clear = confirm('尚无可选项目（或项目能力未启用）。是否清除当前归属？');
+            if (clear) await this.applySessionProject(key, '');
+            return;
+        }
+        const menu = projects.map((p, i) => `${i + 1} ${p.name}${p.archived ? '（已归档）' : ''}`).join('\n');
+        const input = prompt(`设置项目归属（仅无消息会话可设置；产生消息后固定，迁移需 fork）：\n\n${menu}\n0 清除归属\n\n输入序号：`, '');
+        if (input === null) return;
+        const idx = parseInt(input.trim(), 10);
+        if (isNaN(idx)) { this.showToast('请输入序号', 'info'); return; }
+        if (idx === 0) {
+            await this.applySessionProject(key, '');
+        } else if (idx >= 1 && idx <= projects.length) {
+            await this.applySessionProject(key, projects[idx - 1].id);
+        } else {
+            this.showToast('序号超出范围', 'info');
+        }
+    }
+
+    /** 应用项目归属到服务端（PATCH /flags 的 projectId 字段）。 */
+    async applySessionProject(key, projectId) {
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(key)}/flags`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectId: projectId || null })
+            });
+            if (resp.ok) {
+                this.showToast(projectId ? '项目归属已设置' : '项目归属已清除', 'success');
+                this.loadChatSessions();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('设置失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误，设置失败', 'error');
+        }
+    }
+
+    /**
+     * P5：切换会话记忆模式（DEFAULT/OFF）。
+     * OFF 同时关闭该会话长期记忆自动检索与自动提取写入，仅影响后续轮次；
+     * 聊天历史仍正常保存（不使用隐身类命名）。手动在记忆管理页新增不受影响。
+     */
+    async toggleSessionMemoryMode(key) {
+        const target = this._sessionMemoryMode === 'OFF' ? 'DEFAULT' : 'OFF';
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(key)}/flags`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ memoryMode: target })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || ('HTTP ' + resp.status));
+            }
+            this._sessionMemoryMode = target;
+            if (key === this.chatSessionId) {
+                this.renderContextUsedBar();
+            }
+            this.loadChatSessions();
+            this.showToast(target === 'OFF'
+                ? '本会话不再使用长期记忆（仅后续轮次生效，聊天历史仍保存）'
+                : '本会话已恢复使用长期记忆', 'success');
+        } catch (e) {
+            this.showToast('切换记忆模式失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * 重命名会话：标题写入服务端（可重建，非仅 localStorage）；空输入回退默认标题。
+     */
+    async renameChatSession(key) {
+        const title = prompt('新的会话标题（留空恢复默认标题）：', '');
+        if (title === null) return; // 取消
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(key)}/flags`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ displayTitle: title })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || ('HTTP ' + resp.status));
+            }
+            this.loadChatSessions();
+            this.showToast(title.trim() ? '已重命名' : '已恢复默认标题', 'success');
+        } catch (e) {
+            this.showToast('重命名失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * 切换置顶/归档标记。
+     * @param {string} key 会话 key
+     * @param {'pinned'|'archived'} flag 目标标记
+     */
+    async toggleSessionFlag(key, flag) {
+        try {
+            const listResp = await this.authFetch('/api/sessions');
+            const sessions = listResp.ok ? await listResp.json() : [];
+            const current = sessions.find(s => s.key === key);
+            const nextValue = !((current && current[flag]) === true);
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(key)}/flags`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [flag]: nextValue })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || ('HTTP ' + resp.status));
+            }
+            this.loadChatSessions();
+            const labels = { pinned: '置顶', archived: '归档' };
+            this.showToast(nextValue ? `已${labels[flag]}` : `已取消${labels[flag]}`, 'success');
+        } catch (e) {
+            this.showToast('操作失败：' + e.message, 'error');
         }
     }
 
@@ -1803,9 +2785,22 @@ class TinyClawConsole {
         }
 
         const message = input.value.trim();
+        // P6：记录本轮用户消息（「设为周期任务」表单预填任务描述）
+        if (message) {
+            this._lastUserMessage = message;
+        }
         const hasImages = this.pendingImages.length > 0;
+        // P2：就绪附件随消息发送；存在未就绪附件时提示（不阻断，由用户决定）
+        const attachmentIds = this.readyAttachmentIds();
+        const notReady = this.pendingAttachments.filter(a => a.status !== 'READY').length;
         
-        if (!message && !hasImages) return;
+        if (!message && !hasImages && attachmentIds.length === 0) return;
+        if (notReady > 0) {
+            this.showToast(`${notReady} 个附件尚未就绪，本次将不包含它们`, 'info');
+        }
+
+        // 发送前先保存草稿：仅服务端确认接收后清空，失败时用于恢复输入
+        this.saveDraft(message);
 
         input.value = '';
         input.style.height = 'auto';
@@ -1832,10 +2827,21 @@ class TinyClawConsole {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ images: this.pendingImages })
                 });
+                if (!uploadResp.ok) throw new Error('HTTP ' + uploadResp.status);
                 const uploadResult = await uploadResp.json();
                 imagePaths = uploadResult.files || [];
+                if (imagePaths.length === 0) throw new Error('no files returned');
             } catch (err) {
                 console.error('Failed to upload images:', err);
+                // 上传失败：中止本次发送，恢复输入与待上传图片，不产生半成品消息
+                this.currentAbortController = null;
+                sendBtn.classList.remove('loading');
+                sendBtn.disabled = false;
+                sendBtn.textContent = '↑';
+                sendBtn.title = '';
+                this.restoreFailedInput(message);
+                this.showToast('图片上传失败：' + err.message + '，消息未发送', 'error');
+                return;
             }
         }
 
@@ -1856,13 +2862,18 @@ class TinyClawConsole {
         // Add user message (包含图片)
         this.addMessage(message, 'user', imagePaths);
         this.clearPendingImages();
+        // P2：附件已随请求发送，清空待发送列表
+        this.clearPendingAttachments();
 
         // Add assistant message placeholder for streaming
         const assistantDiv = document.createElement('div');
         assistantDiv.className = 'message assistant';
         assistantDiv.innerHTML = '<div class="message-content"></div>';
         messagesDiv.appendChild(assistantDiv);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        // 用户上滑阅读时新增占位气泡不强制拉底，新内容由流循环的徽标提示
+        if (this.isNearBottom(messagesDiv)) {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
 
         const contentDiv = assistantDiv.querySelector('.message-content');
 
@@ -2556,6 +3567,14 @@ class TinyClawConsole {
                     handleThinking(event);
                     break;
                 }
+                case 'RUN_STARTED': {
+                    // P1 执行身份元事件：记录 runId（刷新后凭会话恢复）；幂等命中时提示
+                    this._activeRunId = event.runId || null;
+                    if (event.duplicated) {
+                        this.showToast('该请求已在执行中，已忽略重复提交', 'info');
+                    }
+                    break;
+                }
                 case 'APPROVAL_REQUEST':
                     handleApprovalRequest(event);
                     break;
@@ -2686,17 +3705,28 @@ class TinyClawConsole {
         };
 
         try {
-            // 使用流式 API，包含图片路径
+            // 使用流式 API，包含图片路径；clientRequestId 为 P1 幂等键（双击/断线重发不重复执行）
+            const clientRequestId = this.newClientRequestId();
+            this._pendingClientRequestId = clientRequestId;
             const response = await this.authFetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     message, 
                     sessionId: this.chatSessionId,
-                    images: imagePaths.length > 0 ? imagePaths : undefined
+                    images: imagePaths.length > 0 ? imagePaths : undefined,
+                    clientRequestId,
+                    attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined
                 }),
                 signal: this.currentAbortController?.signal
             });
+            if (!response.ok || !response.body) {
+                // 提交被拒：忙碌（409）/未认证等；恢复输入，草稿仍在，可修改后重试
+                const errBody = await response.json().catch(() => ({}));
+                throw new Error(errBody.error || ('HTTP ' + response.status));
+            }
+            // 服务端已确认接收：清除草稿（失败恢复逻辑只在响应建立前生效）
+            this.clearDraft();
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -2731,7 +3761,12 @@ class TinyClawConsole {
                         // 每个 data: 行是一个完整的单行 JSON 事件，直接解析
                         handleSseEvent(data);
                     }
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    // 仅当用户停留在底部时自动滚动；上滑阅读历史不被新 token 拉到底
+                    if (this.isNearBottom(messagesDiv)) {
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } else {
+                        this.notifyNewStreamContent();
+                    }
                 }
             }
 
@@ -2745,6 +3780,10 @@ class TinyClawConsole {
             
             // 刷新左侧会话列表
             this.loadChatSessions();
+            // P3：流结束后同步服务端成果登记（本轮 write_file/edit_file 已落盘登记）
+            this.loadSessionArtifacts();
+            // P5：流结束后刷新本轮使用记忆（选中清单与真实注入同源）
+            this.loadMemoryUsed();
         } catch (error) {
             if (error.name === 'AbortError') {
                 // 用户主动中断，不显示错误
@@ -2752,6 +3791,10 @@ class TinyClawConsole {
             } else {
                 const textDiv = getOrCreateTextDiv();
                 textDiv.textContent = 'Error: ' + error.message;
+                // 发送失败：正文放回输入框（草稿已同步保存）。
+                // 不自动重发——连接中断时消息可能已送达，重发前需用户确认
+                this.restoreFailedInput(message);
+                this.showToast('发送失败：' + error.message + '，消息已恢复到输入框', 'error');
             }
         } finally {
             // 为流式 assistant 气泡挂载操作栏（复制/重新生成），并记录原始文本供复制使用。
@@ -2826,7 +3869,8 @@ class TinyClawConsole {
         div._rawContent = content || '';
         this.attachMessageActions(div, displayRole);
         messagesDiv.appendChild(div);
-        if (scroll) {
+        // 仅在用户处于底部时跟随滚动，上滑阅读不被新消息打断
+        if (scroll && this.isNearBottom(messagesDiv)) {
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
     }
@@ -2996,6 +4040,7 @@ class TinyClawConsole {
             }
             const input = document.getElementById('chatInput');
             input.value = replay.content;
+            this.saveDraft(replay.content);
             this.showToast('已在新分支重新生成', 'info');
             await this.sendMessage();
         } catch (e) {
@@ -3057,9 +4102,30 @@ class TinyClawConsole {
 
     // ==================== Artifacts（本次会话产生的文件） ====================
 
+    // P3：服务端登记的成果列表（ArtifactRecord 视图）
+    serverArtifacts = [];
+
     /**
-     * 从 TOOL_START 事件中提取 write_file/edit_file 的目标路径，登记为本次会话产物。
-     * 去重，并将最近触达的文件排到末尾。
+     * P3：从服务端加载会话的持久化成果（带加载序号守卫）。
+     * 接口不可用（旧版本）时静默降级为本地追踪。
+     */
+    async loadSessionArtifacts(loadSeq) {
+        try {
+            const resp = await this.authFetch('/api/artifacts?sessionId=' + encodeURIComponent(this.chatSessionId));
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (loadSeq !== undefined && loadSeq !== this._chatHistoryLoadSeq) return;
+            this.serverArtifacts = data.artifacts || [];
+            this.updateArtifactsBadge();
+        } catch (e) {
+            // 接口不可用（旧版本后端）：保持本地追踪
+        }
+    }
+
+    /**
+     * 从 TOOL_START 事件中提取 write_file/edit_file 的目标路径，本地即时提示。
+     * P3 起权威登记在服务端（写盘成功后记录）；本地列表仅用于流式过程中的即时角标，
+     * 流结束/刷新后由 loadSessionArtifacts 对齐服务端数据。
      */
     trackArtifact(event) {
         const tool = event && event.tool;
@@ -3073,31 +4139,178 @@ class TinyClawConsole {
         this.updateArtifactsBadge();
     }
 
-    /** 更新 Artifacts 按钮上的数量角标。 */
+    /** 更新 Artifacts 按钮上的数量角标（服务端登记数为准，本地仅兜底）。 */
     updateArtifactsBadge() {
         const badge = document.getElementById('artifactsBadge');
         if (!badge) return;
-        const n = this.sessionArtifacts.length;
+        const n = Math.max(this.serverArtifacts.length, this.sessionArtifacts.length);
         badge.textContent = String(n);
         badge.style.display = n > 0 ? 'inline-flex' : 'none';
     }
 
-    /** 打开 Artifacts 面板（模态），列出本次会话产生/修改的文件，点击可预览。 */
+    /** 打开 Artifacts 面板（模态）：服务端登记成果 + 版本预览/下载/继续修改。 */
     openArtifactsPanel() {
-        const items = this.sessionArtifacts;
-        const body = items.length === 0
+        const artifacts = this.serverArtifacts;
+        const localOnly = this.sessionArtifacts.filter(p =>
+            !artifacts.some(a => a.path && a.path.endsWith(p)));
+        const body = (artifacts.length === 0 && localOnly.length === 0)
             ? '<p class="empty-state">本次会话尚未产生文件。Agent 调用 write_file / edit_file 后会在此列出。</p>'
-            : `<div class="artifacts-list">${items.slice().reverse().map(p => `
-                <div class="artifact-item" data-path="${this.escapeAttr(p)}">
+            : `<div class="artifacts-list">${artifacts.map(a => this.renderArtifactItem(a)).join('')}
+                ${localOnly.map(p => `
+                <div class="artifact-item artifact-local" data-path="${this.escapeAttr(p)}">
                     <span class="artifact-icon">📄</span>
                     <span class="artifact-name">${this.escapeHtml(this.basename(p))}</span>
-                    <span class="artifact-path">${this.escapeHtml(p)}</span>
+                    <span class="artifact-path">${this.escapeHtml(p)}（待服务端登记）</span>
                 </div>`).join('')}</div>`;
         this.showModal('Artifacts · 本次会话文件', body, null);
         document.getElementById('modalConfirm').style.display = 'none';
-        document.querySelectorAll('#modalBody .artifact-item').forEach(el => {
+        document.querySelectorAll('#modalBody .artifact-item[data-id]').forEach(el => {
+            el.addEventListener('click', () => this.previewArtifactById(el.dataset.id));
+        });
+        document.querySelectorAll('#modalBody .artifact-item[data-path]').forEach(el => {
             el.addEventListener('click', () => this.previewArtifact(el.dataset.path));
         });
+    }
+
+    /**
+     * P3：渲染单个服务端登记成果条目（版本数 / 存在性 / 继续修改入口）。
+     */
+    renderArtifactItem(a) {
+        const missing = a.exists === false;
+        const rev = a.revision || 1;
+        return `
+                <div class="artifact-item ${missing ? 'artifact-missing' : ''}" data-id="${this.escapeAttr(a.id)}">
+                    <span class="artifact-icon">${missing ? '🩶' : '📄'}</span>
+                    <span class="artifact-name">${this.escapeHtml(a.name || '')}</span>
+                    <span class="artifact-path">${this.escapeHtml(a.path || '')}</span>
+                    <span class="artifact-rev" title="写入版本数">v${rev}</span>
+                    ${missing ? '<span class="artifact-missing-tag">原文件已移除</span>' : ''}
+                </div>`;
+    }
+
+    /**
+     * P3：按成果 ID 预览：拉取版本列表与当前内容，Markdown 渲染 + 版本切换 + 下载 + 继续修改。
+     */
+    async previewArtifactById(id) {
+        let artifact = (this.serverArtifacts || []).find(a => a.id === id);
+        if (!artifact) {
+            // P6：Cron 历史等场景引用的成果不在当前会话缓存中，从服务端拉取详情
+            try {
+                const resp = await this.authFetch(`/api/artifacts/${encodeURIComponent(id)}`);
+                if (!resp.ok) {
+                    this.showToast('成果不存在或已清理 (' + resp.status + ')', 'error');
+                    return;
+                }
+                artifact = await resp.json();
+            } catch (e) {
+                this.showToast('拉取成果失败：' + e.message, 'error');
+                return;
+            }
+        }
+        try {
+            const [contentResp, versionsResp] = await Promise.allSettled([
+                this.authFetch(`/api/artifacts/${encodeURIComponent(id)}/content?revision=0`),
+                this.authFetch(`/api/artifacts/${encodeURIComponent(id)}/versions`)
+            ]);
+            const contentData = contentResp.status === 'fulfilled' && contentResp.value.ok
+                ? await contentResp.value.json() : null;
+            const versionsData = versionsResp.status === 'fulfilled' && versionsResp.value.ok
+                ? await versionsResp.value.json() : null;
+            const versions = (versionsData && versionsData.versions) || [];
+            const content = contentData && contentData.content;
+            const isMd = (artifact.mediaType || '').includes('markdown');
+            const rendered = content != null
+                ? (isMd && typeof marked !== 'undefined'
+                    ? `<div class="markdown-body artifact-preview-md">${marked.parse(content)}</div>`
+                    : `<pre class="artifact-preview">${this.escapeHtml(content)}</pre>`)
+                : `<p class="empty-state">${this.escapeHtml(contentData && contentData.error || '内容不可预览（可能为二进制或原文件已移除），可下载历史版本。')}</p>`;
+            const versionOptions = versions.map(v =>
+                `<option value="${v.revision}" ${v.isCurrent ? 'selected' : ''}>v${v.revision}${v.isCurrent ? '（当前）' : ''}</option>`).join('');
+            const title = this.basename(artifact.path);
+            this.showModal(`${title} · v${artifact.revision}`, `
+                <div class="artifact-viewer">
+                    <div class="artifact-viewer-toolbar">
+                        <select class="form-control artifact-version-select" id="artifactVersionSelect">${versionOptions}</select>
+                        <button class="btn btn-secondary btn-sm" id="artifactDownloadBtn">下载此版本</button>
+                        <button class="btn btn-primary btn-sm" id="artifactContinueBtn">继续修改</button>
+                    </div>
+                    ${rendered}
+                </div>`, null);
+            document.getElementById('modalConfirm').style.display = 'none';
+            const select = document.getElementById('artifactVersionSelect');
+            if (select) select.addEventListener('change', () => this.previewArtifactVersion(id, select.value));
+            const dl = document.getElementById('artifactDownloadBtn');
+            if (dl) dl.addEventListener('click', () => this.downloadArtifact(id, select ? select.value : '0'));
+            const cont = document.getElementById('artifactContinueBtn');
+            if (cont) cont.addEventListener('click', () => this.continueEditingArtifact(artifact));
+        } catch (e) {
+            this.showToast('预览失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * P3：切换版本重新拉取内容并更新模态体。
+     */
+    async previewArtifactVersion(id, revision) {
+        try {
+            const resp = await this.authFetch(`/api/artifacts/${encodeURIComponent(id)}/content?revision=${encodeURIComponent(revision)}`);
+            const data = await resp.json();
+            const container = document.querySelector('#modalBody .artifact-viewer');
+            if (!container) return;
+            const preview = container.querySelector('.artifact-preview, .artifact-preview-md');
+            if (!resp.ok || data.content == null) {
+                if (preview) preview.outerHTML = `<p class="empty-state">${this.escapeHtml(data.error || '该版本不可预览')}</p>`;
+                return;
+            }
+            const isMd = data.mediaType && data.mediaType.includes('markdown');
+            const html = isMd && typeof marked !== 'undefined'
+                ? `<div class="markdown-body artifact-preview-md">${marked.parse(data.content)}</div>`
+                : `<pre class="artifact-preview">${this.escapeHtml(data.content)}</pre>`;
+            if (preview) preview.outerHTML = html;
+        } catch (e) {
+            this.showToast('版本加载失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * P3：下载指定版本（认证 fetch 取 Blob，凭据不进 URL）。
+     */
+    async downloadArtifact(id, revision) {
+        try {
+            const resp = await this.authFetch(`/api/artifacts/${encodeURIComponent(id)}/download?revision=${encodeURIComponent(revision)}`);
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('下载失败 (' + resp.status + ')'), 'error');
+                return;
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = this.basename(this.serverArtifacts.find(x => x.id === id)?.path || `artifact-${id}`);
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (e) {
+            this.showToast('下载失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * P3：“继续修改”：把文件路径与当前版本塞进输入框模板，走正常聊天链路。
+     */
+    continueEditingArtifact(artifact) {
+        const input = document.getElementById('chatInput');
+        if (!input) return;
+        const template = `请继续修改文件 ${artifact.path}（当前 v${artifact.revision}）。要求：`;
+        input.value = template;
+        input.focus();
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+        this.saveDraft(template);
+        this.hideModal();
+        this.showToast('已填入修改请求模板，补充要求后发送', 'info');
     }
 
     /**
@@ -3148,8 +4361,11 @@ class TinyClawConsole {
 
     // ==================== Memory（长期记忆管理） ====================
 
+    /** 记忆列表筛选与分页状态（P5：可控记忆——筛选/分页在服务端执行）。 */
+    _memoryFilters = { q: '', scope: '', source: '', offset: 0, limit: 50 };
+
     /**
-     * 加载记忆页：绑定工具栏按钮并拉取记忆条目列表。
+     * 加载记忆页：绑定筛选栏与工具栏按钮，携带筛选/分页参数拉取记忆条目列表。
      * 记忆系统未就绪（501）时展示提示而非报错。
      */
     async loadMemory() {
@@ -3157,13 +4373,21 @@ class TinyClawConsole {
         const refreshBtn = document.getElementById('refreshMemoryBtn');
         if (addBtn) addBtn.onclick = () => this.showMemoryForm(null);
         if (refreshBtn) refreshBtn.onclick = () => this.loadMemory();
+        this.bindMemoryFilters();
 
         const list = document.getElementById('memoryList');
         if (!list) return;
         try {
-            const resp = await this.authFetch('/api/memory');
+            const params = new URLSearchParams();
+            if (this._memoryFilters.q) params.set('q', this._memoryFilters.q);
+            if (this._memoryFilters.scope) params.set('scope', this._memoryFilters.scope);
+            if (this._memoryFilters.source) params.set('source', this._memoryFilters.source);
+            params.set('limit', String(this._memoryFilters.limit));
+            params.set('offset', String(this._memoryFilters.offset));
+            const resp = await this.authFetch('/api/memory?' + params.toString());
             if (resp.status === 501) {
                 list.innerHTML = '<p class="empty-state">记忆系统未就绪（provider 未初始化）。</p>';
+                this.renderMemoryPagination({ total: 0 });
                 return;
             }
             if (!resp.ok) {
@@ -3172,13 +4396,82 @@ class TinyClawConsole {
             }
             const data = await resp.json();
             this.renderMemory(data.entries || []);
+            this.renderMemoryPagination(data);
         } catch (e) {
             list.innerHTML = '<p class="empty-state">加载失败：' + this.escapeHtml(e.message) + '</p>';
         }
     }
 
     /**
+     * 绑定筛选栏控件（关键词/归属域/来源/每页条数/筛选/重置）。
+     * scope 与 source 下拉选项从当前列表数据动态收集，避免硬编码。
+     */
+    bindMemoryFilters() {
+        if (this._memoryFiltersBound) return;
+        const search = document.getElementById('memorySearchInput');
+        const scope = document.getElementById('memoryScopeSelect');
+        const source = document.getElementById('memorySourceSelect');
+        const pageSize = document.getElementById('memoryPageSizeSelect');
+        const filterBtn = document.getElementById('memoryFilterBtn');
+        const resetBtn = document.getElementById('memoryFilterResetBtn');
+        if (!filterBtn) return;
+        filterBtn.addEventListener('click', () => {
+            this._memoryFilters.q = search ? search.value.trim() : '';
+            this._memoryFilters.scope = scope ? scope.value : '';
+            this._memoryFilters.source = source ? source.value : '';
+            this._memoryFilters.offset = 0;
+            this.loadMemory();
+        });
+        if (search) search.addEventListener('keydown', e => {
+            if (e.key === 'Enter') filterBtn.click();
+        });
+        if (resetBtn) resetBtn.addEventListener('click', () => {
+            if (search) search.value = '';
+            if (scope) scope.value = '';
+            if (source) source.value = '';
+            this._memoryFilters = { q: '', scope: '', source: '', offset: 0, limit: this._memoryFilters.limit };
+            this.loadMemory();
+        });
+        if (pageSize) pageSize.addEventListener('change', () => {
+            this._memoryFilters.limit = parseInt(pageSize.value, 10) || 50;
+            this._memoryFilters.offset = 0;
+            this.loadMemory();
+        });
+        this._memoryFiltersBound = true;
+    }
+
+    /**
+     * 渲染记忆分页条（上一页/下一页 + 过滤后总数）。offset 超界时服务端已铻制。
+     */
+    renderMemoryPagination(data) {
+        const pager = document.getElementById('memoryPagination');
+        if (!pager) return;
+        const total = data.total || 0;
+        const offset = data.offset || 0;
+        const limit = data.limit || this._memoryFilters.limit;
+        if (total === 0) { pager.innerHTML = ''; return; }
+        const from = offset + 1;
+        const to = Math.min(offset + limit, total);
+        const hasPrev = offset > 0;
+        const hasNext = offset + limit < total;
+        pager.innerHTML = `
+            <button class="btn btn-secondary btn-sm" data-act="prev" ${hasPrev ? '' : 'disabled'}>← Prev</button>
+            <span class="memory-page-info">${from}-${to} / ${total}</span>
+            <button class="btn btn-secondary btn-sm" data-act="next" ${hasNext ? '' : 'disabled'}>Next →</button>`;
+        pager.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.disabled) return;
+                const delta = btn.dataset.act === 'prev' ? -limit : limit;
+                this._memoryFilters.offset = Math.max(0, offset + delta);
+                this.loadMemory();
+            });
+        });
+    }
+
+    /**
      * 渲染记忆条目列表，采用事件委托绑定编辑/删除（避免 id 拼接进 onclick 字符串）。
+     * 带有 sourceSessionKey 的条目展示可点击的来源会话徽标，点击前先经服务端查询确认
+     * 会话存在（合法 ID 关联），不存在则提示“来源会话已不存在”。
      */
     renderMemory(entries) {
         const list = document.getElementById('memoryList');
@@ -3187,6 +4480,7 @@ class TinyClawConsole {
             list.innerHTML = '<p class="empty-state">暂无记忆条目</p>';
             return;
         }
+        this.refreshMemoryFilterOptions(entries);
         list.innerHTML = entries.map(e => {
             const tags = Array.isArray(e.tags) ? e.tags : [];
             const tagsHtml = tags.length
@@ -3194,12 +4488,16 @@ class TinyClawConsole {
                 : '';
             const imp = e.importance != null ? Number(e.importance).toFixed(2) : '—';
             const when = e.createdAt ? this.timeAgo(Date.parse(e.createdAt)) : '';
+            const origin = e.sourceSessionKey
+                ? `<button class="memory-origin" data-origin="${this.escapeAttr(e.sourceSessionKey)}" title="跳转到来源会话">来源会话 ${this.escapeHtml(e.sourceSessionKey)}</button>`
+                : '';
             return `
             <div class="memory-item" data-id="${this.escapeAttr(e.id)}">
                 <div class="memory-item-head">
                     <span class="badge badge-outline">${this.escapeHtml(e.scope || 'global')}</span>
                     <span class="memory-imp">重要度 ${imp}</span>
                     <span class="memory-meta">${this.escapeHtml(e.source || '')}${when ? ' · ' + when : ''}</span>
+                    ${origin}
                 </div>
                 <div class="memory-content">${this.escapeHtml(e.content || '')}</div>
                 ${tagsHtml}
@@ -3217,16 +4515,89 @@ class TinyClawConsole {
             if (editBtn) editBtn.addEventListener('click', () => this.showMemoryForm(entry));
             if (delBtn) delBtn.addEventListener('click', () => this.deleteMemory(id));
         });
+        list.querySelectorAll('.memory-origin').forEach(btn => {
+            btn.addEventListener('click', () => this.jumpToMemoryOrigin(btn.dataset.origin));
+        });
     }
 
     /**
-     * 弹出记忆表单：entry 为 null 时新增，否则编辑。保存后刷新列表。
+     * 从当前页数据动态补充 scope/source 下拉选项（保留选中值，只加不删）。
+     */
+    refreshMemoryFilterOptions(entries) {
+        const scopeSelect = document.getElementById('memoryScopeSelect');
+        const sourceSelect = document.getElementById('memorySourceSelect');
+        if (scopeSelect) {
+            const known = new Set(Array.from(scopeSelect.options).map(o => o.value));
+            entries.forEach(e => {
+                const v = String(e.scope || '').trim();
+                if (v && !known.has(v)) {
+                    known.add(v);
+                    scopeSelect.add(new Option(v, v));
+                }
+            });
+            scopeSelect.value = this._memoryFilters.scope;
+        }
+        if (sourceSelect) {
+            const known = new Set(Array.from(sourceSelect.options).map(o => o.value));
+            entries.forEach(e => {
+                const v = String(e.source || '').trim();
+                if (v && !known.has(v)) {
+                    known.add(v);
+                    sourceSelect.add(new Option(v, v));
+                }
+            });
+            sourceSelect.value = this._memoryFilters.source;
+        }
+    }
+
+    /**
+     * 跳转到记忆的来源会话：先服务端查询会话存在再切换（不接受任意路径）。
+     * 会话已删除时提示而不报错。
+     */
+    async jumpToMemoryOrigin(sessionKey) {
+        if (!sessionKey) return;
+        if (sessionKey === this.chatSessionId) {
+            this.showToast('当前就在该会话中', 'info');
+            return;
+        }
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(sessionKey)}`);
+            if (resp.status === 404) {
+                this.showToast('来源会话已不存在（历史来源未记录或已删除）', 'error');
+                return;
+            }
+            if (!resp.ok) {
+                this.showToast('查询来源会话失败 (' + resp.status + ')', 'error');
+                return;
+            }
+            this.navigateTo('chat');
+            this.switchChatSession(sessionKey);
+            this.showToast('已切换到来源会话', 'success');
+        } catch (e) {
+            this.showToast('查询来源会话失败：' + e.message, 'error');
+        }
+    }
+
+    /**
+     * 弹出记忆表单：entry 为 null 时新增，否则编辑。新增时可选填来源会话
+     * （默认带出当前聊天会话，方便回溯），编辑时来源会话不可改（避免误改回溯链）。保存后刷新列表。
      */
     showMemoryForm(entry) {
         const isEdit = !!entry;
         const content = isEdit ? (entry.content || '') : '';
         const importance = isEdit && entry.importance != null ? entry.importance : 0.5;
         const tags = isEdit && Array.isArray(entry.tags) ? entry.tags.join(', ') : '';
+        const defaultSessionKey = (!isEdit && this.chatSessionId) ? this.chatSessionId : '';
+        const originField = isEdit
+            ? (entry.sourceSessionKey
+                ? `<div class="form-group"><label>Source Session</label>
+                    <input class="form-control" value="${this.escapeAttr(entry.sourceSessionKey)}" readonly>
+                 </div>`
+                : '<p class="form-hint">历史来源未记录</p>')
+            : `<div class="form-group">
+                    <label>Source Session (optional)</label>
+                    <input id="memSourceSession" type="text" class="form-control" value="${this.escapeAttr(defaultSessionKey)}" placeholder="e.g. ${this.escapeAttr(this.chatSessionId || 'web:default')}">
+                </div>`;
         this.showModal(isEdit ? 'Edit Memory' : 'Add Memory', `
             <div class="form-group">
                 <label>Content</label>
@@ -3240,21 +4611,29 @@ class TinyClawConsole {
                 <label>Tags (comma separated)</label>
                 <input id="memTags" type="text" class="form-control" value="${this.escapeAttr(tags)}">
             </div>
+            ${originField}
         `, async () => {
             const c = document.getElementById('memContent').value.trim();
             if (!c) { this.showToast('内容不能为空', 'error'); return; }
             const imp = parseFloat(document.getElementById('memImportance').value || '0.5');
             const tagList = document.getElementById('memTags').value.split(',').map(s => s.trim()).filter(Boolean);
+            const payload = { content: c, importance: imp, tags: tagList };
+            const sessionInput = document.getElementById('memSourceSession');
+            if (sessionInput && sessionInput.value.trim()) {
+                payload.sourceSessionKey = sessionInput.value.trim();
+            }
             const url = isEdit ? `/api/memory/${encodeURIComponent(entry.id)}` : '/api/memory';
             const method = isEdit ? 'PUT' : 'POST';
             const resp = await this.authFetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: c, importance: imp, tags: tagList })
+                body: JSON.stringify(payload)
             });
             if (resp.ok) {
                 this.showToast(isEdit ? '记忆已更新' : '记忆已添加', 'success');
                 this.loadMemory();
+                // P5：聊天内纠正后同步刷新本轮使用面板（仅影响后续轮次）
+                this.loadMemoryUsed();
             } else {
                 const err = await resp.json().catch(() => ({}));
                 this.showToast(err.error || ('保存失败 (' + resp.status + ')'), 'error');
@@ -3274,12 +4653,203 @@ class TinyClawConsole {
             if (resp.ok) {
                 this.showToast('记忆已删除', 'success');
                 this.loadMemory();
+                // P5：聊天内删除后同步刷新本轮使用面板（仅影响后续轮次）
+                this.loadMemoryUsed();
             } else {
                 const err = await resp.json().catch(() => ({}));
                 this.showToast(err.error || ('删除失败 (' + resp.status + ')'), 'error');
             }
         } catch (e) {
             this.showToast('网络错误，删除失败', 'error');
+        }
+    }
+
+    // ==================== Projects（项目空间，P4） ====================
+
+    /**
+     * 加载项目列表：项目 = 名称 + 指令 + 显式共享的资料引用，供长期工作组织。
+     * 项目页不替代全局核心文件编辑器（workspace 页职责不变）。
+     */
+    async loadProjects() {
+        const addBtn = document.getElementById('addProjectBtn');
+        const refreshBtn = document.getElementById('refreshProjectsBtn');
+        if (addBtn) addBtn.onclick = () => this.showProjectForm(null);
+        if (refreshBtn) refreshBtn.onclick = () => this.loadProjects();
+
+        const list = document.getElementById('projectList');
+        if (!list) return;
+        try {
+            const resp = await this.authFetch('/api/projects');
+            if (!resp.ok) {
+                list.innerHTML = '<p class="empty-state">加载失败 (' + resp.status + ')。若为 404，说明本实例未启用项目能力。</p>';
+                return;
+            }
+            const data = await resp.json();
+            this.renderProjects(data.projects || []);
+        } catch (e) {
+            list.innerHTML = '<p class="empty-state">加载失败：' + this.escapeHtml(e.message) + '</p>';
+        }
+    }
+
+    /** 渲染项目卡片（指令折叠展示；归档半透明；提供归属会话查看入口）。 */
+    renderProjects(projects) {
+        const list = document.getElementById('projectList');
+        if (!list) return;
+        if (!projects.length) {
+            list.innerHTML = '<p class="empty-state">暂无项目——新建一个把长期工作的指令与资料组织起来。</p>';
+            return;
+        }
+        list.innerHTML = projects.map(p => {
+            const instructions = p.instructions
+                ? `<details class="project-instructions"><summary>项目指令</summary><pre>${this.escapeHtml(p.instructions)}</pre></details>`
+                : '<p class="form-hint">未设置项目指令</p>';
+            const archivedBadge = p.archived ? '<span class="badge badge-outline">已归档</span>' : '';
+            return `
+            <div class="project-item${p.archived ? ' item-archived' : ''}" data-id="${this.escapeAttr(p.id)}">
+                <div class="project-item-head">
+                    <span class="project-name">${this.escapeHtml(p.name)}</span>
+                    ${archivedBadge}
+                    <span class="project-meta">rev ${p.revision} · 资料 ${p.resourceCount} 个 · 更新于 ${this.timeAgo(Date.parse(p.updatedAt))}</span>
+                </div>
+                ${instructions}
+                <div class="project-actions">
+                    <button class="btn btn-text btn-sm" data-act="edit">编辑</button>
+                    <button class="btn btn-text btn-sm" data-act="sessions">会话</button>
+                    <button class="btn btn-text btn-sm" data-act="archive">${p.archived ? '取消归档' : '归档'}</button>
+                    <button class="btn btn-text btn-danger btn-sm" data-act="delete">删除</button>
+                </div>
+            </div>`;
+        }).join('');
+        list.querySelectorAll('.project-item').forEach(item => {
+            const id = item.dataset.id;
+            const project = projects.find(x => String(x.id) === String(id));
+            if (!project) return;
+            item.querySelector('[data-act="edit"]').addEventListener('click', () => this.showProjectForm(project));
+            item.querySelector('[data-act="sessions"]').addEventListener('click', () => this.showProjectSessions(project));
+            item.querySelector('[data-act="archive"]').addEventListener('click', () => this.toggleProjectArchived(project));
+            item.querySelector('[data-act="delete"]').addEventListener('click', () => this.deleteProject(project));
+        });
+    }
+
+    /** 新建/编辑项目表单（名称必填、指令可选）。 */
+    showProjectForm(project) {
+        const isEdit = !!project;
+        const name = isEdit ? (project.name || '') : '';
+        const instructions = isEdit ? (project.instructions || '') : '';
+        this.showModal(isEdit ? 'Edit Project' : 'New Project', `
+            <div class="form-group">
+                <label>Name</label>
+                <input id="projName" type="text" class="form-control" value="${this.escapeAttr(name)}" maxlength="100">
+            </div>
+            <div class="form-group">
+                <label>Instructions（仅本项目会话生效；与全局安全限制冲突时以后者为准）</label>
+                <textarea id="projInstructions" class="form-control" rows="6" style="width:100%;resize:vertical;">${this.escapeHtml(instructions)}</textarea>
+            </div>
+        `, async () => {
+            const n = document.getElementById('projName').value.trim();
+            if (!n) { this.showToast('名称不能为空', 'error'); return; }
+            const ins = document.getElementById('projInstructions').value.trim();
+            const url = isEdit ? `/api/projects/${encodeURIComponent(project.id)}` : '/api/projects';
+            const method = isEdit ? 'PUT' : 'POST';
+            const resp = await this.authFetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: n, instructions: ins })
+            });
+            if (resp.ok) {
+                this.showToast(isEdit ? '项目已更新' : '项目已创建', 'success');
+                this.loadProjects();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('保存失败 (' + resp.status + ')'), 'error');
+            }
+        });
+        document.getElementById('modalConfirm').textContent = 'Save';
+        document.getElementById('modalConfirm').style.display = 'block';
+    }
+
+    /** 归档开关（归档不删除任何资源）。 */
+    async toggleProjectArchived(project) {
+        try {
+            const resp = await this.authFetch(`/api/projects/${encodeURIComponent(project.id)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ archived: !project.archived })
+            });
+            if (resp.ok) {
+                this.loadProjects();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('操作失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误', 'error');
+        }
+    }
+
+    /**
+     * 删除项目：先展示影响（归属会话数/资料引用数），确认后才删。
+     * 删除只解除引用：附件物理文件与会话转录均保留。
+     */
+    async deleteProject(project) {
+        try {
+            // 先查归属会话数作为影响提示
+            const sessResp = await this.authFetch('/api/sessions?projectId='
+                + encodeURIComponent(project.id));
+            let sessionCount = 0;
+            if (sessResp.ok) {
+                const arr = await sessResp.json();
+                sessionCount = Array.isArray(arr) ? arr.length : 0;
+            }
+            const ok = confirm(`删除项目「${project.name}」？\n\n影响：\n- 归属会话 ${sessionCount} 个（转录保留，仅不再注入项目指令）\n- 资料引用 ${project.resourceCount} 个（附件文件保留）\n\n此操作不可撤销。`);
+            if (!ok) return;
+            const resp = await this.authFetch(
+                `/api/projects/${encodeURIComponent(project.id)}?confirm=true`, { method: 'DELETE' });
+            if (resp.ok) {
+                const result = await resp.json();
+                this.showToast(`项目已删除（解除资料引用 ${result.releasedResources || 0} 个；附件与会话保留）`, 'success');
+                this.loadProjects();
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('删除失败 (' + resp.status + ')'), 'error');
+            }
+        } catch (e) {
+            this.showToast('网络错误，删除失败', 'error');
+        }
+    }
+
+    /**
+     * 查看项目归属会话（服务端按 projectId 过滤）；提供切换入口。
+     */
+    async showProjectSessions(project) {
+        try {
+            const resp = await this.authFetch('/api/sessions?projectId='
+                + encodeURIComponent(project.id));
+            if (!resp.ok) { this.showToast('查询归属会话失败 (' + resp.status + ')', 'error'); return; }
+            const sessions = await resp.json();
+            const items = (sessions || [])
+                .filter(s => s.key && s.key.startsWith('web:'))
+                .map(s => {
+                    const title = s.displayTitle || this.extractChatTitle(s.key, s.firstMessage);
+                    return `<div class="chat-history-item" data-key="${this.escapeAttr(s.key)}">
+                        <span class="history-title">${this.escapeHtml(title)}</span>
+                        <span class="project-meta">${s.messageCount || 0} 条 · ${this.timeAgo(Date.parse(s.updated))}</span>
+                    </div>`;
+                }).join('');
+            const body = items
+                ? `<p class="form-hint">点击切换到该会话（项目指令与项目记忆域随会话归属注入）。</p><div class="project-session-list">${items}</div>`
+                : '<p class="empty-state">该项目还没有归属会话。新建会话时可通过会话菜单（⋯ → 6）设置归属。</p>';
+            this.showModal(`项目会话 · ${this.escapeHtml(project.name)}`, body, null);
+            document.getElementById('modalConfirm').style.display = 'none';
+            document.querySelectorAll('.project-session-list .chat-history-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    this.hideModal();
+                    this.navigateTo('chat');
+                    this.switchChatSession(item.dataset.key);
+                });
+            });
+        } catch (e) {
+            this.showToast('查询归属会话失败：' + e.message, 'error');
         }
     }
 
@@ -3732,26 +5302,41 @@ class TinyClawConsole {
             list.innerHTML = jobs.map(job => {
                 const lastBadge = job.lastStatus
                     ? `<span class="badge ${this.cronStatusBadge(job.lastStatus)}">${job.lastStatus}</span>` : '';
+                // P6：执行模式徽标（继续同会话模式明示，避免误以为后台默默追加当前会话）
+                const runModeBadge = job.runMode === 'CONTINUE_SESSION'
+                    ? '<span class="badge badge-outline" title="继续同一专用会话（忙碌时跳过本轮）">继续会话</span>' : '';
                 const history = job.history || [];
-                const historyRows = history.map(r => `
+                const historyRows = history.map(r => {
+                    // P6：会话跳转与成果徽标（生成成功≠消息已送达，分开展示）
+                    const sessionLink = r.sessionKey
+                        ? `<button class="cron-history-session" title="查看执行会话" data-session="${this.escapeAttr(r.sessionKey)}">${this.escapeHtml(r.sessionKey)}</button>`
+                        : '';
+                    const artifactBadges = (r.artifactIds || []).map(aid =>
+                        `<button class="cron-history-artifact" title="预览成果 ${this.escapeAttr(aid)}" data-artifact="${this.escapeAttr(aid)}">🗂 ${this.escapeHtml(aid)}</button>`).join('');
+                    const deliveryBadge = r.deliveryStatus
+                        ? `<span class="badge ${r.deliveryStatus === 'generated' ? 'badge-outline' : 'badge-disabled'}" title="生成成功≠消息已送达：投递由通道异步承担，需通道回执确认">投递:${r.deliveryStatus}</span>`
+                        : '';
+                    return `
                     <div class="cron-history-row">
                         <span class="cron-history-time">${this.formatDateTime(r.startedAtMs)}</span>
                         <span class="badge ${this.cronStatusBadge(r.status)}">${r.status}</span>
                         <span class="cron-history-trigger">${r.trigger}</span>
                         <span class="cron-history-duration">${(r.durationMs / 1000).toFixed(1)}s</span>
+                        ${deliveryBadge}${sessionLink}${artifactBadges}
                         <span class="cron-history-error" title="${this.escapeHtml(r.error || '')}">${this.escapeHtml(r.error || '')}</span>
-                    </div>`).join('');
+                    </div>`;
+                }).join('');
                 return `
                 <div class="cron-entry">
                     <div class="cron-item">
                         <div class="cron-info">
-                            <div class="cron-name">${this.escapeHtml(job.name)} ${lastBadge}</div>
-                            <div class="cron-meta">${this.escapeHtml(job.schedule)} • ${this.escapeHtml(job.message.substring(0, 50))}... • last run: ${job.lastRun ? this.formatDateTime(job.lastRun) : 'never'}${job.lastError ? ' • ' + this.escapeHtml(job.lastError) : ''}</div>
+                            <div class="cron-name">${this.escapeHtml(job.name)} ${lastBadge}${runModeBadge}</div>
+                            <div class="cron-meta">${this.escapeHtml(job.schedule)}${job.tz ? ' (' + this.escapeHtml(job.tz) + ')' : ''} • ${this.escapeHtml((job.message || '').substring(0, 50))}... • last run: ${job.lastRun ? this.formatDateTime(job.lastRun) : 'never'}${job.lastError ? ' • ' + this.escapeHtml(job.lastError) : ''}</div>
                         </div>
                         <span class="badge ${job.enabled ? 'badge-success' : 'badge-disabled'}">${job.enabled ? 'Enabled' : 'Disabled'}</span>
                         <div class="cron-actions">
                             <button class="btn btn-secondary btn-sm" onclick="app.editCronJob('${job.id}')">Edit</button>
-                            <button class="btn btn-secondary btn-sm" onclick="app.runCronJob('${job.id}')">Run</button>
+                            <button class="btn btn-secondary btn-sm" onclick="app.runCronJob('${job.id}')" title="手动重试会产生新的执行实例">Run</button>
                             <button class="btn btn-secondary btn-sm" onclick="app.toggleCronHistory('${job.id}')">History (${history.length})</button>
                             <button class="btn btn-secondary btn-sm" onclick="app.toggleCronJob('${job.id}', ${!job.enabled})">${job.enabled ? 'Disable' : 'Enable'}</button>
                             <button class="btn btn-secondary btn-sm" onclick="app.deleteCronJob('${job.id}')">Delete</button>
@@ -3762,6 +5347,13 @@ class TinyClawConsole {
                     </div>
                 </div>`;
             }).join('');
+            // P6：历史行交互——会话跳转 / 成果预览（事件委托，避免 id 拼接）
+            list.querySelectorAll('.cron-history-session').forEach(btn => {
+                btn.addEventListener('click', () => this.openCronRunSession(btn.dataset.session));
+            });
+            list.querySelectorAll('.cron-history-artifact').forEach(btn => {
+                btn.addEventListener('click', () => this.previewArtifactById(btn.dataset.artifact));
+            });
         } catch (error) {
             console.error('Failed to load cron jobs:', error);
         }
@@ -3769,71 +5361,309 @@ class TinyClawConsole {
     }
 
     showAddCronModal() {
-        this.showModal('Add Cron Job', `
-            <div class="form-group">
-                <label>Name</label>
-                <input class="form-control" id="cronName" placeholder="Job name">
-            </div>
-            <div class="form-group">
-                <label>Message</label>
-                <textarea class="form-control" id="cronMessage" rows="3" placeholder="Task message for agent"></textarea>
-            </div>
-            <div class="form-group">
-                <label>Schedule Type</label>
-                <select class="form-control" id="cronType">
-                    <option value="every">Every X seconds</option>
-                    <option value="cron">Cron expression</option>
-                </select>
-            </div>
-            <div class="form-group" id="cronEveryGroup">
-                <label>Interval (seconds)</label>
-                <input class="form-control" id="cronEvery" type="number" value="3600">
-            </div>
-            <div class="form-group" id="cronExprGroup" style="display:none;">
-                <label>Cron Expression</label>
-                <input class="form-control" id="cronExpr" placeholder="0 8 * * *">
-            </div>
-            <div class="form-group">
-                <label>Channel (optional)</label>
-                <input class="form-control" id="cronChannel" placeholder="e.g. dingtalk, telegram (leave empty for default)">
-            </div>
-            <div class="form-group">
-                <label>To / Chat ID (optional)</label>
-                <input class="form-control" id="cronTo" placeholder="Target chat ID (leave empty to use channel default)">
-            </div>
-
-        `, async () => {
-            const data = {
-                name: document.getElementById('cronName').value,
-                message: document.getElementById('cronMessage').value
-            };
-            if (document.getElementById('cronType').value === 'every') {
-                data.everySeconds = parseInt(document.getElementById('cronEvery').value);
-            } else {
-                data.cron = document.getElementById('cronExpr').value;
-            }
-            const channel = document.getElementById('cronChannel').value.trim();
-            const to = document.getElementById('cronTo').value.trim();
-            if (channel) data.channel = channel;
-            if (to) data.to = to;
-            await this.authFetch('/api/cron', {
+        this.showModal('Add Cron Job', this.buildCronFormHtml('cron', null), async () => {
+            const data = this.readCronForm('cron', null);
+            if (!data) return;
+            const resp = await this.authFetch('/api/cron', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('创建失败 (' + resp.status + ')'), 'error');
+                return;
+            }
+            this.hideModal();
             this.loadCronJobs();
         });
+        this.bindCronForm('cron');
+    }
 
-        // 切换调度类型显示
-        document.getElementById('cronType').addEventListener('change', (e) => {
-            document.getElementById('cronEveryGroup').style.display = e.target.value === 'every' ? '' : 'none';
-            document.getElementById('cronExprGroup').style.display = e.target.value === 'cron' ? '' : 'none';
+    // ==================== P6：Cron 表单共享构建器（模板/时区/预览/执行模式） ====================
+
+    /**
+     * 构建 cron 表单 HTML（新建/编辑/从会话创建共用）。
+     * prefix 用于隔离 DOM id；job 非 null 时回填既有值（编辑/从会话预填）。
+     */
+    buildCronFormHtml(prefix, job) {
+        const isEvery = job ? job.kind === 'every' : false;
+        const isAt = job ? job.kind === 'at' : false;
+        const isCron = job ? job.kind === 'cron' : !isEvery && !isAt;
+        const name = job ? (job.name || '') : '';
+        const message = job ? (job.message || '') : (this._lastUserMessage || '');
+        const outputTarget = job ? (job.outputTarget || '') : '';
+        const runMode = job && job.runMode === 'CONTINUE_SESSION' ? 'CONTINUE_SESSION' : 'NEW_SESSION';
+        const tz = job ? (job.tz || '') : Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        const everySeconds = job && job.everyMs ? Math.round(job.everyMs / 1000) : 3600;
+        const expr = job ? (job.expr || '') : '';
+        const atLocal = '';
+        const channel = job ? (job.channel || '') : '';
+        const to = job ? (job.to || '') : '';
+        return `
+            <div class="form-group">
+                <label>Name</label>
+                <input class="form-control" id="${prefix}Name" placeholder="Job name" value="${this.escapeAttr(name)}">
+            </div>
+            <div class="form-group">
+                <label>Message（任务指令）</label>
+                <textarea class="form-control" id="${prefix}Message" rows="3" placeholder="Task message for agent">${this.escapeHtml(message)}</textarea>
+            </div>
+            <div class="form-group">
+                <label>输出要求（可选，随任务注入）</label>
+                <textarea class="form-control" id="${prefix}OutputTarget" rows="2" placeholder="e.g. 生成日报 Markdown 并总结 3 个要点">${this.escapeHtml(outputTarget)}</textarea>
+            </div>
+            <div class="form-group">
+                <label>模板（快捷填充 cron 表达式）</label>
+                <select class="form-control" id="${prefix}Template">
+                    <option value="">自定义…</option>
+                    <option value="0 9 * * *">每日 9 点</option>
+                    <option value="0 9 * * 1">每周一 9 点</option>
+                    <option value="0 9 * * 1-5">工作日 9 点</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Schedule Type</label>
+                <select class="form-control" id="${prefix}Type">
+                    <option value="cron" ${isCron ? 'selected' : ''}>Cron expression</option>
+                    <option value="every" ${isEvery ? 'selected' : ''}>Every X seconds</option>
+                    <option value="at" ${isAt ? 'selected' : ''}>At once（一次性）</option>
+                </select>
+            </div>
+            <div class="form-group" id="${prefix}EveryGroup" style="${isEvery ? '' : 'display:none;'}">
+                <label>Interval (seconds)</label>
+                <input class="form-control" id="${prefix}Every" type="number" value="${everySeconds}">
+            </div>
+            <div class="form-group" id="${prefix}ExprGroup" style="${isCron ? '' : 'display:none;'}">
+                <label>Cron Expression</label>
+                <input class="form-control" id="${prefix}Expr" placeholder="0 8 * * *" value="${this.escapeAttr(expr)}">
+            </div>
+            <div class="form-group" id="${prefix}AtGroup" style="${isAt ? '' : 'display:none;'}">
+                <label>执行时间（本地时区，一次性）</label>
+                <input class="form-control" id="${prefix}AtLocal" type="datetime-local" value="${this.escapeAttr(atLocal)}">
+            </div>
+            <div class="form-group">
+                <label>时区（cron 按此时区计算；留空用服务器默认）</label>
+                <input class="form-control" id="${prefix}Tz" placeholder="e.g. Asia/Shanghai" value="${this.escapeAttr(tz)}">
+            </div>
+            <div class="form-group">
+                <button type="button" class="btn btn-secondary btn-sm" id="${prefix}PreviewBtn">⏱ 预览未来 5 次执行</button>
+                <div id="${prefix}PreviewResult" class="cron-preview-result"></div>
+            </div>
+            <div class="form-group">
+                <label>执行模式</label>
+                <select class="form-control" id="${prefix}RunMode">
+                    <option value="NEW_SESSION" ${runMode === 'NEW_SESSION' ? 'selected' : ''}>每次新会话（默认，只带确认的资料与指令）</option>
+                    <option value="CONTINUE_SESSION" ${runMode === 'CONTINUE_SESSION' ? 'selected' : ''}>继续同一专用会话（忙碌时跳过本轮）</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Channel (optional)</label>
+                <input class="form-control" id="${prefix}Channel" placeholder="e.g. dingtalk, telegram" value="${this.escapeAttr(channel)}">
+            </div>
+            <div class="form-group">
+                <label>To / Chat ID (optional)</label>
+                <input class="form-control" id="${prefix}To" placeholder="Target chat ID" value="${this.escapeAttr(to)}">
+            </div>`;
+    }
+
+    /** 绑定表单交互：类型切换 / 模板填充 / 预览按钮。 */
+    bindCronForm(prefix) {
+        const typeSelect = document.getElementById(`${prefix}Type`);
+        if (typeSelect) {
+            typeSelect.onchange = () => {
+                document.getElementById(`${prefix}EveryGroup`).style.display = typeSelect.value === 'every' ? '' : 'none';
+                document.getElementById(`${prefix}ExprGroup`).style.display = typeSelect.value === 'cron' ? '' : 'none';
+                document.getElementById(`${prefix}AtGroup`).style.display = typeSelect.value === 'at' ? '' : 'none';
+            };
+        }
+        const template = document.getElementById(`${prefix}Template`);
+        if (template) {
+            template.onchange = () => {
+                if (template.value) {
+                    const type = document.getElementById(`${prefix}Type`);
+                    type.value = 'cron';
+                    document.getElementById(`${prefix}Expr`).value = template.value;
+                    type.onchange();
+                }
+            };
+        }
+        const previewBtn = document.getElementById(`${prefix}PreviewBtn`);
+        if (previewBtn) {
+            previewBtn.onclick = () => this.previewCronSchedule(prefix);
+        }
+    }
+
+    /** 读取表单调度部分（不含 name/message 等）。 */
+    readCronSchedule(prefix) {
+        const type = document.getElementById(`${prefix}Type`).value;
+        const tz = document.getElementById(`${prefix}Tz`).value.trim();
+        const data = { kind: type };
+        if (type === 'every') {
+            const seconds = parseInt(document.getElementById(`${prefix}Every`).value, 10);
+            if (!seconds || seconds <= 0) {
+                this.showToast('间隔必须为正数（秒）', 'error');
+                return null;
+            }
+            data.everySeconds = seconds;
+        } else if (type === 'at') {
+            const atLocal = document.getElementById(`${prefix}AtLocal`).value;
+            const atMs = atLocal ? Date.parse(atLocal) : NaN;
+            if (isNaN(atMs) || atMs <= Date.now()) {
+                this.showToast('一次性执行时间必须在未来', 'error');
+                return null;
+            }
+            data.atMs = atMs;
+        } else {
+            const expr = document.getElementById(`${prefix}Expr`).value.trim();
+            if (!expr) {
+                this.showToast('cron 表达式不能为空', 'error');
+                return null;
+            }
+            data.cron = expr;
+        }
+        if (tz) data.tz = tz;
+        return data;
+    }
+
+    /** 调服务端预览未来 5 次执行（复用调度计算，前端不另写解释器）。 */
+    async previewCronSchedule(prefix) {
+        const resultDiv = document.getElementById(`${prefix}PreviewResult`);
+        const schedule = this.readCronSchedule(prefix);
+        if (!schedule) return;
+        resultDiv.innerHTML = '<span class="form-hint">计算中…</span>';
+        try {
+            const resp = await this.authFetch('/api/cron/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(schedule)
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                resultDiv.innerHTML = `<span class="cron-preview-error">${this.escapeHtml(err.error || ('预览失败 (' + resp.status + ')'))}</span>`;
+                return;
+            }
+            const data = await resp.json();
+            const items = (data.nextRuns || []).map(ts =>
+                `<li>${this.escapeHtml(new Date(ts).toLocaleString())}</li>`).join('');
+            resultDiv.innerHTML = items
+                ? `<ul class="cron-preview-list">${items}</ul>`
+                : '<span class="cron-preview-error">无未来执行点（检查表达式或时间）</span>';
+        } catch (e) {
+            resultDiv.innerHTML = `<span class="cron-preview-error">预览失败：${this.escapeHtml(e.message)}</span>`;
+        }
+    }
+
+    /** 读取完整表单（schedule + 名称/消息/输出要求/执行模式/通道）。 */
+    readCronForm(prefix, job) {
+        const schedule = this.readCronSchedule(prefix);
+        if (!schedule) return null;
+        const name = document.getElementById(`${prefix}Name`).value.trim();
+        const message = document.getElementById(`${prefix}Message`).value.trim();
+        if (!name) { this.showToast('名称不能为空', 'error'); return null; }
+        if (!message) { this.showToast('任务指令不能为空', 'error'); return null; }
+        const data = { name, message, ...schedule };
+        const outputTarget = document.getElementById(`${prefix}OutputTarget`).value.trim();
+        if (outputTarget) data.outputTarget = outputTarget;
+        data.runMode = document.getElementById(`${prefix}RunMode`).value;
+        const channel = document.getElementById(`${prefix}Channel`).value.trim();
+        const to = document.getElementById(`${prefix}To`).value.trim();
+        if (channel) data.channel = channel;
+        if (to) data.to = to;
+        // 编辑/从会话创建时回传既有 P6 字段
+        if (job && job.projectId) data.projectId = job.projectId;
+        if (job && job.attachmentIds) data.attachmentIds = job.attachmentIds;
+        return data;
+    }
+
+    /**
+     * P6：从当前会话创建周期任务——任务描述预填本轮用户消息，可勾选当前会话项目资料；
+     * 用户确认前不创建调度；sourceSessionKey 记录来源会话。
+     */
+    async showScheduleFromChat() {
+        const sourceMessage = this._lastUserMessage || '';
+        if (!sourceMessage) {
+            this.showToast('先发送一次消息，再把它设为周期任务', 'info');
+            return;
+        }
+        // 已选资料：当前会话归属项目的资料引用（仅显式确认的资料会随任务复用）
+        let project = null;
+        let projectResources = [];
+        try {
+            const sessResp = await this.authFetch('/api/sessions');
+            if (sessResp.ok) {
+                const sessions = await sessResp.json();
+                const current = (sessions || []).find(s => s.key === this.chatSessionId);
+                const pid = current && current.projectId;
+                if (pid) {
+                    const projResp = await this.authFetch(`/api/projects/${encodeURIComponent(pid)}`);
+                    if (projResp.ok) {
+                        project = await projResp.json();
+                        projectResources = (project.resources || []).filter(r => !r.missing);
+                    }
+                }
+            }
+        } catch (e) { /* 项目能力未启用时无资料可选 */ }
+        const resourceChecks = projectResources.length
+            ? `<div class="form-group"><label>已选资料（仅勾选的资料会随任务复用）</label>
+                ${projectResources.map(r => `
+                    <label class="cron-resource-check">
+                        <input type="checkbox" class="cron-resource-item" value="${this.escapeAttr(r.attachmentId)}" checked>
+                        ${this.escapeHtml(r.name || r.attachmentId)}
+                        <span class="form-hint">（${r.status || ''}${r.parsedChars ? ' · ' + r.parsedChars + ' 字' : ''}）</span>
+                    </label>`).join('')}
+               </div>`
+            : '<p class="form-hint">当前会话未归属项目或项目无资料——任务将只携带任务指令。</p>';
+        const suggestedName = (sourceMessage.length > 30 ? sourceMessage.substring(0, 30) + '…' : sourceMessage);
+        this.showModal('设为周期任务', `
+            <p class="form-hint">把本轮对话转成周期任务：每次运行新建会话（默认），只携带下方确认的任务指令与勾选资料，不复制聊天历史。</p>
+            ${this.buildCronFormHtml('fromChat', { name: suggestedName, message: sourceMessage, kind: 'cron', tz: Intl.DateTimeFormat().resolvedOptions().timeZone })}
+            ${resourceChecks}
+        `, async () => {
+            const data = this.readCronForm('fromChat', project ? { projectId: project.id } : null);
+            if (!data) return;
+            data.sourceSessionKey = this.chatSessionId;
+            const checked = [...document.querySelectorAll('.cron-resource-item:checked')].map(el => el.value);
+            if (checked.length) data.attachmentIds = checked;
+            const resp = await this.authFetch('/api/cron', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('创建失败 (' + resp.status + ')'), 'error');
+                return;
+            }
+            const result = await resp.json();
+            this.hideModal();
+            this.showToast(`周期任务已创建（下次执行：${result.nextRun ? new Date(result.nextRun).toLocaleString() : '待计算'}）`, 'success');
         });
+        this.bindCronForm('fromChat');
+    }
 
-        document.getElementById('cronType').onchange = (e) => {
-            document.getElementById('cronEveryGroup').style.display = e.target.value === 'every' ? 'block' : 'none';
-            document.getElementById('cronExprGroup').style.display = e.target.value === 'cron' ? 'block' : 'none';
-        };
+    /**
+     * P6：跳转查看 cron 执行会话——cron 专用会话（cron-* key）不在聊天侧栏中，
+     * 以 Trace 时间线弹窗展示执行过程；会话已清理时明确提示。
+     */
+    async openCronRunSession(sessionKey) {
+        if (!sessionKey) return;
+        try {
+            const resp = await this.authFetch(`/api/sessions/${encodeURIComponent(sessionKey)}`);
+            if (resp.status === 404) {
+                this.showToast('执行会话已不存在（可能已被清理）', 'info');
+                return;
+            }
+            if (!resp.ok) {
+                this.showToast('加载执行会话失败 (' + resp.status + ')', 'error');
+                return;
+            }
+            const messages = await resp.json();
+            this.showModal(`Cron 执行会话 · ${sessionKey}`, this.renderTraceTimeline(messages || []), null);
+            document.getElementById('modalConfirm').style.display = 'none';
+        } catch (e) {
+            this.showToast('加载执行会话失败：' + e.message, 'error');
+        }
     }
 
     async toggleCronJob(id, enabled) {
@@ -3864,64 +5694,23 @@ class TinyClawConsole {
     editCronJob(id) {
         const job = (this.cronJobs || []).find(j => j.id === id);
         if (!job) return;
-        const isEvery = job.kind === 'every';
-        this.showModal('Edit Cron Job', `
-            <div class="form-group">
-                <label>Name</label>
-                <input class="form-control" id="editCronName" value="${this.escapeHtml(job.name)}">
-            </div>
-            <div class="form-group">
-                <label>Message</label>
-                <textarea class="form-control" id="editCronMessage" rows="3">${this.escapeHtml(job.message)}</textarea>
-            </div>
-            <div class="form-group">
-                <label>Schedule Type</label>
-                <select class="form-control" id="editCronType">
-                    <option value="every" ${isEvery ? 'selected' : ''}>Every X seconds</option>
-                    <option value="cron" ${!isEvery ? 'selected' : ''}>Cron expression</option>
-                </select>
-            </div>
-            <div class="form-group" id="editCronEveryGroup" style="${isEvery ? '' : 'display:none;'}">
-                <label>Interval (seconds)</label>
-                <input class="form-control" id="editCronEvery" type="number" value="${isEvery ? Math.round((job.everyMs || 3600000) / 1000) : 3600}">
-            </div>
-            <div class="form-group" id="editCronExprGroup" style="${!isEvery ? '' : 'display:none;'}">
-                <label>Cron Expression</label>
-                <input class="form-control" id="editCronExpr" placeholder="0 8 * * *" value="${this.escapeHtml(job.expr || '')}">
-            </div>
-            <div class="form-group">
-                <label>Channel (optional)</label>
-                <input class="form-control" id="editCronChannel" value="${this.escapeHtml(job.channel || '')}">
-            </div>
-            <div class="form-group">
-                <label>To / Chat ID (optional)</label>
-                <input class="form-control" id="editCronTo" value="${this.escapeHtml(job.to || '')}">
-            </div>
-        `, async () => {
-            const data = {
-                name: document.getElementById('editCronName').value,
-                message: document.getElementById('editCronMessage').value
-            };
-            if (document.getElementById('editCronType').value === 'every') {
-                data.everySeconds = parseInt(document.getElementById('editCronEvery').value);
-            } else {
-                data.cron = document.getElementById('editCronExpr').value;
-            }
-            data.channel = document.getElementById('editCronChannel').value.trim();
-            data.to = document.getElementById('editCronTo').value.trim();
-            await this.authFetch(`/api/cron/${id}`, {
+        this.showModal('Edit Cron Job', this.buildCronFormHtml('editCron', job), async () => {
+            const data = this.readCronForm('editCron', job);
+            if (!data) return;
+            const resp = await this.authFetch(`/api/cron/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                this.showToast(err.error || ('更新失败 (' + resp.status + ')'), 'error');
+                return;
+            }
+            this.hideModal();
             this.loadCronJobs();
         });
-        // 调度类型切换联动
-        const typeSelect = document.getElementById('editCronType');
-        typeSelect.onchange = () => {
-            document.getElementById('editCronEveryGroup').style.display = typeSelect.value === 'every' ? '' : 'none';
-            document.getElementById('editCronExprGroup').style.display = typeSelect.value === 'cron' ? '' : 'none';
-        };
+        this.bindCronForm('editCron');
     }
 
     toggleCronHistory(id) {

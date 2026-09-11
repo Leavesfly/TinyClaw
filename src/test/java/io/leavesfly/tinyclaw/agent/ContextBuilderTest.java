@@ -1,5 +1,6 @@
 package io.leavesfly.tinyclaw.agent;
 
+import io.leavesfly.tinyclaw.memory.MemoryScope;
 import io.leavesfly.tinyclaw.providers.Message;
 import io.leavesfly.tinyclaw.providers.ToolCall;
 import io.leavesfly.tinyclaw.util.MediaPaths;
@@ -105,6 +106,170 @@ class ContextBuilderTest {
         assertTrue(userMessage.hasImages());
         assertEquals(1, userMessage.getImages().size(), "只应保留合法图片");
         assertTrue(userMessage.getImages().get(0).endsWith("uploads/ok.png"));
+    }
+
+    // ==================== P5：会话记忆模式与选中登记 ====================
+
+    @Test
+    @DisplayName("memoryMode=OFF 会话：系统提示词不含 Memory 段，登记 disabled 选择")
+    void buildMessages_MemoryModeOff_SkipsMemorySection() {
+        contextBuilder.getMemoryStore().addEntry(MemoryScope.GLOBAL,
+                "用户偏好深色主题", 0.9, List.of("preference"), "user_explicit");
+        // 门：web:off-session 关闭记忆
+        contextBuilder.setMemoryGate(key -> !"web:off-session".equals(key));
+
+        List<Message> messages = contextBuilder.buildMessages(
+                List.of(), null, "深色主题偏好",
+                null, "web", "off-session", "web-user", false, "web:off-session");
+
+        String systemPrompt = messages.get(0).getContent();
+        assertFalse(systemPrompt.contains("# Memory"),
+                "OFF 会话不得注入长期记忆");
+        assertTrue(systemPrompt.contains("## 当前会话"),
+                "会话信息与后续 section 不受影响");
+        // 登记为 disabled 选择（Web 端展示「本轮未注入任何长期记忆」）
+        var selection = contextBuilder.getLastMemorySelection("web:off-session");
+        assertNotNull(selection);
+        assertTrue(selection.disabled);
+        assertTrue(selection.entries.isEmpty());
+    }
+
+    @Test
+    @DisplayName("memoryMode=DEFAULT 会话：记忆注入且选中清单与文本同源登记")
+    void buildMessages_MemoryModeDefault_RegistersSelection() {
+        contextBuilder.getMemoryStore().addEntry(MemoryScope.GLOBAL,
+                "User prefers dark mode", 0.9, List.of("preference"), "user_explicit");
+        contextBuilder.setMemoryGate(key -> true);
+
+        List<Message> messages = contextBuilder.buildMessages(
+                List.of(), null, "dark mode preference",
+                null, "web", "on-session", "web-user", false, "web:on-session");
+
+        String systemPrompt = messages.get(0).getContent();
+        assertTrue(systemPrompt.contains("# Memory"), "启用会话应注入记忆");
+        assertTrue(systemPrompt.contains("dark mode"), "匹配的记忆内容应在提示词中");
+
+        var selection = contextBuilder.getLastMemorySelection("web:on-session");
+        assertNotNull(selection, "启用会话应登记选择快照");
+        assertFalse(selection.disabled);
+        assertTrue(selection.entries.stream().anyMatch(i -> "User prefers dark mode".equals(i.content)),
+                "选中清单应包含实际注入的条目");
+        // 同源保证：登记文本与真实系统提示词中的记忆段一致
+        assertTrue(systemPrompt.contains("# Memory\n\n" + selection.text),
+                "登记的选中文本必须与真实注入文本一致");
+    }
+
+    @Test
+    @DisplayName("门未配置或 sessionKey 为 null 时保持旧行为（记忆启用、不登记）")
+    void buildMessages_NoGateOrNullSession_KeepsLegacyBehavior() {
+        contextBuilder.getMemoryStore().addEntry(MemoryScope.GLOBAL,
+                "用户偏好深色主题", 0.9, List.of("preference"), "user_explicit");
+
+        // 旧八参入口（无 sessionKey）：记忆注入，不登记
+        List<Message> legacy = contextBuilder.buildMessages(
+                List.of(), null, "深色主题偏好",
+                null, "web", "legacy", "web-user", false);
+        assertTrue(legacy.get(0).getContent().contains("# Memory"));
+        assertNull(contextBuilder.getLastMemorySelection("web:legacy"),
+                "未携带 sessionKey 的旧调用不应登记");
+
+        // 配置了门但传入 null sessionKey：仍启用（会话未知不等于 OFF）
+        contextBuilder.setMemoryGate(key -> false);
+        List<Message> unknown = contextBuilder.buildMessages(
+                List.of(), null, "深色主题偏好",
+                null, "web", "unknown", "web-user", false, null);
+        assertTrue(unknown.get(0).getContent().contains("# Memory"),
+                "会话未知时保持旧行为：记忆注入");
+    }
+
+    @Test
+    @DisplayName("isMemoryEnabled：门实时生效，切换 OFF/DEFAULT 后下一轮立即变化")
+    void memoryGate_TakesEffectImmediately() {
+        contextBuilder.setMemoryGate(key -> !"web:x".equals(key));
+        assertFalse(contextBuilder.isMemoryEnabled("web:x"));
+        assertTrue(contextBuilder.isMemoryEnabled("web:y"));
+
+        // 换门（等价于用户切换 memoryMode 后 flagsStore 实时读取）
+        contextBuilder.setMemoryGate(key -> true);
+        assertTrue(contextBuilder.isMemoryEnabled("web:x"), "门切换后应实时生效");
+
+        // 清除门
+        contextBuilder.setMemoryGate(null);
+        assertTrue(contextBuilder.isMemoryEnabled("web:x"));
+    }
+
+    // ==================== P4：项目空间（指令注入与项目记忆域） ====================
+
+    @Test
+    @DisplayName("归属项目的会话：项目指令注入且带全局优先声明；项目域记忆可见")
+    void buildMessages_ProjectSession_InjectsInstructionsAndProjectScope() {
+        // 项目域记忆：仅本项目会话可见
+        contextBuilder.getMemoryStore().addEntry("p:proj_alpha",
+                "Alpha 项目的架构约定是分层", 0.9, List.of("project"), "user_explicit");
+        // 另一个项目的域记忆：不得注入
+        contextBuilder.getMemoryStore().addEntry("p:proj_beta",
+                "Beta 项目的机密约定", 0.9, List.of("project"), "user_explicit");
+
+        contextBuilder.setProjectResolver(key -> "web:proj-session".equals(key)
+                ? new io.leavesfly.tinyclaw.agent.context.SectionContext.ProjectInfo(
+                        "proj_alpha", "Alpha 项目", "回复必须引用架构约定")
+                : null);
+
+        List<Message> messages = contextBuilder.buildMessages(
+                List.of(), null, "架构约定是什么",
+                null, "web", "proj-session", "web-user", false, "web:proj-session");
+
+        String systemPrompt = messages.get(0).getContent();
+        assertTrue(systemPrompt.contains("# Project: Alpha 项目"),
+                "项目指令应注入系统提示词");
+        assertTrue(systemPrompt.contains("回复必须引用架构约定"));
+        assertTrue(systemPrompt.contains("以全局安全限制为准"),
+                "必须附带全局优先声明，防止项目指令覆盖全局安全限制");
+        // 项目域记忆可见；其他项目域不可见（注入边界验收）
+        assertTrue(systemPrompt.contains("Alpha 项目的架构约定是分层"),
+                "本项目域记忆应注入");
+        assertFalse(systemPrompt.contains("Beta 项目的机密约定"),
+                "其他项目域记忆不得注入本项目会话");
+    }
+
+    @Test
+    @DisplayName("无归属或未装配解析器：无 Project 段，项目域记忆也不可见")
+    void buildMessages_NoProject_NoInjectionAndNoProjectScope() {
+        contextBuilder.getMemoryStore().addEntry("p:proj_alpha",
+                "Alpha 项目的架构约定是分层", 0.9, List.of("project"), "user_explicit");
+
+        // 未装配解析器
+        List<Message> legacy = contextBuilder.buildMessages(
+                List.of(), null, "架构约定是什么",
+                null, "web", "any", "web-user", false, "web:any-session");
+        assertFalse(legacy.get(0).getContent().contains("# Project:"), "未装配时无 Project 段");
+        assertFalse(legacy.get(0).getContent().contains("Alpha 项目的架构约定"),
+                "未装配时项目域记忆不可见");
+
+        // 装配但该会话无归属
+        contextBuilder.setProjectResolver(key -> null);
+        List<Message> noOwner = contextBuilder.buildMessages(
+                List.of(), null, "架构约定是什么",
+                null, "web", "any", "web-user", false, "web:any-session");
+        assertFalse(noOwner.get(0).getContent().contains("# Project:"), "无归属会话无 Project 段");
+        assertFalse(noOwner.get(0).getContent().contains("Alpha 项目的架构约定"),
+                "无归属会话不可见项目域记忆");
+    }
+
+    @Test
+    @DisplayName("项目解析器异常时安全退化：无 Project 段，不中断构建")
+    void buildMessages_ResolverThrows_DegradesSafely() {
+        contextBuilder.setProjectResolver(key -> {
+            throw new RuntimeException("store broken");
+        });
+
+        List<Message> messages = contextBuilder.buildMessages(
+                List.of(), null, "你好",
+                null, "web", "any", "web-user", false, "web:any-session");
+
+        assertTrue(messages.get(0).getContent().contains("## 当前会话"),
+                "解析器异常时构建应继续（仅无 Project 段）");
+        assertFalse(messages.get(0).getContent().contains("# Project:"));
     }
 
     // ==================== tool_calls 配对修复 ====================

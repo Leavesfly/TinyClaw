@@ -210,12 +210,15 @@ class MemoryEntry {
     double importance;      // 0.0-1.0
     List<String> tags;
     String source;          // "session:xxx" / "manual" / "evolver"
+    String sourceSessionKey; // 可选：来源会话键（Web 新增，旧数据为空）
     Instant createdAt;
     Instant updatedAt;
     int accessCount;
     Instant lastAccessedAt;
 }
 ```
+
+`sourceSessionKey` 仅用于回溯导航（记忆页点击徽标跳回产生它的会话），不参与评分与检索；旧数据缺失时前端显示“历史来源未记录”。
 
 ### 15.3.6 主题文件
 
@@ -265,7 +268,8 @@ SessionManager.getOrCreate(key)  ← 短期会话
    ▼
 ContextBuilder.buildMessages(...)
    ├── IdentitySection
-   ├── MemorySection      ← 读 MemoryStore.getMemoryContext(msg, budget)
+   ├── MemorySection      ← 读 MemoryStore.buildMemorySelection(msg, budget, scopes)
+   │                          （P5：会话 memoryMode=OFF 时跳过；选中清单同源登记）
    ├── SkillsSection
    ├── SummarySection     ← Session.summary
    ├── ToolsSection
@@ -280,12 +284,30 @@ ReActExecutor 与 LLM 对话
    ▼（消息数超阈值）
 SessionSummarizer.summarize()
    │
-   ▼（心跳）
+   ├─（P5：memoryMode=OFF 的会话跳过此步）
+   ▼
 MemoryEvolver.evolve()  ← 把重要事实沉淀到 MemoryStore
    │
    ▼
 落盘：sessions/*.json 与 memory/*
 ```
+
+### 15.5.1 会话记忆模式（P5）
+
+每会话 memoryMode 为 `DEFAULT` 或 `OFF`，存于 `session-flags.json`：
+
+- **OFF 同时关闭**该会话的长期记忆自动检索（读路径，`ContextBuilder` 注入时判断）与摘要后自动提取写入（写路径，`SessionSummarizer` 判断）；聊天历史仍正常保存
+- 读写共用 `ContextBuilder.setMemoryGate` 上的同一门（GatewayBootstrap 注入，实时读 flagsStore，切换立即生效）
+- 手动在记忆管理页新增记忆不受影响；其他会话不受影响
+- UI 命名为「不使用长期记忆」，不称为无痕模式
+
+### 15.5.2 本轮使用透明化（P5）
+
+`MemoryStore.buildMemorySelection` 返回注入文本与实际选中的条目/主题清单（同一函数体产出），`ContextBuilder` 按会话登记最近一次选择；Web 端 `GET /api/memory/context-used?sessionId=` 查询后在聊天页展示，可在聊天中直接纠正或删除（仅影响后续轮次）。详见 [17 · Web 控制台 §17.11f](17-web-console.md)。
+
+### 15.5.3 项目记忆域（P4）
+
+`MemoryScope.projectDomain(projectId)` 构造项目域 `p:<projectId>`（id 安全字符化）。归属项目的会话可见域 = 全局 + 用户 + 聊天 + 本项目域；项目指令经 `ProjectSection` 注入（不可覆盖全局安全限制），项目删除后残留归属视为无项目。详见 [17 · Web 控制台 §17.11g](17-web-console.md)。
 
 ---
 
@@ -294,11 +316,13 @@ MemoryEvolver.evolve()  ← 把重要事实沉淀到 MemoryStore
 | 功能 | Handler |
 |------|---------|
 | 会话列表 / 详情 / 删除 | `SessionsHandler` |
+| 记忆条目 CRUD | `MemoryHandler`（`/api/memory`） |
+| 记忆筛选 / 分页 / 来源会话导航 | `MemoryHandler`（P5，见 [17 · Web 控制台 §17.11e](17-web-console.md)） |
 | 记忆查看 / 编辑 | `WorkspaceHandler` |
 | 索引重建 | `WorkspaceHandler` |
 | 归档查看 | `WorkspaceHandler` |
 
-UI 支持 Markdown 编辑主题文件，也支持以表格方式编辑结构化条目。
+UI 支持 Markdown 编辑主题文件，也支持以表格方式编辑结构化条目。记忆页支持关键词/归属域/标签/来源筛选与分页（服务端执行），新增记忆可记录来源会话并从条目徽标跳回。
 
 ---
 

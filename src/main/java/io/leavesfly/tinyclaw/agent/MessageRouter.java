@@ -386,22 +386,24 @@ class MessageRouter {
      * <p>senderId 一并传入，使长期记忆只注入当前发言人与当前聊天可见的那部分。</p>
      */
     List<Message> buildContext(String sessionKey, InboundMessage msg) {
+        // P5：传 sessionKey 使会话记忆模式（memoryMode）与「本轮使用记忆」登记生效
         return contextBuilder.buildMessages(
                 sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
                 msg.getContent(), null, msg.getChannel(), msg.getChatId(),
-                msg.getSenderId(), msg.isLightContext());
+                msg.getSenderId(), msg.isLightContext(), sessionKey);
     }
 
     /**
      * 构建带图片的上下文（多模态）。
      */
     List<Message> buildContextWithImages(String sessionKey, InboundMessage msg, List<String> images) {
+        // P5：传 sessionKey 使会话记忆模式（memoryMode）与「本轮使用记忆」登记生效
         return contextBuilder.buildMessages(
                 sessions.getContextMessages(sessionKey),
                 sessions.getSummary(sessionKey),
                 msg.getContent(), images, msg.getChannel(), msg.getChatId(),
-                msg.getSenderId(), msg.isLightContext());
+                msg.getSenderId(), msg.isLightContext(), sessionKey);
     }
 
     /**

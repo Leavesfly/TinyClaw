@@ -45,6 +45,19 @@ public class MemoryEntry {
     private String source;
 
     /**
+     * 可选的来源会话键，用于把记忆回溯到产生它的会话（如 Web 聊天会话 ID）。
+     * 旧数据缺失时保持 null，前端显示“历史来源未记录”。仅作导航用途，
+     * 不参与评分与检索。
+     */
+    private String sourceSessionKey;
+
+    /**
+     * 可选的来源消息 id（P5）：把记忆回溯到产生它的具体消息（如转录中的消息 id）。
+     * 仅作导航用途，不参与评分与检索；旧数据缺失为 null。
+     */
+    private String sourceMessageId;
+
+    /**
      * 归属域，决定这条记忆对哪些会话可见。取值见 {@link MemoryScope}。
      * 反序列化历史数据时该字段缺失，会保留构造器里的 {@link MemoryScope#GLOBAL} 默认值。
      */
@@ -162,12 +175,18 @@ public class MemoryEntry {
     public String getSource() { return source; }
     public void setSource(String source) { this.source = source; }
 
+    public String getSourceSessionKey() { return sourceSessionKey; }
+    public void setSourceSessionKey(String sourceSessionKey) { this.sourceSessionKey = sourceSessionKey; }
+
+    public String getSourceMessageId() { return sourceMessageId; }
+    public void setSourceMessageId(String sourceMessageId) { this.sourceMessageId = sourceMessageId; }
+
     public String getScope() { return scope; }
     public void setScope(String scope) { this.scope = MemoryScope.normalize(scope); }
 
     @Override
     public String toString() {
-        return String.format("MemoryEntry{id='%s', scope='%s', importance=%.2f, score=%.3f, tags=%s, source='%s'}",
-                id, scope, importance, computeScore(), tags, source);
+        return String.format("MemoryEntry{id='%s', scope='%s', importance=%.2f, score=%.3f, tags=%s, source='%s', sourceSessionKey='%s'}",
+                id, scope, importance, computeScore(), tags, source, sourceSessionKey);
     }
 }

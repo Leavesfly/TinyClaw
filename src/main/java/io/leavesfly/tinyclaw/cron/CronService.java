@@ -117,6 +117,38 @@ public class CronService {
     }
     
     /**
+     * 执行详情收集器（P6）：JobHandler 保持 String 返回不变，编排方在执行前后
+     * 把本次实例的 runId/sessionKey/artifactIds 存入自己的侧表，CronService
+     * 在写入执行历史前通过本接口拉取并合入 {@link CronRunRecord}（拉取后由
+     * 收集方自行清除，避免串轮）。
+     */
+    @FunctionalInterface
+    public interface RunDetailCollector {
+        /**
+         * 收集某次执行的详情。
+         *
+         * @param jobId 任务 id
+         * @param startedAtMs 本次执行开始时间（毫秒），用于与侧表中的实例比对
+         * @return 本次执行的详情；null 表示无详情（未启用 P6 编排时保持旧行为）
+         */
+        RunDetail collect(String jobId, long startedAtMs);
+    }
+    
+    /** 单次执行的补充详情（P6）。 */
+    public record RunDetail(String runId, String sessionKey, List<String> artifactIds,
+                            String deliveryStatus) {
+    }
+    
+    private volatile RunDetailCollector runDetailCollector;
+    
+    /**
+     * 注入执行详情收集器（P6 装配方调用；null 表示未启用，历史记录无补充字段）。
+     */
+    public void setRunDetailCollector(RunDetailCollector collector) {
+        this.runDetailCollector = collector;
+    }
+    
+    /**
      * 解析工作空间下的默认任务存储路径。
      *
      * <p>该路径是全局唯一的任务事实源。由于 {@link #saveStoreUnsafe()} 采用内存全量覆盖写，
@@ -342,6 +374,12 @@ public class CronService {
         Future<String> future = executor.submit(() -> onJob.handle(job));
         try {
             String result = future.get(JOB_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            // P6：非失败性跳过约定——编排方返回 [SKIPPED] 前缀（如继续同会话模式遇忙碌），
+            // 与执行失败（error/timeout）区分：本轮未执行不算任务故障，不触发误告警
+            if (result != null && result.startsWith("[SKIPPED] ")) {
+                return new RunOutcome(CronRunRecord.STATUS_SKIPPED, null,
+                        truncateResult(result.substring("[SKIPPED] ".length())));
+            }
             return new RunOutcome(STATUS_OK, null, truncateResult(result));
         } catch (TimeoutException e) {
             future.cancel(true);  // 中断卡住的任务，释放工作线程
@@ -437,6 +475,28 @@ public class CronService {
         record.setError(outcome.error());
         record.setResult(outcome.result());
         
+        // P6：合入编排方的执行详情（runId/sessionKey/artifactIds/deliveryStatus）
+        RunDetailCollector collector = this.runDetailCollector;
+        if (collector != null) {
+            try {
+                RunDetail detail = collector.collect(job.getId(), startTime);
+                if (detail != null) {
+                    record.setRunId(detail.runId());
+                    record.setSessionKey(detail.sessionKey());
+                    if (detail.artifactIds() != null && !detail.artifactIds().isEmpty()) {
+                        record.setArtifactIds(detail.artifactIds());
+                    }
+                    if (detail.deliveryStatus() != null) {
+                        record.setDeliveryStatus(detail.deliveryStatus());
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to collect run detail", Map.of(
+                        "job_id", job.getId(),
+                        "error", String.valueOf(e.getMessage())));
+            }
+        }
+        
         history.add(0, record);
         if (history.size() > MAX_HISTORY_SIZE) {
             history.subList(MAX_HISTORY_SIZE, history.size()).clear();
@@ -531,7 +591,7 @@ public class CronService {
     }
     
     /**
-     * 计算 CRON 表达式任务的下次执行时间。
+     * 计算CRON 表达式任务的下次执行时间。
      * 
      * @param schedule 调度配置
      * @param nowMs 当前时间戳
@@ -541,16 +601,18 @@ public class CronService {
         if (schedule.getExpr() == null || schedule.getExpr().isEmpty()) {
             return null;
         }
-        
+            
         try {
             Cron cron = cronParser.parse(schedule.getExpr());
             ExecutionTime executionTime = ExecutionTime.forCron(cron);
+            // P6：时区优先用 schedule 的 tz（ZoneId.systemDefault() 兼容旧数据），
+            // 同一表达式在不同 tz 下的执行点不同，预览与实际调度必须同一套逻辑
             ZonedDateTime now = ZonedDateTime.ofInstant(
                 Instant.ofEpochMilli(nowMs), 
-                ZoneId.systemDefault()
+                resolveZone(schedule.getTz())
             );
             Optional<ZonedDateTime> next = executionTime.nextExecution(now);
-            
+                
             return next.map(zonedDateTime -> zonedDateTime.toInstant().toEpochMilli())
                        .orElse(null);
         } catch (Exception e) {
@@ -560,6 +622,45 @@ public class CronService {
             ));
             return null;
         }
+    }
+        
+    /**
+     * 解析时区标识：空白/非法回退系统默认（日志告警，不中断调度）。
+     */
+    private ZoneId resolveZone(String tz) {
+        if (tz == null || tz.isBlank()) {
+            return ZoneId.systemDefault();
+        }
+        try {
+            return ZoneId.of(tz.trim());
+        } catch (Exception e) {
+            logger.warn("Invalid timezone in schedule, fallback to system default", Map.of(
+                    "tz", tz));
+            return ZoneId.systemDefault();
+        }
+    }
+        
+    /**
+     * 预览未来 N 次执行时间（P6）：复用与实际调度同一套 computeNextRun 逻辑，
+     * 前端不另写 Cron 解释器；用于创建/编辑表单展示未来执行点。
+     * 
+     * @param schedule 调度配置
+     * @param count 预览次数（≤0 返回空，上限 10）
+     * @return 未来执行时间戳列表（毫秒，升序）；提前耗尽（如已过期 AT）则截断
+     */
+    public List<Long> previewNextRuns(CronSchedule schedule, int count) {
+        int limit = Math.min(Math.max(count, 0), 10);
+        List<Long> runs = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < limit; i++) {
+            Long next = computeNextRun(schedule, now);
+            if (next == null) {
+                break;
+            }
+            runs.add(next);
+            now = next + 1; // 前进 1ms，下一轮从该点之后继续算
+        }
+        return runs;
     }
     
     /**
@@ -641,9 +742,10 @@ public class CronService {
         try {
             Cron cron = cronParser.parse(expr);
             ExecutionTime executionTime = ExecutionTime.forCron(cron);
+            // P6：与 computeCronNextRun 同一时区口径，避免补跑判定与调度点不一致
             ZonedDateTime nowZdt = ZonedDateTime.ofInstant(
                 Instant.ofEpochMilli(now),
-                ZoneId.systemDefault()
+                resolveZone(job.getSchedule().getTz())
             );
             Optional<ZonedDateTime> last = executionTime.lastExecution(nowZdt);
             
@@ -786,6 +888,40 @@ public class CronService {
     }
     
     /**
+     * 添加新任务（P6：完整 payload 版）。message/channel/to 取自 payload，
+     * 其余扩展字段（runMode/projectId/sourceSessionKey/attachmentIds/outputTarget）
+     * 原样保留；payload 为 null 时退化为旧五参行为。
+     * 
+     * @param name 任务名称
+     * @param schedule 调度配置（tz 字段随 schedule 保存）
+     * @param payload 任务负载
+     * @return 创建的任务对象
+     */
+    public CronJob addJob(String name, CronSchedule schedule, CronPayload payload) {
+        if (payload == null) {
+            return addJob(name, schedule, null, null, null);
+        }
+        CronJob job = addJob(name, schedule, payload.getMessage(),
+                payload.getChannel(), payload.getTo());
+        // addJob 内部拷贝了 message/channel/to，其余字段合入后再落一次盘
+        CronPayload target = job.getPayload();
+        target.setRunMode(payload.getRunMode());
+        target.setProjectId(payload.getProjectId());
+        target.setSourceSessionKey(payload.getSourceSessionKey());
+        target.setAttachmentIds(payload.getAttachmentIds());
+        target.setOutputTarget(payload.getOutputTarget());
+        lock.writeLock().lock();
+        try {
+            reloadIfChangedUnsafe();
+            job.setUpdatedAtMs(System.currentTimeMillis());
+            saveStoreUnsafe();
+        } finally {
+            lock.writeLock().unlock();
+        }
+        return job;
+    }
+    
+    /**
      * 创建任务对象。
      * 
      * @param name 任务名称
@@ -891,6 +1027,24 @@ public class CronService {
 
             saveStoreUnsafe();
             return job;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * 外部修改了任务对象后落盘（P6：如 Handler 在 updateJob 之后合入 payload 扩展字段）。
+     * job 必须是本服务返回的存储实例；仅刷新更新时间并保存，不重算调度。
+     */
+    public void persistJob(CronJob job) {
+        if (job == null) {
+            return;
+        }
+        lock.writeLock().lock();
+        try {
+            reloadIfChangedUnsafe();
+            job.setUpdatedAtMs(System.currentTimeMillis());
+            saveStoreUnsafe();
         } finally {
             lock.writeLock().unlock();
         }

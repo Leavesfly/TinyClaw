@@ -32,17 +32,36 @@ import java.util.Map;
  * - 记录日志信息
  * - 编辑现有文件内容
  */
-public class WriteFileTool implements Tool {
+public class WriteFileTool implements Tool, ToolContextAware {
     
     private static final long MAX_CONTENT_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
     
     private final SecurityGuard securityGuard;
+
+    // P3：会话上下文与成果登记回调（每次执行前由 ReActExecutor.setToolContext 覆写）
+    private volatile String sessionKey;
+    private volatile ArtifactRecorder artifactRecorder;
     
     public WriteFileTool(SecurityGuard securityGuard) {
         if (securityGuard == null) {
             throw new IllegalArgumentException("SecurityGuard is required for WriteFileTool");
         }
         this.securityGuard = securityGuard;
+    }
+
+    /** P3：注入成果登记回调（可为 null：未启用时保持旧行为）。 */
+    public void setArtifactRecorder(ArtifactRecorder artifactRecorder) {
+        this.artifactRecorder = artifactRecorder;
+    }
+
+    @Override
+    public void setChannelContext(String channel, String chatId) {
+        // 文件写入不关心投递目标，仅会话归属（见 setSessionContext）
+    }
+
+    @Override
+    public void setSessionContext(String sessionKey) {
+        this.sessionKey = sessionKey;
     }
     
     @Override
@@ -126,6 +145,13 @@ public class WriteFileTool implements Tool {
                 Files.createDirectories(parentDir);
             }
             Files.writeString(filePath, content);
+            // P3：实际写盘成功后登记成果（回调失败不影响工具结果）
+            ArtifactRecorder recorder = this.artifactRecorder;
+            if (recorder != null) {
+                try {
+                    recorder.record(sessionKey, filePath.toAbsolutePath().normalize().toString());
+                } catch (Exception ignored) { /* 登记不影响写入结果 */ }
+            }
             return "文件写入成功";
         } catch (IOException e) {
             return "写入文件失败: " + e.getMessage();

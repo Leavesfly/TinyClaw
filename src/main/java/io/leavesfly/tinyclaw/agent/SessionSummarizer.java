@@ -69,10 +69,16 @@ public class SessionSummarizer {
     private final MemoryStore memoryStore;      // 记忆存储，用于写入结构化记忆
     private final MemoryEvolver memoryEvolver;  // 记忆进化引擎，用于从摘要中提炼记忆
     private final ExecutorService summarizeExecutor;  // 摘要任务线程池（单线程守护）
-    
+
+    /**
+     * 会话记忆模式门（P5，可为 null）：sessionKey → 是否允许自动提取写入长期记忆。
+     * 与读路径（记忆注入）共用 ContextBuilder 上的同一门，保证 OFF 会话读写均为零。
+     */
+    private final java.util.function.Predicate<String> memoryGate;
+
     /**
      * 构造会话摘要器。
-     * 
+     *
      * @param sessions 会话管理器
      * @param provider LLM 提供商
      * @param model 使用的模型
@@ -80,15 +86,28 @@ public class SessionSummarizer {
      * @param memoryStore 记忆存储（用于摘要完成后写入结构化记忆）
      * @param memoryEvolver 记忆进化引擎（用于从摘要中提炼结构化记忆）
      */
-    public SessionSummarizer(SessionManager sessions, LLMProvider provider, 
+    public SessionSummarizer(SessionManager sessions, LLMProvider provider,
                             String model, int contextWindow, MemoryStore memoryStore,
                             MemoryEvolver memoryEvolver) {
+        this(sessions, provider, model, contextWindow, memoryStore, memoryEvolver, null);
+    }
+
+    /**
+     * 构造会话摘要器（P5）：携带会话记忆模式门。
+     *
+     * @param memoryGate sessionKey → 是否允许自动提取写入；null 表示不限制（旧行为）
+     */
+    public SessionSummarizer(SessionManager sessions, LLMProvider provider,
+                            String model, int contextWindow, MemoryStore memoryStore,
+                            MemoryEvolver memoryEvolver,
+                            java.util.function.Predicate<String> memoryGate) {
         this.sessions = sessions;
         this.provider = provider;
         this.model = model;
         this.contextWindow = contextWindow;
         this.memoryStore = memoryStore;
         this.memoryEvolver = memoryEvolver;
+        this.memoryGate = memoryGate;
         this.summarizing = ConcurrentHashMap.newKeySet();
         this.summarizeExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "session-summarizer");
@@ -161,6 +180,23 @@ public class SessionSummarizer {
      */
     public void shutdown() {
         summarizeExecutor.shutdown();
+    }
+
+    /**
+     * 等待已提交的摘要任务执行完毕（shutdown 之后调用）。
+     * 主要供测试确定性等待；生产路径不依赖。
+     *
+     * @param timeout 超时时长
+     * @param unit    时间单位
+     * @return 是否在超时前终止（false 表示仍有任务未完成）
+     */
+    public boolean awaitTerminationQuietly(long timeout, java.util.concurrent.TimeUnit unit) {
+        try {
+            return summarizeExecutor.awaitTermination(timeout, unit);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
     
     /**
@@ -388,19 +424,25 @@ public class SessionSummarizer {
             return; // 持久化失败时不继续写入记忆，避免数据不一致
         }
 
-        // 将摘要写入结构化记忆，归属于该会话所属的聊天域：
+       // 将摘要写入结构化记忆，归属于该会话所属的聊天域：
         // 摘要逐字复述了对话内容，写成全局可见会被注入到其他用户的上下文
-        try {
-            String channel = "unknown";
-            if (sessionKey != null && sessionKey.contains(":")) {
-                channel = sessionKey.substring(0, sessionKey.indexOf(":"));
+        // P5：会话 memoryMode=OFF 时不自动提取写入（聊天历史仍正常保存）
+        if (memoryGate != null && !memoryGate.test(sessionKey)) {
+            logger.info("Session memory mode OFF, skip auto memory extraction", Map.of(
+                    "session_key", sessionKey));
+        } else {
+            try {
+                String channel = "unknown";
+                if (sessionKey != null && sessionKey.contains(":")) {
+                    channel = sessionKey.substring(0, sessionKey.indexOf(":"));
+                }
+                memoryStore.addEntry(MemoryScope.ofSessionKey(sessionKey), summary, 0.4,
+                        List.of("session", channel), "session_summary");
+            } catch (Exception e) {
+                logger.warn("Failed to write session summary to memory", Map.of(
+                        "session_key", sessionKey,
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
             }
-            memoryStore.addEntry(MemoryScope.ofSessionKey(sessionKey), summary, 0.4,
-                    List.of("session", channel), "session_summary");
-        } catch (Exception e) {
-            logger.warn("Failed to write session summary to memory", Map.of(
-                    "session_key", sessionKey,
-                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
 
         logger.info("Session context compacted", Map.of(
